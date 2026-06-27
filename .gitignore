@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.so
+*.o
+*.cubin
+*.ptx
+a.out
+k
+*.ncu-rep
+*.nsys-rep
+.ruff_cache/
+.DS_Store

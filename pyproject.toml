@@ -1,0 +1,20 @@
+[project]
+name = "quadbit"
+version = "0.1.0"
+description = "Custom GPU kernels for the orphaned Blackwell gaps (SM120/SM100), with Rust as the framework shell"
+requires-python = ">=3.12"
+dependencies = [
+    "modal>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.9",
+    "ty>=0.0.1a1",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
