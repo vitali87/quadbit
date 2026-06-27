@@ -23,9 +23,17 @@ Developed on Modal cloud. Both target architectures are available:
 
 Target `sm_120a` (not plain `sm_120`) for block-scaled FP4 MMA; CUDA 12.8+ on `nvidia/cuda:*-devel` images.
 
-## Open question being probed
+## Profiling: confirmed split workflow
 
-Modal runs GPU containers on gVisor + nvproxy, which likely blocks the `ncu` (Nsight Compute) hardware-counter profiling path. `harness/probe_ncu.py` tests this empirically. If `ncu` is blocked, the workflow splits: Modal for dev / run / time / parallel autotune sweeps, plus a cheap bare-metal box (Vast.ai / RunPod `--cap-add SYS_ADMIN`) for occasional deep `ncu` profiling.
+`harness/probe_ncu.py` settled the open question on a Modal T4 (2026-06-27):
+
+- `nvcc` 12.8 and `ncu` 2025.1.1 are installed; driver 580 / CUDA 13 capable.
+- **`ncu` hardware-counter profiling is BLOCKED.** It fails at init with `Failed to initialize the profiler: LibraryNotLoaded` (exit 9): the gVisor + nvproxy runtime does not expose the profiling driver interface.
+
+So the workflow splits:
+
+- **Modal** (the 90%): write / compile / run / **time** kernels on real SM120 (`RTX-PRO-6000`) and SM100 (`B200`), validate correctness, and run massive parallel autotune / kernel-search sweeps (these use measured wall-clock speedup, which needs no `ncu`).
+- **Bare-metal box** (the 10%): a Vast.ai 5090 or RunPod `--cap-add SYS_ADMIN` instance with profiling counters enabled, for occasional deep `ncu` roofline analysis of the hottest kernel.
 
 ## Setup
 

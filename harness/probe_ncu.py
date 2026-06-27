@@ -35,7 +35,10 @@ int main() {
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        return 127, f"{cmd[0]}: not installed"
     return r.returncode, (r.stdout + r.stderr)
 
 
@@ -60,14 +63,14 @@ def probe() -> None:
     print(f"ncu exit {code}\n{out.strip()[:3000]}")
     ncu_blocked = code != 0 or "ERR_NVGPUCTRPERM" in out or "not supported" in out.lower()
 
-    print("\n=== nsys trace (expected to work) ===")
+    print("\n=== nsys trace (expected to work; not bundled in devel image) ===")
     code, out = _run(["nsys", "profile", "-o", "trace", "--force-overwrite", "true", "./k"])
     print(f"nsys exit {code}\n{out.strip()[:1500]}")
-    nsys_ok = code == 0
+    nsys = "NOT INSTALLED" if code == 127 else ("WORKS" if code == 0 else "BLOCKED")
 
     print("\n========================= VERDICT =========================")
     print(f"ncu (hardware counters): {'BLOCKED' if ncu_blocked else 'WORKS'}")
-    print(f"nsys (trace profiling):  {'WORKS' if nsys_ok else 'BLOCKED'}")
+    print(f"nsys (trace profiling):  {nsys}")
     if ncu_blocked:
         print("-> Split workflow: Modal for dev/run/time/autotune; bare-metal box for ncu.")
     else:
