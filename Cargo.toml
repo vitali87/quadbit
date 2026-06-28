@@ -12,3 +12,4 @@ cpu = ["cubecl/cpu"]
 
 [dependencies]
 cubecl = "0.10.0"
+half = "2.5"
