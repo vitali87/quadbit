@@ -1,0 +1,17 @@
+[package]
+name = "quadbit"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+
+[features]
+default = []
+cuda = ["cubecl/cuda"]
+cpu = ["cubecl/cpu"]
+
+[dependencies]
+cubecl = "0.10.0"
+
+[[bin]]
+name = "hello"
+path = "src/bin/hello.rs"
