@@ -1,7 +1,7 @@
 [project]
 name = "quadbit"
 version = "0.1.0"
-description = "Custom GPU kernels for the orphaned Blackwell gaps (SM120/SM100), with Rust as the framework shell"
+description = "4-bit (FP4) GPU kernels in Rust for the Blackwell gaps NVIDIA's libraries leave open (SM120/SM100)"
 requires-python = ">=3.12"
 dependencies = [
     "modal>=1.0",

@@ -1,6 +1,6 @@
 # quadbit
 
-Custom GPU kernels for the low-bit Blackwell gaps NVIDIA's libraries leave open, with Rust as the framework shell.
+4-bit (FP4) GPU kernels in Rust for the Blackwell gaps NVIDIA's libraries leave open.
 
 Early scaffold. Developed on Modal cloud.
 
