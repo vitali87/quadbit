@@ -11,7 +11,3 @@ cpu = ["cubecl/cpu"]
 
 [dependencies]
 cubecl = "0.10.0"
-
-[[bin]]
-name = "hello"
-path = "src/bin/hello.rs"
