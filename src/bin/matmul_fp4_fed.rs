@@ -300,6 +300,135 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     }
 }
 
+// FP4 (e2m1) exactly-representable magnitudes; using only these makes
+// `from_f32_slice` lossless so the f32 reference sees the same values the
+// tensor cores do.
+const FP4_MAGS: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+
+fn xorshift(state: &mut u32) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    x
+}
+
+fn rand_fp4(state: &mut u32) -> f32 {
+    let r = xorshift(state);
+    let mag = FP4_MAGS[(r % 8) as usize];
+    if (r >> 3) & 1 == 1 {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// Strong correctness check: random representable FP4 inputs and random per-block
+/// power-of-two UE8M0 scales, compared against an f32 CPU reference. Small size so
+/// the reference is cheap. This catches transpose / scale-indexing / buffer-offset
+/// bugs that the all-ones unit-scale smoke test cannot.
+fn verify<R: Runtime>(device: &R::Device) {
+    let client = R::client(device);
+
+    type AB = e2m1x2;
+    type S = ue8m0;
+    let ab_elem = AB::cube_type();
+    let ab_vector_size = 32 / ab_elem.size_bits();
+
+    let supported = client.features().matmul.scaled_mma.contains(&ScaledMmaConfig {
+        a_type: ab_elem,
+        b_type: ab_elem,
+        cd_type: f32::cube_type(),
+        scales_type: S::cube_type(),
+        m: MMA_M as u32,
+        n: MMA_N as u32,
+        k: MMA_K as u32,
+        scales_factor: SF as u32,
+    });
+    if !supported {
+        println!("verify: scaled FP4 MMA unsupported; skipping");
+        return;
+    }
+
+    let (m, n, k) = (384usize, 384usize, 384usize);
+    let scale_cols = k / (MMA_K / SF); // scale blocks per row = k / 32
+    let blk = MMA_K / SF; // k-elements per scale block = 32
+
+    let mut st = 0x9e3779b9u32;
+    let lhs_f: Vec<f32> = (0..m * k).map(|_| rand_fp4(&mut st)).collect();
+    let rhs_f: Vec<f32> = (0..n * k).map(|_| rand_fp4(&mut st)).collect();
+    // random per-block scales in {2^-1, 2^0, 2^1}
+    let lhs_sb: Vec<S> = (0..m * scale_cols)
+        .map(|_| ue8m0::from_bits(126 + (xorshift(&mut st) % 3) as u8))
+        .collect();
+    let rhs_sb: Vec<S> = (0..n * scale_cols)
+        .map(|_| ue8m0::from_bits(126 + (xorshift(&mut st) % 3) as u8))
+        .collect();
+
+    let lhs = e2m1x2::from_f32_slice(&lhs_f);
+    let rhs = e2m1x2::from_f32_slice(&rhs_f);
+    let zeros = vec![0.0f32; m * n];
+
+    let lhs_h = client.create_from_slice(AB::as_bytes(&lhs));
+    let rhs_h = client.create_from_slice(AB::as_bytes(&rhs));
+    let lhs_sb_h = client.create_from_slice(S::as_bytes(&lhs_sb));
+    let rhs_sb_h = client.create_from_slice(S::as_bytes(&rhs_sb));
+    let c_h = client.create_from_slice(f32::as_bytes(&zeros));
+    let out_h = client.empty(m * n * core::mem::size_of::<f32>());
+
+    let grid_x = (n / BN) as u32;
+    let grid_y = (m / BM) as u32;
+    unsafe {
+        matmul_fp4_fed::launch_unchecked::<AB, AB, f32, S, R>(
+            &client,
+            CubeCount::Static(grid_x, grid_y, 1),
+            CubeDim::new_1d(N_THREADS),
+            ab_vector_size,
+            ab_vector_size,
+            2,
+            TensorArg::from_raw_parts(lhs_h, [k / 2, 1].into(), [m, k / 2].into()),
+            TensorArg::from_raw_parts(rhs_h, [k / 2, 1].into(), [n, k / 2].into()),
+            TensorArg::from_raw_parts(c_h, [n, 1].into(), [m, n].into()),
+            TensorArg::from_raw_parts(lhs_sb_h, [scale_cols, 1].into(), [m, scale_cols].into()),
+            TensorArg::from_raw_parts(rhs_sb_h, [scale_cols, 1].into(), [n, scale_cols].into()),
+            TensorArg::from_raw_parts(out_h.clone(), [n, 1].into(), [m, n].into()),
+            n,
+            k,
+        );
+    }
+    let bytes = client.read_one(out_h).unwrap();
+    let result = f32::from_bytes(&bytes);
+
+    let mut max_rel = 0.0f64;
+    let mut wrong = 0usize;
+    for i in 0..m {
+        for j in 0..n {
+            let mut sum = 0.0f32;
+            for l in 0..k {
+                let sa = lhs_sb[i * scale_cols + l / blk].to_f32();
+                let sb = rhs_sb[j * scale_cols + l / blk].to_f32();
+                sum += lhs_f[i * k + l] * sa * rhs_f[j * k + l] * sb;
+            }
+            let got = result[i * n + j];
+            let rel = ((got - sum).abs() / sum.abs().max(1.0)) as f64;
+            if rel > max_rel {
+                max_rel = rel;
+            }
+            if rel > 1e-3 {
+                wrong += 1;
+            }
+        }
+    }
+    println!("runtime: {:?}", R::name(&client));
+    println!("verify: shape {m}x{n}x{k}  random representable FP4 + random per-block scales");
+    println!(
+        "verify: {} ({wrong} wrong of {}, max_rel={max_rel:.2e})",
+        if wrong == 0 { "PASS" } else { "FAIL" },
+        m * n
+    );
+}
+
 fn run<R: Runtime>(device: &R::Device) {
     let client = R::client(device);
 
@@ -405,9 +534,15 @@ fn run<R: Runtime>(device: &R::Device) {
 
 fn main() {
     #[cfg(feature = "cuda")]
-    run::<cubecl::cuda::CudaRuntime>(&Default::default());
+    {
+        verify::<cubecl::cuda::CudaRuntime>(&Default::default());
+        run::<cubecl::cuda::CudaRuntime>(&Default::default());
+    }
     #[cfg(feature = "cpu")]
-    run::<cubecl::cpu::CpuRuntime>(&Default::default());
+    {
+        verify::<cubecl::cpu::CpuRuntime>(&Default::default());
+        run::<cubecl::cpu::CpuRuntime>(&Default::default());
+    }
     #[cfg(not(any(feature = "cuda", feature = "cpu")))]
     panic!("build with --features cuda (on a GPU) or --features cpu");
 }
