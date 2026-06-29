@@ -247,14 +247,11 @@ pub fn ldmatrix_call<D: Dialect>(
     let elem = output.elem();
     let width = 16 / output.elem().size();
     let is_transposed = if *transpose { "_trans" } else { "" };
-    // Blackwell FP4 (1-byte packed e2m1): the transposed operand uses shape m16n16,
-    // which yields 2 u32 regs/lane (vs m8n16's 1 reg/lane), so emit twice the
-    // register operands and read them as a flat u32 view of the fragment storage.
-    let reg_count = if elem.size() == 1 && *transpose {
-        *factor * 2
-    } else {
-        *factor
-    };
+    // Blackwell FP4 (1-byte packed e2m1): use the PLAIN m8n8.x{factor}.b16 ldmatrix
+    // over the bit-packed buffer (CUTLASS's SM75_U32x4_LDSM_N approach), NOT the
+    // format-converting b4x16_p64 variant which expands 4-bit to bytes. factor u32
+    // regs/lane in both transpose and non-transpose, read as a flat u32 view.
+    let reg_count = *factor;
     let regs = if elem.size() == 1 {
         comma_separated(
             (0..reg_count).map(|i| format!("reinterpret_cast<uint32*>(&{output}[0])[{i}]")),
@@ -277,9 +274,9 @@ pub fn ldmatrix_template<D: Dialect>(elem: Elem<D>, factor: u32, transpose: bool
     let width = 16 / elem.size();
     let arg_ty = Elem::<D>::U32;
 
-    // FP4 (packed e2m1) transposed loads use shape m16n16 = 2 u32 regs/lane.
+    // FP4 (packed e2m1) uses the plain m8n8.x{factor}.b16 ldmatrix (factor regs/lane).
     let is_fp4 = elem.size() == 1;
-    let reg_count = if is_fp4 && transpose { factor * 2 } else { factor };
+    let reg_count = factor;
 
     let args_regs = (0..reg_count).map(|i| format!("{arg_ty} &reg_{i}"));
     let arg_addr = ["void const *row_addr".to_string()];
@@ -298,15 +295,13 @@ pub fn ldmatrix_template<D: Dialect>(elem: Elem<D>, factor: u32, transpose: bool
     let is_transposed = if transpose { "_trans" } else { "" };
     let num = format!("x{factor}");
 
-    // FP4 uses Blackwell's format-converting load (dst .b8x16, src .b4x16_p64):
-    // m8n16 for the non-transposed operand, m16n16 for the transposed one
-    // (m8n16 does not permit .trans). f16 keeps the standard m8n8.b16 path.
+    // FP4 (packed e2m1) uses the plain m8n8.x{factor}.b16 ldmatrix over the bit-packed
+    // buffer (CUTLASS SM75_U32x?_LDSM_N), reinterpreting bytes as b16; the fragment is
+    // matched to mma.sync.mxf4's operand layout by a shared-memory swizzle on the caller
+    // side, not by a format-converting load. f16 keeps its m8n{width}.b16 path.
     let (shape, transposed_arg, ty) = if is_fp4 {
-        if transpose {
-            ("m16n16".to_string(), ".trans", "b8x16.b4x16_p64")
-        } else {
-            ("m8n16".to_string(), "", "b8x16.b4x16_p64")
-        }
+        let t = if transpose { ".trans" } else { "" };
+        ("m8n8".to_string(), t, "b16")
     } else {
         let t = if transpose { ".trans" } else { "" };
         (format!("m8n{width}"), t, "b16")
