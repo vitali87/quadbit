@@ -80,6 +80,50 @@ def build_and_run() -> None:
         _run([EXE, f"--m={sz}", f"--n={sz}", f"--k={sz}", "--iterations=20"], "/")
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1200, volumes={"/cache": cache})
+def dissect() -> None:
+    """SASS/resource dissection of the cached 79b binary: which staging path
+    (TMA / cp.async / ldmatrix), pipeline depth (shared mem), warp specialization,
+    and the OMMA-to-overhead instruction ratio that we are losing to."""
+    import re
+    import subprocess
+
+    if not __import__("os").path.exists(EXE):
+        print(">>> binary not built; run the bench entrypoint first", flush=True)
+        return
+
+    print("=== cuobjdump -res-usage (registers / shared mem per kernel) ===", flush=True)
+    ru = subprocess.run(["cuobjdump", "-res-usage", EXE], capture_output=True, text=True)
+    print(ru.stdout[-6000:], flush=True)
+
+    sass = subprocess.run(["cuobjdump", "-sass", EXE], capture_output=True, text=True).stdout
+    # split into per-function blocks; keep the one(s) with OMMA (the GEMM mainloop)
+    blocks = re.split(r"\n\s*Function : ", sass)
+    key = ["OMMA", "LDSM", "LDGSTS", "UTMALDG", "UBLKCP", "BAR", "DEPBAR", "ELECT",
+           "BMOV", "WARPSYNC", "LDS", "STS", "LDG", "STG"]
+    for blk in blocks:
+        if "OMMA" not in blk:
+            continue
+        name = blk.splitlines()[0][:90]
+        ops: dict[str, int] = {}
+        for line in blk.splitlines():
+            m = re.search(r"/\*[0-9a-f]+\*/\s+@?!?P?\d?\s*([A-Z][A-Z0-9_.]+)", line)
+            if m:
+                op = m.group(1).split(".")[0]
+                ops[op] = ops.get(op, 0) + 1
+        total = sum(ops.values())
+        print(f"\n=== GEMM function: {name} ===  (total SASS ~{total})", flush=True)
+        for k in key:
+            c = sum(v for o, v in ops.items() if o == k)
+            if c:
+                print(f"  {k:10} {c}", flush=True)
+        top = sorted(ops.items(), key=lambda kv: -kv[1])[:15]
+        print("  top opcodes: " + ", ".join(f"{o}:{c}" for o, c in top), flush=True)
+
+
 @app.local_entrypoint()
-def main() -> None:
-    build_and_run.remote()
+def main(mode: str = "bench") -> None:
+    if mode == "dissect":
+        dissect.remote()
+    else:
+        build_and_run.remote()
