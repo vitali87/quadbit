@@ -29,3 +29,23 @@ To compare two kernel variants fairly, time them **interleaved in one process** 
 ```bash
 uv run modal run harness/run_rust.py --bin matmul_fp4_bench
 ```
+
+## Instruction probes
+
+When a kernel idea hinges on whether ptxas accepts a specific instruction on `sm_120a`,
+a probe answers it in seconds (a tiny `.cu` compiled with `nvcc`, no Rust, no GPU), far
+cheaper than a full kernel build. Two are kept as evidence:
+
+- `harness/probe_ldmatrix.py` enumerates the FP4 `ldmatrix` shape/format/register
+  combinations and reports which assemble. It found the only accepted sub-byte forms are
+  the format-converting `m8n16`/`m16n16 .b8x16.b4x16_p64`, which expand 4-bit to bytes and
+  so cannot feed the packed `mxf4` MMA (see [kernels](kernels.md)).
+- `harness/probe_setmaxnreg.py` confirms `setmaxnreg` (warpgroup register reallocation)
+  assembles on `sm_120a` even though it cannot raise the per-thread cap of 255 and so does
+  not help here.
+
+`vendor/cubecl-cpp-0.10.0` is a patched copy of CubeCL's C++ codegen wired in via
+`[patch.crates-io]`. The patch makes the FP4 `ldmatrix` emit the Blackwell-correct
+format-converting instruction (it assembles and runs); it is kept as the substrate for the
+`matmul_fp4_ldm` microtest and is inert for the production kernels, which do not use
+`ldmatrix`.

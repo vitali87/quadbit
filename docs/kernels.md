@@ -28,10 +28,23 @@ Built bottom up, each rung a separate binary so they stay runnable and comparabl
 |--------|-----------|--------:|
 | `matmul_fp4_hello` | one `mma.sync` block-scaled FP4 MMA, m16 n8 k64 | PASS |
 | `matmul_fp4` | full matmul, one warp per 16x8 tile, K accumulation | ~82,500 |
-| `matmul_fp4_fed` | fed: shared staging, 2x8 warp tile, deep K, scale staging | ~280,000 |
+| `matmul_fp4_fed` | fed: shared staging, 2x8 warp tile, deep K, scale staging | ~292,000 |
 | `matmul_fp4_bench` | interleaved A/B benchmark harness (not a ladder rung) | n/a |
+| `matmul_fp4_ldm` | ldmatrix fragment-load microtest (negative result, see below) | FAIL |
+| `matmul_fp4_ws` | warp-specialized producer/consumer (negative result, see below) | ~228,000 |
 
-`matmul_fp4_fed` is the current best. It also keeps climbing with problem size as launch and tail quantization fade: about 280,000 GFLOP/s at 2048, around 400,000 at 4096 (interleaved measurement), and roughly 500,000 at 8192 on a clock-boosted run. That is about a quarter to a third of the card's estimated dense FP4 tensor-core peak.
+`matmul_fp4_fed` is the best, and it is at the hardware ceiling (see below). It keeps
+climbing with problem size as launch and tail quantization fade, then flattens:
+
+| size | `matmul_fp4_fed` GFLOP/s |
+|------|-------------------------:|
+| 2048 | 291,882 |
+| 4096 | 408,000 |
+| 8192 | 489,052 |
+| 16384 | 505,129 |
+
+The 8192 to 16384 step is only +3.3%, so the curve has asymptoted: **~505,000 GFLOP/s
+is the practical ceiling** for this hardware and framework.
 
 ## How the fed FP4 kernel works
 
@@ -45,13 +58,47 @@ The only route to the FP4 tensor cores in CubeCL is the low-level `cmma::MmaDefi
 
 ## What was tried and what the bottleneck is
 
-The fed FP4 kernel is **latency and ILP bound**, not occupancy bound. Findings, each measured:
+The fed FP4 kernel is **latency and ILP bound**, not occupancy bound. The constructive
+findings, each measured:
 
 - **Wider warp tiles win** up to the register limit. The 2x8 tile uses 255 registers per thread (the hardware maximum) with zero spills, giving the most independent accumulator chains per SM. Widening from 2x2 to 2x4 to 2x8 climbed roughly 160k, 230k, 253k.
 - **Higher per-thread register use beats more occupancy.** At 255 registers the kernel runs 2 blocks per SM, and that is faster than configurations with fewer registers and more resident blocks. This is the classic "better performance at lower occupancy" regime.
 - **Scale staging helped** because it removed memory-pipe global loads (96 to 62 in the SASS) that compete for a contended resource.
-- **The index-math hoist is neutral.** Precomputing fragment offsets cuts integer instructions but does not speed the kernel up, because the integer address arithmetic overlaps the OMMA latency for free. Integer issue is not the bottleneck.
-- **Software pipelining (cp.async double buffering) regresses.** The kernel is compute bound, so async copy adds barrier and small-transaction overhead with no memory latency left to hide.
-- **`ldmatrix` is blocked.** CubeCL 0.10 emits `ldmatrix.m8n16.b8` and a `.trans` variant for FP4 that ptxas (CUDA 12.8) rejects. The hand-managed `position_of_nth` path is the only working route to FP4 fragments in this toolchain.
 
-The remaining headroom sits behind the tensor core's intrinsic MMA latency. Breaking past it needs a structural change (a fixed `ldmatrix` path on a future CubeCL, or a warp-specialized design), not incremental tuning.
+## The ceiling is the register file (proven, not assumed)
+
+The kernel is latency/ILP bound: more independent accumulator chains in flight would
+hide more of the FP4 tensor-core (OMMA) latency. The wall on adding them is the SM
+register file, and it is a hardware boundary:
+
+- Registers are capped at **255 per thread** (architectural maximum). The 2x8 tile
+  already uses exactly 255 with zero spills, so a warp cannot hold more accumulators.
+- SM120 has **65536 registers per SM**. The baseline runs 2 blocks x 4 warps =
+  **8 warps x 255 = 65280**, saturating the file. There is no room for more compute warps.
+
+Both structural escapes were built and measured, and both fail:
+
+- **`ldmatrix` (`matmul_fp4_ldm`).** The only sub-byte `ldmatrix` that ptxas accepts on
+  `sm_120a` is the format-converting `m8n16`/`m16n16 .b8x16.b4x16_p64`. It **expands**
+  each 4-bit value into its own byte (the fragment dump shows `0x02020202` where packed
+  all-ones e2m1x2 should be `0x22222222`). CubeCL's `mma.sync.mxf4nvf4` wants packed
+  e2m1x2, so it reads the expanded bytes as packed pairs and every other K element is the
+  inserted zero, halving every output. A lane's fragment then holds only half of K;
+  loading the full operand expanded needs 2x the registers, fatal at the 255 ceiling. The
+  CubeCL codegen patch in `vendor/cubecl-cpp-0.10.0` makes the instruction assemble and run
+  (the original blocker is genuinely fixed), but the instruction is the wrong tool here.
+- **Warp specialization (`matmul_fp4_ws`).** Dedicating warps to staging so consumers spend
+  their whole budget on accumulators cannot help, because a specialized block (consumers at
+  255 + a producer warp) fits exactly **one** block per SM, giving at most ~7 compute warps
+  versus the baseline's 8. Measured: 228,000 vs 291,882 GFLOP/s at 2048 (~22% slower),
+  correct. `setmaxnreg` (warpgroup register reallocation) assembles on `sm_120a` but is
+  also capped at 255/thread and does not add a second block, so it changes nothing.
+
+The only way past a register-resident `mma.sync` accumulator is `tcgen05`/UMMA, which keeps
+accumulators in tensor memory instead of the register file. Consumer Blackwell **`sm_120`
+physically lacks it** (it is datacenter `sm_100` only). So ~505,000 GFLOP/s is the global
+maximum for FP4 matmul on this hardware via the available instruction path.
+
+Other measured negatives (kept for the record): the index-math hoist is neutral (integer
+address arithmetic overlaps OMMA latency for free), and software pipelining (cp.async double
+buffering) regresses because the kernel is compute bound and the loads are already hidden.
