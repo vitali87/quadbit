@@ -351,7 +351,7 @@ fn verify<R: Runtime>(device: &R::Device) {
         return;
     }
 
-    let (m, n, k) = (384usize, 384usize, 384usize);
+    let (m, n, k) = (512usize, 512usize, 512usize);
     let scale_cols = k / (MMA_K / SF); // scale blocks per row = k / 32
     let blk = MMA_K / SF; // k-elements per scale block = 32
 
