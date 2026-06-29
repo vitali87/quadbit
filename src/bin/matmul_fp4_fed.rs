@@ -1,0 +1,306 @@
+//! Properly-fed block-scaled FP4 (MXFP4) matmul on SM120. A block of 4 warps
+//! (2x2) owns a 64x32 output tile. Per k-step it stages a 64x64 tile of A and a
+//! 32x64 tile of B (packed `e2m1x2`, kept in their native vector layout) into
+//! shared memory, then each warp reads its 2 A-fragments and 2 B-fragments from
+//! shared memory and issues 4 `mma.sync...kind::mxf4nvf4.block_scale` MMAs
+//! (m16 n8 k64) into a 2x2 grid of f32 accumulators, feeding them back in as C
+//! so products accumulate across K. Shared staging + multi-warp occupancy +
+//! fragment reuse keep the FP4 tensor cores fed; register/scale plumbing is the
+//! hand-managed `position_of_nth`/`scales_index` path (the only FP4 route).
+//! Per-block UE8M0 scales are read straight from global (they are tiny). All
+//! ones FP4 with unit (2^0) scales, so each output must equal K.
+
+use std::time::Duration;
+
+use cubecl::features::ScaledMmaConfig;
+use cubecl::future;
+use cubecl::ir::MatrixIdent;
+use cubecl::prelude::*;
+use cubecl::{e2m1x2, ue8m0};
+
+const MMA_M: usize = 16; // MMA tile rows (m)
+const MMA_N: usize = 8; // MMA tile cols (n)
+const MMA_K: usize = 64; // MMA tile depth (k), staged whole per step
+const SF: usize = 2; // scales_factor: scale blocks of 32 per MMA_K
+const WARPS_M: usize = 2; // warps across the block in m
+const WARPS_N: usize = 2; // warps across the block in n
+const WM: usize = 2; // MMA fragments per warp in m
+const WN: usize = 2; // MMA fragments per warp in n
+const BM: usize = WARPS_M * WM * MMA_M; // 64 block output rows
+const BN: usize = WARPS_N * WN * MMA_N; // 32 block output cols
+const FV: usize = 8; // FP4 values per packed vector (e2m1x2: NA=4 * pack=2)
+const VPR: usize = MMA_K / FV; // staged vectors per tile row = 8
+const N_THREADS: u32 = (WARPS_M * WARPS_N * 32) as u32; // 128
+
+#[cube(launch_unchecked)]
+fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Size, NC: Size>(
+    a: &Tensor<Vector<A, NA>>,
+    b: &Tensor<Vector<B, NB>>,
+    c: &Tensor<Vector<CD, NC>>,
+    scales_a: &Tensor<S>,
+    scales_b: &Tensor<S>,
+    out: &mut Tensor<Vector<CD, NC>>,
+    #[comptime] full_n: usize,
+    #[comptime] full_k: usize,
+) {
+    let a_pack = A::packing_factor();
+    let b_pack = B::packing_factor();
+    let def = cmma::MmaDefinition::<A, B, CD>::new_scaled::<S>(MMA_M, MMA_N, MMA_K, SF);
+
+    let tid = UNIT_POS_X as usize;
+    let lane_id = UNIT_POS_PLANE;
+    let warp = tid / 32;
+    let warp_m = warp / WARPS_N;
+    let warp_n = warp % WARPS_N;
+
+    let block_row = CUBE_POS_Y as usize * BM;
+    let block_col = CUBE_POS_X as usize * BN;
+
+    let k_steps = comptime!(full_k / MMA_K);
+    let scale_blocks_per_row = comptime!(full_k / (MMA_K / SF)); // full_k / 32
+    let global_vpr = comptime!(full_k / FV); // global packed vectors per row
+
+    let elem_count_a = def.elems_per_lane(MatrixIdent::A);
+    let vector_size_a = def.vector_size(MatrixIdent::A);
+    let vector_count_a = comptime!(elem_count_a / vector_size_a);
+    let elem_count_b = def.elems_per_lane(MatrixIdent::B);
+    let vector_size_b = def.vector_size(MatrixIdent::B);
+    let vector_count_b = comptime!(elem_count_b / vector_size_b);
+    let elem_count_c = def.elems_per_lane(MatrixIdent::Accumulator);
+    let vector_size_c = def.vector_size(MatrixIdent::Accumulator);
+    let vector_count_c = comptime!(elem_count_c / vector_size_c);
+
+    let scales_count = def.scales_count();
+    let size!(NS) = def.scales_vector_size();
+
+    let mut a_tile = SharedMemory::<Vector<A, NA>>::new(BM * VPR);
+    let mut b_tile = SharedMemory::<Vector<B, NB>>::new(BN * VPR);
+
+    // this warp's fragment offsets within the block tile
+    let a_row0 = (warp_m * WM) * MMA_M;
+    let a_row1 = (warp_m * WM + 1) * MMA_M;
+    let b_col0 = (warp_n * WN) * MMA_N;
+    let b_col1 = (warp_n * WN + 1) * MMA_N;
+
+    let scales_idx_a = def.scales_index(lane_id, MatrixIdent::A) as usize;
+    let scales_idx_b = def.scales_index(lane_id, MatrixIdent::B) as usize;
+
+    // 2x2 grid of accumulators, zero-initialised from C, live across all k-steps
+    let mut acc00 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc01 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc10 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc11 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    #[unroll]
+    for i in 0..vector_count_c {
+        let n_elem = i * vector_size_c;
+        let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::Accumulator);
+        let r = row as usize;
+        let cc = col as usize;
+        acc00[i] = c[((block_row + a_row0 + r) * full_n + block_col + b_col0 + cc) / c.vector_size()];
+        acc01[i] = c[((block_row + a_row0 + r) * full_n + block_col + b_col1 + cc) / c.vector_size()];
+        acc10[i] = c[((block_row + a_row1 + r) * full_n + block_col + b_col0 + cc) / c.vector_size()];
+        acc11[i] = c[((block_row + a_row1 + r) * full_n + block_col + b_col1 + cc) / c.vector_size()];
+    }
+
+    let mut a0 = Array::<Vector<A, NA>>::new(vector_count_a);
+    let mut a1 = Array::<Vector<A, NA>>::new(vector_count_a);
+    let mut b0 = Array::<Vector<B, NB>>::new(vector_count_b);
+    let mut b1 = Array::<Vector<B, NB>>::new(vector_count_b);
+    let mut sa0 = Vector::<S, NS>::empty();
+    let mut sa1 = Vector::<S, NS>::empty();
+    let mut sb0 = Vector::<S, NS>::empty();
+    let mut sb1 = Vector::<S, NS>::empty();
+
+    let n_threads = N_THREADS as usize;
+    for step in 0..k_steps {
+        let k_vec = step * VPR; // k offset in packed-vector units
+        let scale_base = step * SF; // k offset in scale-block units
+
+        // cooperative stage: 128 threads fill the A-tile (BM*VPR vectors)
+        #[unroll]
+        for i in 0..(BM * VPR) / n_threads {
+            let s = tid + i * n_threads;
+            let r = s / VPR;
+            let vc = s % VPR;
+            a_tile[s] = a[(block_row + r) * global_vpr + k_vec + vc];
+        }
+        // and the B-tile (BN*VPR vectors); B is stored [n, k]
+        #[unroll]
+        for i in 0..(BN * VPR) / n_threads {
+            let s = tid + i * n_threads;
+            let r = s / VPR;
+            let vc = s % VPR;
+            b_tile[s] = b[(block_col + r) * global_vpr + k_vec + vc];
+        }
+        sync_cube();
+
+        // load this warp's 2 A-fragments from shared (rows), stride MMA_K
+        #[unroll]
+        for i in 0..vector_count_a {
+            let n_elem = i * vector_size_a * a_pack;
+            let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::A);
+            let div = a.vector_size() * a_pack;
+            a0[i] = a_tile[((a_row0 + row as usize) * MMA_K + col as usize) / div];
+            a1[i] = a_tile[((a_row1 + row as usize) * MMA_K + col as usize) / div];
+        }
+        #[unroll]
+        for i in 0..scales_count {
+            sa0[i] = scales_a[(block_row + a_row0 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
+            sa1[i] = scales_a[(block_row + a_row1 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
+        }
+
+        // load this warp's 2 B-fragments from shared (cols), stride MMA_K
+        #[unroll]
+        for i in 0..vector_count_b {
+            let n_elem = i * vector_size_b * b_pack;
+            let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::B);
+            let div = b.vector_size() * b_pack;
+            b0[i] = b_tile[((b_col0 + col as usize) * MMA_K + row as usize) / div];
+            b1[i] = b_tile[((b_col1 + col as usize) * MMA_K + row as usize) / div];
+        }
+        #[unroll]
+        for i in 0..scales_count {
+            sb0[i] = scales_b[(block_col + b_col0 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+            sb1[i] = scales_b[(block_col + b_col1 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+        }
+
+        // 4 MMAs: each loaded fragment feeds two accumulates
+        let d00 = def.execute_scaled(&a0, &b0, &acc00, sa0, sb0);
+        let d01 = def.execute_scaled(&a0, &b1, &acc01, sa0, sb1);
+        let d10 = def.execute_scaled(&a1, &b0, &acc10, sa1, sb0);
+        let d11 = def.execute_scaled(&a1, &b1, &acc11, sa1, sb1);
+        #[unroll]
+        for i in 0..vector_count_c {
+            acc00[i] = d00[i];
+            acc01[i] = d01[i];
+            acc10[i] = d10[i];
+            acc11[i] = d11[i];
+        }
+        sync_cube();
+    }
+
+    // store the 2x2 accumulator grid to global out
+    #[unroll]
+    for i in 0..vector_count_c {
+        let n_elem = i * vector_size_c;
+        let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::Accumulator);
+        let r = row as usize;
+        let cc = col as usize;
+        out[((block_row + a_row0 + r) * full_n + block_col + b_col0 + cc) / out.vector_size()] = acc00[i];
+        out[((block_row + a_row0 + r) * full_n + block_col + b_col1 + cc) / out.vector_size()] = acc01[i];
+        out[((block_row + a_row1 + r) * full_n + block_col + b_col0 + cc) / out.vector_size()] = acc10[i];
+        out[((block_row + a_row1 + r) * full_n + block_col + b_col1 + cc) / out.vector_size()] = acc11[i];
+    }
+}
+
+fn run<R: Runtime>(device: &R::Device) {
+    let client = R::client(device);
+
+    let (m, n, k) = (2048usize, 2048usize, 2048usize);
+
+    type AB = e2m1x2;
+    type S = ue8m0;
+    let ab_elem = AB::cube_type();
+    let ab_vector_size = 32 / ab_elem.size_bits();
+
+    let supported = client.features().matmul.scaled_mma.contains(&ScaledMmaConfig {
+        a_type: ab_elem,
+        b_type: ab_elem,
+        cd_type: f32::cube_type(),
+        scales_type: S::cube_type(),
+        m: MMA_M as u32,
+        n: MMA_N as u32,
+        k: MMA_K as u32,
+        scales_factor: SF as u32,
+    });
+    if !supported {
+        println!("runtime: {:?}", R::name(&client));
+        println!("scaled FP4 MMA NOT supported on this device; skipping");
+        return;
+    }
+
+    let scale_cols = k / (MMA_K / SF); // scale blocks per row = k / 32
+
+    let lhs = e2m1x2::from_f32_slice(&vec![1.0f32; m * k]);
+    let rhs = e2m1x2::from_f32_slice(&vec![1.0f32; n * k]);
+    let unit = ue8m0::from_bits(127);
+    let lhs_scales: Vec<S> = vec![unit; m * scale_cols];
+    let rhs_scales: Vec<S> = vec![unit; n * scale_cols];
+    let zeros = vec![0.0f32; m * n];
+
+    let lhs_h = client.create_from_slice(AB::as_bytes(&lhs));
+    let rhs_h = client.create_from_slice(AB::as_bytes(&rhs));
+    let lhs_scales_h = client.create_from_slice(S::as_bytes(&lhs_scales));
+    let rhs_scales_h = client.create_from_slice(S::as_bytes(&rhs_scales));
+    let c_h = client.create_from_slice(f32::as_bytes(&zeros));
+    let out_h = client.empty(m * n * core::mem::size_of::<f32>());
+
+    let grid_x = (n / BN) as u32;
+    let grid_y = (m / BM) as u32;
+
+    let launch = |out_buf: cubecl::server::Handle| unsafe {
+        matmul_fp4_fed::launch_unchecked::<AB, AB, f32, S, R>(
+            &client,
+            CubeCount::Static(grid_x, grid_y, 1),
+            CubeDim::new_1d(N_THREADS),
+            ab_vector_size,
+            ab_vector_size,
+            2,
+            TensorArg::from_raw_parts(lhs_h.clone(), [k / 2, 1].into(), [m, k / 2].into()),
+            TensorArg::from_raw_parts(rhs_h.clone(), [k / 2, 1].into(), [n, k / 2].into()),
+            TensorArg::from_raw_parts(c_h.clone(), [n, 1].into(), [m, n].into()),
+            TensorArg::from_raw_parts(lhs_scales_h.clone(), [scale_cols, 1].into(), [m, scale_cols].into()),
+            TensorArg::from_raw_parts(rhs_scales_h.clone(), [scale_cols, 1].into(), [n, scale_cols].into()),
+            TensorArg::from_raw_parts(out_buf, [n, 1].into(), [m, n].into()),
+            n,
+            k,
+        );
+    };
+
+    for _ in 0..5 {
+        launch(out_h.clone());
+    }
+    let _ = future::block_on(client.sync());
+
+    let mut best = Duration::MAX;
+    for _ in 0..20 {
+        let (_, profile) = client
+            .profile(|| launch(out_h.clone()), "matmul_fp4_fed")
+            .unwrap();
+        let elapsed = future::block_on(profile.resolve()).duration();
+        if elapsed < best {
+            best = elapsed;
+        }
+    }
+
+    let bytes = client.read_one(out_h).unwrap();
+    let result = f32::from_bytes(&bytes);
+    let expected = k as f32;
+    let mut wrong = 0;
+    for v in result.iter() {
+        if (*v - expected).abs() > 0.03 * expected {
+            wrong += 1;
+        }
+    }
+
+    let secs = best.as_secs_f64();
+    let gflops = 2.0 * (m as f64) * (n as f64) * (k as f64) / secs / 1e9;
+    println!("runtime: {:?}", R::name(&client));
+    println!("shape: {m}x{n}x{k}");
+    println!("out[0]: {}  (expected {expected})", result[0]);
+    println!("best: {:.3} ms   {gflops:.1} GFLOP/s", secs * 1e3);
+    println!(
+        "correctness: {} ({wrong} wrong of {})",
+        if wrong == 0 { "PASS" } else { "FAIL" },
+        m * n
+    );
+}
+
+fn main() {
+    #[cfg(feature = "cuda")]
+    run::<cubecl::cuda::CudaRuntime>(&Default::default());
+    #[cfg(feature = "cpu")]
+    run::<cubecl::cpu::CpuRuntime>(&Default::default());
+    #[cfg(not(any(feature = "cuda", feature = "cpu")))]
+    panic!("build with --features cuda (on a GPU) or --features cpu");
+}
