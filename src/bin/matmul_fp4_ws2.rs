@@ -12,10 +12,27 @@ use std::time::Duration;
 
 use cubecl::features::ScaledMmaConfig;
 use cubecl::future;
-use cubecl::ir::MatrixIdent;
+use cubecl::ir::{MatrixIdent, Scope, Synchronization};
 use cubecl::prelude::barrier::Barrier;
 use cubecl::prelude::*;
 use cubecl::{e2m1x2, ue8m0};
+
+// Warpgroup register reallocation intrinsics (custom IR op wired through the
+// vendored cubecl-ir/opt/cpp). Producer warp releases registers; consumers acquire.
+pub fn setmaxnreg_dec() {}
+pub mod setmaxnreg_dec {
+    use super::*;
+    pub fn expand(scope: &mut Scope) {
+        scope.register(Synchronization::SetMaxNRegDec);
+    }
+}
+pub fn setmaxnreg_inc() {}
+pub mod setmaxnreg_inc {
+    use super::*;
+    pub fn expand(scope: &mut Scope) {
+        scope.register(Synchronization::SetMaxNRegInc);
+    }
+}
 
 const MMA_M: usize = 16;
 const MMA_N: usize = 8;
@@ -68,7 +85,8 @@ fn matmul_fp4_ws2<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     let mut b_tile = SharedMemory::<B>::new_aligned(STAGES * B_STAGE, 128usize);
 
     if warp >= CONSUMER_WARPS {
-        // ---- producer warp: TMA fill the ring; only the elected lane acts ----
+        // ---- producer warp: release registers, then TMA-fill the ring ----
+        setmaxnreg_dec();
         if lane_id == 0 {
             // prologue: fill both stages (or fewer if k_steps < STAGES)
             let mut a0 = a_tile.slice_mut(0, A_STAGE);
@@ -102,7 +120,8 @@ fn matmul_fp4_ws2<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
             }
         }
     } else {
-        // ---- consumer warps: ldmatrix + mma over the 2x8 tile ----
+        // ---- consumer warps: acquire registers, then ldmatrix + mma ----
+        setmaxnreg_inc();
         let warp_m = warp / WARPS_N;
         let warp_n = warp % WARPS_N;
         let a_row0 = (warp_m * WM) * MMA_M;

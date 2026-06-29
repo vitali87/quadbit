@@ -18,3 +18,5 @@ half = "2.5"
 # (m8n16 / m16n16.trans with .b8x16.b4x16_p64) instead of the rejected plain .b8.
 [patch.crates-io]
 cubecl-cpp = { path = "vendor/cubecl-cpp-0.10.0" }
+cubecl-ir = { path = "vendor/cubecl-ir-0.10.0" }
+cubecl-opt = { path = "vendor/cubecl-opt-0.10.0" }

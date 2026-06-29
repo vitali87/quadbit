@@ -427,6 +427,12 @@ impl<D: Dialect> CppCompiler<D> {
                     self.flags.inst_tma = true;
                     instructions.push(Instruction::ProxyAsyncToSharedFence)
                 }
+                gpu::Synchronization::SetMaxNRegDec => {
+                    instructions.push(Instruction::SetMaxNRegDec)
+                }
+                gpu::Synchronization::SetMaxNRegInc => {
+                    instructions.push(Instruction::SetMaxNRegInc)
+                }
             },
             gpu::Operation::Plane(op) => {
                 self.flags.indexes.plane_dim_checked = true;

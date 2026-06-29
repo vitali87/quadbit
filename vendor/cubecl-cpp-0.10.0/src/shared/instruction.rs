@@ -210,6 +210,8 @@ pub enum Instruction<D: Dialect> {
     SyncWarp,
     ThreadFence,
     ProxyAsyncToSharedFence,
+    SetMaxNRegDec,
+    SetMaxNRegInc,
     BulkCommitGroup,
     BulkWaitGroup {
         max_pending: u32,
@@ -700,6 +702,15 @@ for ({i_ty} {i} = {start}; {i} {cmp} {end}; {increment}) {{
                     f,
                     "cuda::device::experimental::fence_proxy_async_shared_cta();"
                 )
+            }
+            // Warpgroup register reallocation (Hopper/Blackwell). Producer warp releases
+            // registers to the pool so consumer warps / more blocks can use them. Counts
+            // are multiples of 8 in [24,256]; tuned here for the warp-spec FP4 matmul.
+            Instruction::SetMaxNRegDec => {
+                writeln!(f, "asm volatile(\"setmaxnreg.dec.sync.aligned.u32 40;\");")
+            }
+            Instruction::SetMaxNRegInc => {
+                writeln!(f, "asm volatile(\"setmaxnreg.inc.sync.aligned.u32 232;\");")
             }
             Instruction::BulkCommitGroup => writeln!(
                 f,
