@@ -81,6 +81,12 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     let mut a_tile = SharedMemory::<Vector<A, NA>>::new(BM * VPR);
     let mut b_tile = SharedMemory::<Vector<B, NB>>::new(BN * VPR);
 
+    // per-block UE8M0 scales staged in shared once per step (instead of re-loaded
+    // from global every k-sub-step). bps = scale blocks per row covered by one BK.
+    let bps = comptime!(BK / (MMA_K / SF));
+    let mut sa_tile = SharedMemory::<S>::new(BM * bps);
+    let mut sb_tile = SharedMemory::<S>::new(BN * bps);
+
     // this warp's fragment offsets within the block tile
     let a_row0 = (warp_m * WM) * MMA_M;
     let a_row1 = (warp_m * WM + 1) * MMA_M;
@@ -181,13 +187,23 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
             let vc = s % VPR;
             b_tile[s] = b[(block_col + r) * global_vpr + k_vec + vc];
         }
+        // stage this step's scale blocks into shared (A: BM*bps, B: BN*bps)
+        #[unroll]
+        for i in 0..(BM * bps) / n_threads {
+            let s = tid + i * n_threads;
+            sa_tile[s] = scales_a[(block_row + s / bps) * scale_blocks_per_row + step * bps + s % bps];
+        }
+        #[unroll]
+        for i in 0..(BN * bps) / n_threads {
+            let s = tid + i * n_threads;
+            sb_tile[s] = scales_b[(block_col + s / bps) * scale_blocks_per_row + step * bps + s % bps];
+        }
         sync_cube();
 
         // walk the staged tile MMA-K at a time, no barrier between sub-steps
         #[unroll]
         for ks in 0..KSUB {
             let k_off = ks * MMA_K; // fp4 column offset within the staged tile
-            let scale_base = (step * KSUB + ks) * SF; // k offset in scale-block units
 
             // load this warp's 2 A-fragments from shared (rows), stride BK
             #[unroll]
@@ -198,10 +214,11 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
                 a0[i] = a_tile[((a_row0 + row as usize) * BK + k_off + col as usize) / div];
                 a1[i] = a_tile[((a_row1 + row as usize) * BK + k_off + col as usize) / div];
             }
+            let sk = ks * SF; // local scale-block offset within this step's staged scales
             #[unroll]
             for i in 0..scales_count {
-                sa0[i] = scales_a[(block_row + a_row0 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
-                sa1[i] = scales_a[(block_row + a_row1 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
+                sa0[i] = sa_tile[(a_row0 + scales_idx_a) * bps + sk + i];
+                sa1[i] = sa_tile[(a_row1 + scales_idx_a) * bps + sk + i];
             }
 
             // load this warp's 8 B-fragments from shared (cols), stride BK
@@ -221,14 +238,14 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
             }
             #[unroll]
             for i in 0..scales_count {
-                sb0[i] = scales_b[(block_col + b_col0 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb1[i] = scales_b[(block_col + b_col1 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb2[i] = scales_b[(block_col + b_col2 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb3[i] = scales_b[(block_col + b_col3 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb4[i] = scales_b[(block_col + b_col4 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb5[i] = scales_b[(block_col + b_col5 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb6[i] = scales_b[(block_col + b_col6 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-                sb7[i] = scales_b[(block_col + b_col7 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb0[i] = sb_tile[(b_col0 + scales_idx_b) * bps + sk + i];
+                sb1[i] = sb_tile[(b_col1 + scales_idx_b) * bps + sk + i];
+                sb2[i] = sb_tile[(b_col2 + scales_idx_b) * bps + sk + i];
+                sb3[i] = sb_tile[(b_col3 + scales_idx_b) * bps + sk + i];
+                sb4[i] = sb_tile[(b_col4 + scales_idx_b) * bps + sk + i];
+                sb5[i] = sb_tile[(b_col5 + scales_idx_b) * bps + sk + i];
+                sb6[i] = sb_tile[(b_col6 + scales_idx_b) * bps + sk + i];
+                sb7[i] = sb_tile[(b_col7 + scales_idx_b) * bps + sk + i];
             }
 
             // 16 MMAs: each A-fragment feeds 8 accumulates, each B-fragment feeds 2
