@@ -47,13 +47,15 @@ def _run(cmd: list[str], cwd: str = "/root/build") -> int:
         "CARGO_HOME": "/cache/cargo",
         "CARGO_TARGET_DIR": "/cache/target",
     }
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
-    out = r.stdout + r.stderr
-    if len(out) > 16000:
-        print(out[:8000] + "\n...[trimmed]...\n" + out[-8000:], flush=True)
-    else:
-        print(out, flush=True)
-    return r.returncode
+    # stream output live so build progress and runtime hangs are visible
+    # incrementally (capture-then-print hides everything on a client timeout)
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    proc.wait()
+    return proc.returncode
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=1800, volumes={"/cache": cache})
