@@ -447,9 +447,15 @@ fn verify<R: Runtime>(device: &R::Device) {
 }
 
 fn run<R: Runtime>(device: &R::Device) {
+    for sz in [2048usize, 4096, 8192, 16384] {
+        run_size::<R>(device, sz);
+    }
+}
+
+fn run_size<R: Runtime>(device: &R::Device, sz: usize) {
     let client = R::client(device);
 
-    let (m, n, k) = (2048usize, 2048usize, 2048usize);
+    let (m, n, k) = (sz, sz, sz);
 
     type AB = e2m1x2;
     type S = ue8m0;
