@@ -47,7 +47,11 @@ def _run(cmd: list[str], cwd: str = "/root/build") -> int:
         "CARGO_TARGET_DIR": "/cache/target",
     }
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
-    print((r.stdout + r.stderr)[-8000:], flush=True)
+    out = r.stdout + r.stderr
+    if len(out) > 16000:
+        print(out[:8000] + "\n...[trimmed]...\n" + out[-8000:], flush=True)
+    else:
+        print(out, flush=True)
     return r.returncode
 
 
