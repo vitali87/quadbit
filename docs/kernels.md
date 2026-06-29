@@ -32,6 +32,8 @@ Built bottom up, each rung a separate binary so they stay runnable and comparabl
 | `matmul_fp4_bench` | interleaved A/B benchmark harness (not a ladder rung) | n/a |
 | `matmul_fp4_ldm` | ldmatrix fragment-load microtest (negative result, see below) | FAIL |
 | `matmul_fp4_ws` | warp-specialized producer/consumer (negative result, see below) | ~228,000 |
+| `matmul_fp4_tile` | square 128x128 block-tile A/B (negative result, see below) | 0.87x |
+| `matmul_fp4_db` | double-buffer prefetch A/B (negative result, see below) | 0.78x |
 
 `matmul_fp4_fed` is the best, and it is at the hardware ceiling (see below). It keeps
 climbing with problem size as launch and tail quantization fade, then flattens:
@@ -93,6 +95,25 @@ Both structural escapes were built and measured, and both fail:
   versus the baseline's 8. Measured: 228,000 vs 291,882 GFLOP/s at 2048 (~22% slower),
   correct. `setmaxnreg` (warpgroup register reallocation) assembles on `sm_120a` but is
   also capped at 255/thread and does not add a second block, so it changes nothing.
+
+Two more staging-side levers were built and measured interleaved (same clock), and both
+regress, which pins down *why* the baseline config is optimal:
+
+- **Square block tile (`matmul_fp4_tile`).** An 8-warp 128x128 block has higher staging
+  arithmetic intensity (0.50 vs the 4-warp 64x128's 0.33, so ~33% fewer staging loads per
+  output) yet runs **0.87x** (351,821 vs 403,200 GFLOP/s at 4096, both PASS). The 8-warp
+  block fits only **one** block per SM, and that is the loss: with 2 resident blocks the
+  scheduler keeps the tensor cores fed from one block while the other stalls at `sync_cube`,
+  and a single big block has no second block to overlap its barrier. The win from 2 blocks
+  is **barrier overlap, not occupancy**, and staging is not the wall.
+- **Double-buffer prefetch (`matmul_fp4_db`).** Staging the next k-tile into a second shared
+  buffer during the current compute (plain loads, halving the barriers per step) runs
+  **0.78x** (324,156 vs 413,661, both PASS). The prefetch loads are issued after the compute
+  loop, so the barrier waits on their full global-load latency with nothing behind it to
+  hide it. Hiding it would need the loads issued early, which means either holding the whole
+  next tile in registers (impossible at the 255 ceiling) or `cp.async` (the async pipeline
+  that already regresses harder, 0.54x). Every form of prefetch loses because the 2-block
+  barrier overlap already hides the loads.
 
 The only way past a register-resident `mma.sync` accumulator is `tcgen05`/UMMA, which keeps
 accumulators in tensor memory instead of the register file. Consumer Blackwell **`sm_120`
