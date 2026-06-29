@@ -1,17 +1,17 @@
 //! Properly-fed block-scaled FP4 (MXFP4) matmul on SM120. A block of 4 warps
-//! (2x2) owns a 64x64 output tile. Per block step it stages a 64x256 tile of A
-//! and a 64x256 tile of B (packed `e2m1x2`, kept in their native vector layout)
+//! (2x2) owns a 64x128 output tile. Per block step it stages a 64x128 tile of A
+//! and a 128x128 tile of B (packed `e2m1x2`, kept in their native vector layout)
 //! into shared memory, then walks the staged tile 64 columns (one MMA-K) at a
 //! time with no barrier between sub-steps; each sub-step every warp reads its 2
-//! A-fragments and 4 B-fragments from shared and issues 8
-//! `mma.sync...kind::mxf4nvf4.block_scale` MMAs (m16 n8 k64) into a 2x4 grid of
+//! A-fragments and 8 B-fragments from shared and issues 16
+//! `mma.sync...kind::mxf4nvf4.block_scale` MMAs (m16 n8 k64) into a 2x8 grid of
 //! f32 accumulators, feeding them back in as C so products accumulate across K.
-//! Staging 4 MMA-K deep amortises the cooperative load and the `sync_cube`
-//! barriers 4x. Widening the warp tile in n (each A-fragment is reused across 4
-//! B-fragments) exploits the small n=8 MMA dimension cheaply.
-//! Register/scale plumbing is the hand-managed `position_of_nth`/`scales_index`
-//! path (the only FP4 route); per-block UE8M0 scales are read straight from
-//! global. All-ones FP4 with unit (2^0) scales, so each output must equal K.
+//! The wide 2x8 warp tile gives 16 independent accumulator chains, the ILP that
+//! hides FP4 tensor-core (OMMA) latency (this kernel is latency/ILP-bound, not
+//! occupancy-bound). Register/scale plumbing is the hand-managed
+//! `position_of_nth`/`scales_index` path (the only FP4 route); per-block UE8M0
+//! scales are read straight from global. All-ones FP4 with unit (2^0) scales, so
+//! each output must equal K.
 
 use std::time::Duration;
 
@@ -28,9 +28,9 @@ const SF: usize = 2; // scales_factor: scale blocks of 32 per MMA_K
 const WARPS_M: usize = 2; // warps across the block in m
 const WARPS_N: usize = 2; // warps across the block in n
 const WM: usize = 2; // MMA fragments per warp in m
-const WN: usize = 4; // MMA fragments per warp in n
+const WN: usize = 8; // MMA fragments per warp in n
 const BM: usize = WARPS_M * WM * MMA_M; // 64 block output rows
-const BN: usize = WARPS_N * WN * MMA_N; // 64 block output cols
+const BN: usize = WARPS_N * WN * MMA_N; // 128 block output cols
 const BK: usize = 128; // k staged per block step (2 MMA-K deep)
 const KSUB: usize = BK / MMA_K; // MMA-K sub-steps inside one staged tile
 const FV: usize = 8; // FP4 values per packed vector (e2m1x2: NA=4 * pack=2)
@@ -88,19 +88,31 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     let b_col1 = (warp_n * WN + 1) * MMA_N;
     let b_col2 = (warp_n * WN + 2) * MMA_N;
     let b_col3 = (warp_n * WN + 3) * MMA_N;
+    let b_col4 = (warp_n * WN + 4) * MMA_N;
+    let b_col5 = (warp_n * WN + 5) * MMA_N;
+    let b_col6 = (warp_n * WN + 6) * MMA_N;
+    let b_col7 = (warp_n * WN + 7) * MMA_N;
 
     let scales_idx_a = def.scales_index(lane_id, MatrixIdent::A) as usize;
     let scales_idx_b = def.scales_index(lane_id, MatrixIdent::B) as usize;
 
-    // 2x4 grid of accumulators, zero-initialised from C, live across all k-steps
+    // 2x8 grid of accumulators, zero-initialised from C, live across all k-steps
     let mut acc00 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc01 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc02 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc03 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc04 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc05 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc06 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc07 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc10 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc11 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc12 = Array::<Vector<CD, NC>>::new(vector_count_c);
     let mut acc13 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc14 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc15 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc16 = Array::<Vector<CD, NC>>::new(vector_count_c);
+    let mut acc17 = Array::<Vector<CD, NC>>::new(vector_count_c);
     #[unroll]
     for i in 0..vector_count_c {
         let n_elem = i * vector_size_c;
@@ -114,10 +126,18 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
         acc01[i] = c[(row0 + block_col + b_col1 + cc) / vs];
         acc02[i] = c[(row0 + block_col + b_col2 + cc) / vs];
         acc03[i] = c[(row0 + block_col + b_col3 + cc) / vs];
+        acc04[i] = c[(row0 + block_col + b_col4 + cc) / vs];
+        acc05[i] = c[(row0 + block_col + b_col5 + cc) / vs];
+        acc06[i] = c[(row0 + block_col + b_col6 + cc) / vs];
+        acc07[i] = c[(row0 + block_col + b_col7 + cc) / vs];
         acc10[i] = c[(row1 + block_col + b_col0 + cc) / vs];
         acc11[i] = c[(row1 + block_col + b_col1 + cc) / vs];
         acc12[i] = c[(row1 + block_col + b_col2 + cc) / vs];
         acc13[i] = c[(row1 + block_col + b_col3 + cc) / vs];
+        acc14[i] = c[(row1 + block_col + b_col4 + cc) / vs];
+        acc15[i] = c[(row1 + block_col + b_col5 + cc) / vs];
+        acc16[i] = c[(row1 + block_col + b_col6 + cc) / vs];
+        acc17[i] = c[(row1 + block_col + b_col7 + cc) / vs];
     }
 
     let mut a0 = Array::<Vector<A, NA>>::new(vector_count_a);
@@ -126,12 +146,20 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     let mut b1 = Array::<Vector<B, NB>>::new(vector_count_b);
     let mut b2 = Array::<Vector<B, NB>>::new(vector_count_b);
     let mut b3 = Array::<Vector<B, NB>>::new(vector_count_b);
+    let mut b4 = Array::<Vector<B, NB>>::new(vector_count_b);
+    let mut b5 = Array::<Vector<B, NB>>::new(vector_count_b);
+    let mut b6 = Array::<Vector<B, NB>>::new(vector_count_b);
+    let mut b7 = Array::<Vector<B, NB>>::new(vector_count_b);
     let mut sa0 = Vector::<S, NS>::empty();
     let mut sa1 = Vector::<S, NS>::empty();
     let mut sb0 = Vector::<S, NS>::empty();
     let mut sb1 = Vector::<S, NS>::empty();
     let mut sb2 = Vector::<S, NS>::empty();
     let mut sb3 = Vector::<S, NS>::empty();
+    let mut sb4 = Vector::<S, NS>::empty();
+    let mut sb5 = Vector::<S, NS>::empty();
+    let mut sb6 = Vector::<S, NS>::empty();
+    let mut sb7 = Vector::<S, NS>::empty();
 
     let n_threads = N_THREADS as usize;
     for step in 0..k_steps {
@@ -176,7 +204,7 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
                 sa1[i] = scales_a[(block_row + a_row1 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
             }
 
-            // load this warp's 4 B-fragments from shared (cols), stride BK
+            // load this warp's 8 B-fragments from shared (cols), stride BK
             #[unroll]
             for i in 0..vector_count_b {
                 let n_elem = i * vector_size_b * b_pack;
@@ -186,6 +214,10 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
                 b1[i] = b_tile[((b_col1 + col as usize) * BK + k_off + row as usize) / div];
                 b2[i] = b_tile[((b_col2 + col as usize) * BK + k_off + row as usize) / div];
                 b3[i] = b_tile[((b_col3 + col as usize) * BK + k_off + row as usize) / div];
+                b4[i] = b_tile[((b_col4 + col as usize) * BK + k_off + row as usize) / div];
+                b5[i] = b_tile[((b_col5 + col as usize) * BK + k_off + row as usize) / div];
+                b6[i] = b_tile[((b_col6 + col as usize) * BK + k_off + row as usize) / div];
+                b7[i] = b_tile[((b_col7 + col as usize) * BK + k_off + row as usize) / div];
             }
             #[unroll]
             for i in 0..scales_count {
@@ -193,33 +225,53 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
                 sb1[i] = scales_b[(block_col + b_col1 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
                 sb2[i] = scales_b[(block_col + b_col2 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
                 sb3[i] = scales_b[(block_col + b_col3 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb4[i] = scales_b[(block_col + b_col4 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb5[i] = scales_b[(block_col + b_col5 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb6[i] = scales_b[(block_col + b_col6 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb7[i] = scales_b[(block_col + b_col7 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
             }
 
-            // 8 MMAs: each A-fragment feeds 4 accumulates, each B-fragment feeds 2
+            // 16 MMAs: each A-fragment feeds 8 accumulates, each B-fragment feeds 2
             let d00 = def.execute_scaled(&a0, &b0, &acc00, sa0, sb0);
             let d01 = def.execute_scaled(&a0, &b1, &acc01, sa0, sb1);
             let d02 = def.execute_scaled(&a0, &b2, &acc02, sa0, sb2);
             let d03 = def.execute_scaled(&a0, &b3, &acc03, sa0, sb3);
+            let d04 = def.execute_scaled(&a0, &b4, &acc04, sa0, sb4);
+            let d05 = def.execute_scaled(&a0, &b5, &acc05, sa0, sb5);
+            let d06 = def.execute_scaled(&a0, &b6, &acc06, sa0, sb6);
+            let d07 = def.execute_scaled(&a0, &b7, &acc07, sa0, sb7);
             let d10 = def.execute_scaled(&a1, &b0, &acc10, sa1, sb0);
             let d11 = def.execute_scaled(&a1, &b1, &acc11, sa1, sb1);
             let d12 = def.execute_scaled(&a1, &b2, &acc12, sa1, sb2);
             let d13 = def.execute_scaled(&a1, &b3, &acc13, sa1, sb3);
+            let d14 = def.execute_scaled(&a1, &b4, &acc14, sa1, sb4);
+            let d15 = def.execute_scaled(&a1, &b5, &acc15, sa1, sb5);
+            let d16 = def.execute_scaled(&a1, &b6, &acc16, sa1, sb6);
+            let d17 = def.execute_scaled(&a1, &b7, &acc17, sa1, sb7);
             #[unroll]
             for i in 0..vector_count_c {
                 acc00[i] = d00[i];
                 acc01[i] = d01[i];
                 acc02[i] = d02[i];
                 acc03[i] = d03[i];
+                acc04[i] = d04[i];
+                acc05[i] = d05[i];
+                acc06[i] = d06[i];
+                acc07[i] = d07[i];
                 acc10[i] = d10[i];
                 acc11[i] = d11[i];
                 acc12[i] = d12[i];
                 acc13[i] = d13[i];
+                acc14[i] = d14[i];
+                acc15[i] = d15[i];
+                acc16[i] = d16[i];
+                acc17[i] = d17[i];
             }
         }
         sync_cube();
     }
 
-    // store the 2x4 accumulator grid to global out
+    // store the 2x8 accumulator grid to global out
     #[unroll]
     for i in 0..vector_count_c {
         let n_elem = i * vector_size_c;
@@ -233,10 +285,18 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
         out[(row0 + block_col + b_col1 + cc) / vs] = acc01[i];
         out[(row0 + block_col + b_col2 + cc) / vs] = acc02[i];
         out[(row0 + block_col + b_col3 + cc) / vs] = acc03[i];
+        out[(row0 + block_col + b_col4 + cc) / vs] = acc04[i];
+        out[(row0 + block_col + b_col5 + cc) / vs] = acc05[i];
+        out[(row0 + block_col + b_col6 + cc) / vs] = acc06[i];
+        out[(row0 + block_col + b_col7 + cc) / vs] = acc07[i];
         out[(row1 + block_col + b_col0 + cc) / vs] = acc10[i];
         out[(row1 + block_col + b_col1 + cc) / vs] = acc11[i];
         out[(row1 + block_col + b_col2 + cc) / vs] = acc12[i];
         out[(row1 + block_col + b_col3 + cc) / vs] = acc13[i];
+        out[(row1 + block_col + b_col4 + cc) / vs] = acc14[i];
+        out[(row1 + block_col + b_col5 + cc) / vs] = acc15[i];
+        out[(row1 + block_col + b_col6 + cc) / vs] = acc16[i];
+        out[(row1 + block_col + b_col7 + cc) / vs] = acc17[i];
     }
 }
 
