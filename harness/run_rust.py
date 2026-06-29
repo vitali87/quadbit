@@ -31,6 +31,7 @@ image = (
     )
     .add_local_file((ROOT / "Cargo.toml").as_posix(), "/root/quadbit/Cargo.toml")
     .add_local_dir((ROOT / "src").as_posix(), "/root/quadbit/src")
+    .add_local_dir((ROOT / "vendor").as_posix(), "/root/quadbit/vendor")
 )
 
 cache = modal.Volume.from_name("quadbit-rust-cache", create_if_missing=True)

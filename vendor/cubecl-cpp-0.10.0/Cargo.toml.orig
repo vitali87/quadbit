@@ -1,0 +1,50 @@
+[package]
+authors = ["nathanielsimard <nathaniel.simard.42@gmail.com>"]
+categories = ["science"]
+description = "CPP transpiler for CubeCL"
+edition.workspace = true
+keywords = ["cpp", "gpu", "cuda", "hip", "metal"]
+license.workspace = true
+name = "cubecl-cpp"
+readme.workspace = true
+repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-cpp"
+version.workspace = true
+
+
+[lints]
+workspace = true
+
+
+[features]
+cuda = []
+default = [
+    "cubecl-runtime/default",
+    "cubecl-common/default",
+    "cubecl-core/default",
+    "metal",
+]
+hip = []
+metal = []
+std = ["cubecl-runtime/std", "cubecl-common/std", "cubecl-core/std"]
+
+tracing = [
+    "cubecl-runtime/tracing",
+    "cubecl-common/tracing",
+    "cubecl-core/tracing",
+    "cubecl-opt/tracing",
+]
+
+[dependencies]
+cubecl-common = { path = "../cubecl-common", version = "0.10.0", default-features = false }
+cubecl-core = { path = "../cubecl-core", version = "0.10.0", default-features = false }
+# For shared allocation
+cubecl-opt = { path = "../cubecl-opt", version = "0.10.0", default-features = false }
+cubecl-runtime = { path = "../cubecl-runtime", version = "0.10.0", default-features = false, features = [
+    "channel-mutex",
+] }
+itertools = { version = "0.14.0", default-features = false }
+
+bytemuck = { workspace = true }
+derive-new = { workspace = true }
+half = { workspace = true }
+log = { workspace = true }

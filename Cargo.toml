@@ -13,3 +13,8 @@ cpu = ["cubecl/cpu"]
 [dependencies]
 cubecl = "0.10.0"
 half = "2.5"
+
+# Patched C++ codegen: emit Blackwell-correct format-converting ldmatrix for FP4
+# (m8n16 / m16n16.trans with .b8x16.b4x16_p64) instead of the rejected plain .b8.
+[patch.crates-io]
+cubecl-cpp = { path = "vendor/cubecl-cpp-0.10.0" }
