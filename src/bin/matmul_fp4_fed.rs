@@ -1,11 +1,14 @@
 //! Properly-fed block-scaled FP4 (MXFP4) matmul on SM120. A block of 4 warps
-//! (2x2) owns a 64x64 output tile. Per k-step it stages a 64x64 tile of A and a
-//! 64x64 tile of B (packed `e2m1x2`, kept in their native vector layout) into
-//! shared memory, then each warp reads its 2 A-fragments and 4 B-fragments from
-//! shared memory and issues 8 `mma.sync...kind::mxf4nvf4.block_scale` MMAs
-//! (m16 n8 k64) into a 2x4 grid of f32 accumulators, feeding them back in as C
-//! so products accumulate across K. Widening the warp tile in n (each A-fragment
-//! is reused across 4 B-fragments) exploits the small n=8 MMA dimension cheaply.
+//! (2x2) owns a 64x64 output tile. Per block step it stages a 64x256 tile of A
+//! and a 64x256 tile of B (packed `e2m1x2`, kept in their native vector layout)
+//! into shared memory, then walks the staged tile 64 columns (one MMA-K) at a
+//! time with no barrier between sub-steps; each sub-step every warp reads its 2
+//! A-fragments and 4 B-fragments from shared and issues 8
+//! `mma.sync...kind::mxf4nvf4.block_scale` MMAs (m16 n8 k64) into a 2x4 grid of
+//! f32 accumulators, feeding them back in as C so products accumulate across K.
+//! Staging 4 MMA-K deep amortises the cooperative load and the `sync_cube`
+//! barriers 4x. Widening the warp tile in n (each A-fragment is reused across 4
+//! B-fragments) exploits the small n=8 MMA dimension cheaply.
 //! Register/scale plumbing is the hand-managed `position_of_nth`/`scales_index`
 //! path (the only FP4 route); per-block UE8M0 scales are read straight from
 //! global. All-ones FP4 with unit (2^0) scales, so each output must equal K.
@@ -28,8 +31,10 @@ const WM: usize = 2; // MMA fragments per warp in m
 const WN: usize = 4; // MMA fragments per warp in n
 const BM: usize = WARPS_M * WM * MMA_M; // 64 block output rows
 const BN: usize = WARPS_N * WN * MMA_N; // 64 block output cols
+const BK: usize = 128; // k staged per block step (2 MMA-K deep)
+const KSUB: usize = BK / MMA_K; // MMA-K sub-steps inside one staged tile
 const FV: usize = 8; // FP4 values per packed vector (e2m1x2: NA=4 * pack=2)
-const VPR: usize = MMA_K / FV; // staged vectors per tile row = 8
+const VPR: usize = BK / FV; // staged vectors per tile row
 const N_THREADS: u32 = (WARPS_M * WARPS_N * 32) as u32; // 128
 
 #[cube(launch_unchecked)]
@@ -56,7 +61,7 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     let block_row = CUBE_POS_Y as usize * BM;
     let block_col = CUBE_POS_X as usize * BN;
 
-    let k_steps = comptime!(full_k / MMA_K);
+    let k_steps = comptime!(full_k / BK);
     let scale_blocks_per_row = comptime!(full_k / (MMA_K / SF)); // full_k / 32
     let global_vpr = comptime!(full_k / FV); // global packed vectors per row
 
@@ -131,7 +136,6 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
     let n_threads = N_THREADS as usize;
     for step in 0..k_steps {
         let k_vec = step * VPR; // k offset in packed-vector units
-        let scale_base = step * SF; // k offset in scale-block units
 
         // cooperative stage: 128 threads fill the A-tile (BM*VPR vectors)
         #[unroll]
@@ -151,59 +155,66 @@ fn matmul_fp4_fed<A: Scalar, B: Scalar, CD: Numeric, S: Scalar, NA: Size, NB: Si
         }
         sync_cube();
 
-        // load this warp's 2 A-fragments from shared (rows), stride MMA_K
+        // walk the staged tile MMA-K at a time, no barrier between sub-steps
         #[unroll]
-        for i in 0..vector_count_a {
-            let n_elem = i * vector_size_a * a_pack;
-            let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::A);
-            let div = a.vector_size() * a_pack;
-            a0[i] = a_tile[((a_row0 + row as usize) * MMA_K + col as usize) / div];
-            a1[i] = a_tile[((a_row1 + row as usize) * MMA_K + col as usize) / div];
-        }
-        #[unroll]
-        for i in 0..scales_count {
-            sa0[i] = scales_a[(block_row + a_row0 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
-            sa1[i] = scales_a[(block_row + a_row1 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
-        }
+        for ks in 0..KSUB {
+            let k_off = ks * MMA_K; // fp4 column offset within the staged tile
+            let scale_base = (step * KSUB + ks) * SF; // k offset in scale-block units
 
-        // load this warp's 4 B-fragments from shared (cols), stride MMA_K
-        #[unroll]
-        for i in 0..vector_count_b {
-            let n_elem = i * vector_size_b * b_pack;
-            let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::B);
-            let div = b.vector_size() * b_pack;
-            b0[i] = b_tile[((b_col0 + col as usize) * MMA_K + row as usize) / div];
-            b1[i] = b_tile[((b_col1 + col as usize) * MMA_K + row as usize) / div];
-            b2[i] = b_tile[((b_col2 + col as usize) * MMA_K + row as usize) / div];
-            b3[i] = b_tile[((b_col3 + col as usize) * MMA_K + row as usize) / div];
-        }
-        #[unroll]
-        for i in 0..scales_count {
-            sb0[i] = scales_b[(block_col + b_col0 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-            sb1[i] = scales_b[(block_col + b_col1 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-            sb2[i] = scales_b[(block_col + b_col2 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-            sb3[i] = scales_b[(block_col + b_col3 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
-        }
+            // load this warp's 2 A-fragments from shared (rows), stride BK
+            #[unroll]
+            for i in 0..vector_count_a {
+                let n_elem = i * vector_size_a * a_pack;
+                let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::A);
+                let div = a.vector_size() * a_pack;
+                a0[i] = a_tile[((a_row0 + row as usize) * BK + k_off + col as usize) / div];
+                a1[i] = a_tile[((a_row1 + row as usize) * BK + k_off + col as usize) / div];
+            }
+            #[unroll]
+            for i in 0..scales_count {
+                sa0[i] = scales_a[(block_row + a_row0 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
+                sa1[i] = scales_a[(block_row + a_row1 + scales_idx_a) * scale_blocks_per_row + scale_base + i];
+            }
 
-        // 8 MMAs: each A-fragment feeds 4 accumulates, each B-fragment feeds 2
-        let d00 = def.execute_scaled(&a0, &b0, &acc00, sa0, sb0);
-        let d01 = def.execute_scaled(&a0, &b1, &acc01, sa0, sb1);
-        let d02 = def.execute_scaled(&a0, &b2, &acc02, sa0, sb2);
-        let d03 = def.execute_scaled(&a0, &b3, &acc03, sa0, sb3);
-        let d10 = def.execute_scaled(&a1, &b0, &acc10, sa1, sb0);
-        let d11 = def.execute_scaled(&a1, &b1, &acc11, sa1, sb1);
-        let d12 = def.execute_scaled(&a1, &b2, &acc12, sa1, sb2);
-        let d13 = def.execute_scaled(&a1, &b3, &acc13, sa1, sb3);
-        #[unroll]
-        for i in 0..vector_count_c {
-            acc00[i] = d00[i];
-            acc01[i] = d01[i];
-            acc02[i] = d02[i];
-            acc03[i] = d03[i];
-            acc10[i] = d10[i];
-            acc11[i] = d11[i];
-            acc12[i] = d12[i];
-            acc13[i] = d13[i];
+            // load this warp's 4 B-fragments from shared (cols), stride BK
+            #[unroll]
+            for i in 0..vector_count_b {
+                let n_elem = i * vector_size_b * b_pack;
+                let (row, col) = def.position_of_nth(lane_id, n_elem as u32, MatrixIdent::B);
+                let div = b.vector_size() * b_pack;
+                b0[i] = b_tile[((b_col0 + col as usize) * BK + k_off + row as usize) / div];
+                b1[i] = b_tile[((b_col1 + col as usize) * BK + k_off + row as usize) / div];
+                b2[i] = b_tile[((b_col2 + col as usize) * BK + k_off + row as usize) / div];
+                b3[i] = b_tile[((b_col3 + col as usize) * BK + k_off + row as usize) / div];
+            }
+            #[unroll]
+            for i in 0..scales_count {
+                sb0[i] = scales_b[(block_col + b_col0 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb1[i] = scales_b[(block_col + b_col1 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb2[i] = scales_b[(block_col + b_col2 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+                sb3[i] = scales_b[(block_col + b_col3 + scales_idx_b) * scale_blocks_per_row + scale_base + i];
+            }
+
+            // 8 MMAs: each A-fragment feeds 4 accumulates, each B-fragment feeds 2
+            let d00 = def.execute_scaled(&a0, &b0, &acc00, sa0, sb0);
+            let d01 = def.execute_scaled(&a0, &b1, &acc01, sa0, sb1);
+            let d02 = def.execute_scaled(&a0, &b2, &acc02, sa0, sb2);
+            let d03 = def.execute_scaled(&a0, &b3, &acc03, sa0, sb3);
+            let d10 = def.execute_scaled(&a1, &b0, &acc10, sa1, sb0);
+            let d11 = def.execute_scaled(&a1, &b1, &acc11, sa1, sb1);
+            let d12 = def.execute_scaled(&a1, &b2, &acc12, sa1, sb2);
+            let d13 = def.execute_scaled(&a1, &b3, &acc13, sa1, sb3);
+            #[unroll]
+            for i in 0..vector_count_c {
+                acc00[i] = d00[i];
+                acc01[i] = d01[i];
+                acc02[i] = d02[i];
+                acc03[i] = d03[i];
+                acc10[i] = d10[i];
+                acc11[i] = d11[i];
+                acc12[i] = d12[i];
+                acc13[i] = d13[i];
+            }
         }
         sync_cube();
     }
