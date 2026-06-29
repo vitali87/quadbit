@@ -40,7 +40,7 @@ def build_and_run(cu: str, arch: str) -> None:
     _run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], "/")
     _run(["nvcc", "--version"], "/")
     code = _run(
-        ["nvcc", f"-arch={arch}", "-O3", "-o", f"/root/{cu}", f"/root/cuda/{cu}.cu", "-lcuda"],
+        ["nvcc", f"-arch={arch}", "-O3", "-Xptxas", "-v", "-o", f"/root/{cu}", f"/root/cuda/{cu}.cu", "-lcuda"],
         "/root",
     )
     if code != 0:
