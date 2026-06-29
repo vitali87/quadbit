@@ -35,8 +35,7 @@ Built bottom up, each rung a separate binary so they stay runnable and comparabl
 | `matmul_fp4_tile` | square 128x128 block-tile A/B (negative result, see below) | 0.87x |
 | `matmul_fp4_db` | double-buffer prefetch A/B (negative result, see below) | 0.78x |
 
-`matmul_fp4_fed` is the best, and it is at the hardware ceiling (see below). It keeps
-climbing with problem size as launch and tail quantization fade, then flattens:
+`matmul_fp4_fed` is our best, and it asymptotes near ~505,000 GFLOP/s:
 
 | size | `matmul_fp4_fed` GFLOP/s |
 |------|-------------------------:|
@@ -45,8 +44,35 @@ climbing with problem size as launch and tail quantization fade, then flattens:
 | 8192 | 489,052 |
 | 16384 | 505,129 |
 
-The 8192 to 16384 step is only +3.3%, so the curve has asymptoted: **~505,000 GFLOP/s
-is the practical ceiling** for this hardware and framework.
+> **Correction.** This document previously called ~505,000 GFLOP/s the hardware ceiling
+> and global maximum. That was wrong: it is the ceiling of *this kernel design*, not the
+> silicon. A CUTLASS reference benchmark on the same card (see below) reaches ~3x more, so
+> our kernel leaves the tensor cores idle most of the time. The register-file argument in
+> "The ceiling is the register file" below is correct *for the 2x8 register-resident
+> structure* but does not bound the hardware; read that section as why this particular
+> design tops out, not as a hardware law.
+
+## Reference: CUTLASS is ~3x faster (the real headroom)
+
+`harness/cutlass_fp4.py` builds and runs CUTLASS example 79b
+(`nv_float4 x nv_float4 -> f32`, ArchTag `Sm120`) on the same `RTX-PRO-6000`. This is the
+apples-to-apples reference: the same FP4 `mma.sync` path (consumer Blackwell `sm_120` has no
+`tcgen05`), the same `2*M*N*K` flop count, f32 accumulate, with a built-in correctness check
+(all sizes report `Disposition: Passed`).
+
+| size | CUTLASS 79b GFLOP/s | `matmul_fp4_fed` | CUTLASS faster by |
+|------|--------------------:|-----------------:|:-----------------:|
+| 2048 | 637,462 | 291,882 | 2.18x |
+| 4096 | 1,240,800 | 408,000 | 3.04x |
+| 8192 | 1,503,780 | 489,052 | 3.07x |
+
+CUTLASS's 2048 number already exceeds our 16384 asymptote. The gap is the mainloop
+architecture: CUTLASS runs a deep, multi-stage, warp-specialized async pipeline (TMA /
+`cp.async` staging, correct FP4 `ldmatrix` operand loads, a persistent tile scheduler) that
+keeps OMMA back to back. Our single-technique experiments (warp specialization, async copy,
+double buffering) each regressed because they are isolated pieces of that pipeline, not the
+whole machine. Build note: CUTLASS 4.6.0 needs CUDA 12.9 (CUDA 12.8.1 nvcc fails on
+`__nv_atomic_load_n` in `subbyte_reference.h`).
 
 ## How the fed FP4 kernel works
 
@@ -115,10 +141,12 @@ regress, which pins down *why* the baseline config is optimal:
   that already regresses harder, 0.54x). Every form of prefetch loses because the 2-block
   barrier overlap already hides the loads.
 
-The only way past a register-resident `mma.sync` accumulator is `tcgen05`/UMMA, which keeps
-accumulators in tensor memory instead of the register file. Consumer Blackwell **`sm_120`
-physically lacks it** (it is datacenter `sm_100` only). So ~505,000 GFLOP/s is the global
-maximum for FP4 matmul on this hardware via the available instruction path.
+Going wider *in this register-resident accumulator structure* is capped, and `tcgen05`/UMMA
+(accumulators in tensor memory) is absent on `sm_120`. But that does not bound the hardware:
+CUTLASS reaches ~3x more on the same `mma.sync` path (see the reference section above) by
+hiding OMMA latency with a deep async pipeline rather than with more register-resident
+accumulator chains. So this section explains why *the 2x8 design* tops out, not why the
+hardware does.
 
 Other measured negatives (kept for the record): the index-math hoist is neutral (integer
 address arithmetic overlaps OMMA latency for free), and software pipelining (cp.async double
