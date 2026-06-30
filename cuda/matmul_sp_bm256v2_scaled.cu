@@ -1,29 +1,33 @@
-// Raw-PTX track: 2:4-sparse FP4 matmul, traffic-optimal tiling + decoupled async pipeline.
-// The mem-only probe proved the 256x128 shared-B tiling cuts the memory ceiling from
-// 1620k -> 2037k (20% less B traffic). But a CTA-wide __syncthreads exposed compute
-// (1448k < 2037k ceiling). This version replaces the CTA barrier with a two-mbarrier
-// full/empty pipeline: consumers wait `full` (data ready), compute, signal `empty`; the
-// producer waits `empty` (buffer free) before refilling. No CTA-wide lockstep, so a fast
-// warp runs ahead into the next stage while the producer refills => compute hides behind
-// the lower traffic. All-ones => out == Klog/2.
+// Raw-PTX track: full deployable 2:4-sparse FP4 matmul with REAL per-block ue4m3 scales,
+// staged through the async pipeline. The naive version loaded each lane's scale via
+// scattered __ldg (4B stride-8 -> sector amplification, bandwidth-bound, 931k). Here the
+// scales are stored STEP-MAJOR ([ksteps][M][4]/[ksteps][N][4]) so each step's CTA slice
+// is contiguous (256x4=1024B for A, 128x4=512B for B) and staged into smem via a 1D
+// cp.async.bulk on the SAME full[] mbarrier as A/B (no extra sync, coalesced). Lanes then
+// read their scale from smem per the derived scale_vec::4X layout:
+//   scaleA[row r][kb] -> lane (r&7)*4+(r>>3) byte kb ; scaleB[col c][kb] -> lane c*4 byte kb.
+// STAGES=5 (scale buffers cost smem). All-tile shared-B 256x128 + full/empty pipeline.
 
 #include <cstdio>
 #include <cstdint>
 #include <cuda.h>
+#include <cuda_bf16.h>
 
 #define BM 128
 #define BN 128
 #define BKL 128
 #define AROWB 32
 #define BROWB 64
-#define STAGES 6
+#define STAGES 5
 #define ASZ (BM * AROWB)
 #define BSZ (BN * BROWB)
-#define SMEM (2 * STAGES * ASZ + STAGES * BSZ + 2 * STAGES * 8 + 128)
+#define SCA 1024          // scaleA slice bytes (256 CTA rows x 4)
+#define SCB 512           // scaleB slice bytes (128 CTA cols x 4)
+#define SMEM (2 * STAGES * ASZ + STAGES * BSZ + STAGES * SCA + STAGES * SCB + 2 * STAGES * 8 + 128)
 
 __global__ void __launch_bounds__(256)
 matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
-          const uint8_t *scaleA, const uint8_t *scaleB, float *C, int M, int N, int Klog) {
+          const uint8_t *scaleA, const uint8_t *scaleB, __nv_bfloat16 *C, int M, int N, int Klog) {
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -31,7 +35,9 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
 
     uint8_t *a_s = smem + wg * STAGES * ASZ;
     uint8_t *b_s = smem + 2 * STAGES * ASZ;
-    uint64_t *full = (uint64_t *)(b_s + STAGES * BSZ);
+    uint8_t *scA_sm = b_s + STAGES * BSZ;
+    uint8_t *scB_sm = scA_sm + STAGES * SCA;
+    uint64_t *full = (uint64_t *)(scB_sm + STAGES * SCB);
     uint64_t *empty = full + STAGES;
 
     int block_row = blockIdx.y * (2 * BM) + wg * BM;
@@ -46,16 +52,14 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
     for (int mt = 0; mt < 4; mt++) a_rowt[mt] = wm * 64 + mt * 16;
 #pragma unroll
     for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
-
-    // derived ue4m3 4X layout: lane carries scaleA row (ra<16) / scaleB col (lane%4==0).
-    // Precompute each lane's per-tile u32 base index (row/col * ksteps); -1 = inactive.
-    const uint32_t *sA32 = (const uint32_t *)scaleA, *sB32 = (const uint32_t *)scaleB;
+    // scale smem-read indices (derived ue4m3 4X layout): row/col within the CTA tile
     int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
-    int abase[4], bbase[8];
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[4], b_sidx[8];
 #pragma unroll
-    for (int mt = 0; mt < 4; mt++) abase[mt] = (ra_local < 16) ? (block_row + a_rowt[mt] + ra_local) * ksteps : -1;
+    for (int mt = 0; mt < 4; mt++) a_sidx[mt] = wg * 128 + a_rowt[mt] + ra_local;  // CTA row 0..255
 #pragma unroll
-    for (int n = 0; n < 8; n++) bbase[n] = ((lane & 3) == 0) ? (block_col + b_col[n] + cb_local) * ksteps : -1;
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;                   // CTA col 0..127
 
     float acc[32][4];
 #pragma unroll
@@ -77,7 +81,8 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
 
     auto issue = [&](int s, int step) {
         uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
-        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar), "r"((uint32_t)(2 * ASZ + BSZ)));
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ + BSZ + SCA + SCB)));
         asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
                      " [%0], [%1, {%2, %3}], [%4];" ::"r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ])),
                      "l"(&mapA), "r"(step * AROWB), "r"(a_load_row), "r"(bar));
@@ -87,19 +92,19 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
         asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
                      " [%0], [%1, {%2, %3}], [%4];" ::"r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ])),
                      "l"(&mapB), "r"(step * BROWB), "r"(block_col), "r"(bar));
+        // 1D bulk-copy the contiguous step-major scale slices (coalesced, same mbarrier)
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[s * SCA])),
+                     "l"(scaleA + (size_t)(step * M + a_load_row) * 4), "r"((uint32_t)SCA), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[s * SCB])),
+                     "l"(scaleB + (size_t)(step * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
     };
 
     if (tid == 0)
 #pragma unroll
         for (int s = 0; s < STAGES; s++)
             if (s < ksteps) issue(s, s);
-
-    // double-buffered scale registers: prefetch step+1 while computing step (hides L2 latency)
-    uint32_t sav[4], sbv[8];
-#pragma unroll
-    for (int mt = 0; mt < 4; mt++) sav[mt] = (abase[mt] >= 0) ? __ldg(sA32 + abase[mt]) : 0x38383838u;
-#pragma unroll
-    for (int n = 0; n < 8; n++) sbv[n] = (bbase[n] >= 0) ? __ldg(sB32 + bbase[n]) : 0x38383838u;
 
     for (int step = 0; step < ksteps; step++) {
         int s = step % STAGES;
@@ -108,15 +113,13 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
                      "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], %1;\n\t"
                      "@!p bra WAIT;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
 
-        // prefetch next step's scales early; independent of ldmatrix/mma so latency overlaps
-        uint32_t savn[4], sbvn[8];
-        int nstep = step + 1;
-        if (nstep < ksteps) {
+        const uint32_t *scA = (const uint32_t *)(scA_sm + s * SCA);
+        const uint32_t *scB = (const uint32_t *)(scB_sm + s * SCB);
+        uint32_t sav[4], sbv[8];
 #pragma unroll
-            for (int mt = 0; mt < 4; mt++) savn[mt] = (abase[mt] >= 0) ? __ldg(sA32 + abase[mt] + nstep) : 0x38383838u;
+        for (int mt = 0; mt < 4; mt++) sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u;
 #pragma unroll
-            for (int n = 0; n < 8; n++) sbvn[n] = (bbase[n] >= 0) ? __ldg(sB32 + bbase[n] + nstep) : 0x38383838u;
-        }
+        for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
 
         int aoff = s * ASZ, boff = s * BSZ;
         uint32_t af[4][4], bf[8][4];
@@ -156,10 +159,6 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
                          "@!p bra WE;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
             issue(s, next);
         }
-#pragma unroll
-        for (int mt = 0; mt < 4; mt++) sav[mt] = savn[mt];
-#pragma unroll
-        for (int n = 0; n < 8; n++) sbv[n] = sbvn[n];
     }
 
 #pragma unroll
@@ -169,10 +168,8 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
             int idx = mt * 8 + n;
             int gr = block_row + a_rowt[mt] + (lane >> 2);
             int gc = block_col + b_col[n] + (lane & 3) * 2;
-            C[gr * N + gc] = acc[idx][0];
-            C[gr * N + gc + 1] = acc[idx][1];
-            C[(gr + 8) * N + gc] = acc[idx][2];
-            C[(gr + 8) * N + gc + 1] = acc[idx][3];
+            *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0], acc[idx][1]);
+            *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2], acc[idx][3]);
         }
 }
 
@@ -187,31 +184,30 @@ static void mk(const char *tag, CUtensorMap *m, uint8_t *p, int inner, int outer
     if (r != CUDA_SUCCESS) { const char *s; cuGetErrorString(r, &s); printf("map[%s] failed: %s\n", tag, s); }
 }
 
-
 static float dfp4(uint8_t n){int s=(n>>3)&1,e=(n>>1)&3,m=n&1;float v=(e==0)?(m?0.5f:0.f):((float)(1<<(e-1))*(1.f+0.5f*m));return s?-v:v;}
 static float due4m3(uint8_t n){int s=(n>>7)&1,e=(n>>3)&0xf,m=n&7;float v=(e==0)?((float)m*0.001953125f):(float)(1+m/8.0)*exp2f((float)(e-7));return s?-v:v;}
 
-// scaleA[M][ksteps][4], scaleB[N][ksteps][4] ue4m3 (per-row/col, per-k128-step, 4 sub-blocks)
+// scaleA step-major [ksteps][M][4], scaleB [ksteps][N][4] ue4m3
 void run(int sz, bool do_ref) {
     int M = sz, N = sz, Klog = sz, KAb = Klog / 4, KBb = Klog / 2, ksteps = Klog / BKL;
-    uint8_t *dA, *dB, *dScA, *dScB; float *dC;
+    uint8_t *dA, *dB, *dScA, *dScB; __nv_bfloat16 *dC;
     cudaMalloc(&dA, (size_t)M * KAb); cudaMalloc(&dB, (size_t)N * KBb);
-    cudaMalloc(&dScA, (size_t)M * ksteps * 4); cudaMalloc(&dScB, (size_t)N * ksteps * 4);
-    cudaMalloc(&dC, (size_t)M * N * sizeof(float));
+    cudaMalloc(&dScA, (size_t)ksteps * M * 4); cudaMalloc(&dScB, (size_t)ksteps * N * 4);
+    cudaMalloc(&dC, (size_t)M * N * sizeof(__nv_bfloat16));
 
     uint8_t *hA=(uint8_t*)malloc((size_t)M*KAb), *hB=(uint8_t*)malloc((size_t)N*KBb);
     uint8_t *hAlog=(uint8_t*)calloc((size_t)M*Klog,1);
-    uint8_t *hScA=(uint8_t*)malloc((size_t)M*ksteps*4), *hScB=(uint8_t*)malloc((size_t)N*ksteps*4);
+    uint8_t *hScA=(uint8_t*)malloc((size_t)ksteps*M*4), *hScB=(uint8_t*)malloc((size_t)ksteps*N*4);
     uint32_t st=0x77u; auto rnd=[&]{st^=st<<13;st^=st>>17;st^=st<<5;return st;};
     for(int i=0;i<M;i++)for(int cs=0;cs<KAb;cs++){int pp=(cs/2)*4+(cs%2);uint8_t lo=rnd()&0xf,hi=rnd()&0xf;
         hA[(size_t)i*KAb+cs]=lo|(hi<<4);hAlog[(size_t)i*Klog+2*pp]=lo;hAlog[(size_t)i*Klog+2*pp+1]=hi;}
     for(size_t i=0;i<(size_t)N*KBb;i++)hB[i]=(uint8_t)rnd();
-    for(size_t i=0;i<(size_t)M*ksteps*4;i++)hScA[i]=((6+(rnd()%3))<<3)|(rnd()&7);
-    for(size_t i=0;i<(size_t)N*ksteps*4;i++)hScB[i]=((6+(rnd()%3))<<3)|(rnd()&7);
+    for(size_t i=0;i<(size_t)ksteps*M*4;i++)hScA[i]=((6+(rnd()%3))<<3)|(rnd()&7);
+    for(size_t i=0;i<(size_t)ksteps*N*4;i++)hScB[i]=((6+(rnd()%3))<<3)|(rnd()&7);
     cudaMemcpy(dA,hA,(size_t)M*KAb,cudaMemcpyHostToDevice);
     cudaMemcpy(dB,hB,(size_t)N*KBb,cudaMemcpyHostToDevice);
-    cudaMemcpy(dScA,hScA,(size_t)M*ksteps*4,cudaMemcpyHostToDevice);
-    cudaMemcpy(dScB,hScB,(size_t)N*ksteps*4,cudaMemcpyHostToDevice);
+    cudaMemcpy(dScA,hScA,(size_t)ksteps*M*4,cudaMemcpyHostToDevice);
+    cudaMemcpy(dScB,hScB,(size_t)ksteps*N*4,cudaMemcpyHostToDevice);
 
     alignas(64) CUtensorMap mapA, mapB;
     mk("A",&mapA,dA,KAb,M,AROWB,BM); mk("B",&mapB,dB,KBb,N,BROWB,BN);
@@ -225,25 +221,25 @@ void run(int sz, bool do_ref) {
     cudaEventRecord(e);cudaEventSynchronize(e); float ms=0;cudaEventElapsedTime(&ms,s,e);ms/=it;
     double gf=2.0*M*N*Klog/(ms/1e3)/1e9;
 
-    if(!do_ref){printf("matmul_sp_bm256v2_scaled (real ue4m3 scales): %dx%dx%d  %.3f ms  %.1f GFLOP/s (timing)\n",M,N,Klog,ms,gf);
+    if(!do_ref){printf("matmul_sp_bm256v2_scaled (staged ue4m3 scales, bf16 out): %dx%dx%d  %.3f ms  %.1f GFLOP/s (timing)\n",M,N,Klog,ms,gf);
         free(hA);free(hB);free(hAlog);free(hScA);free(hScB);cudaFree(dA);cudaFree(dB);cudaFree(dScA);cudaFree(dScB);cudaFree(dC);return;}
 
-    float *hC=(float*)malloc((size_t)M*N*sizeof(float));
-    cudaMemcpy(hC,dC,(size_t)M*N*sizeof(float),cudaMemcpyDeviceToHost);
+    __nv_bfloat16 *hC=(__nv_bfloat16*)malloc((size_t)M*N*sizeof(__nv_bfloat16));
+    cudaMemcpy(hC,dC,(size_t)M*N*sizeof(__nv_bfloat16),cudaMemcpyDeviceToHost);
     int wrong=0; float maxrel=0.f;
     for(int i=0;i<M&&wrong<8;i++)for(int j=0;j<N;j++){
         float ref=0.f;
         for(int step=0;step<ksteps;step++)for(int n=0;n<64;n++){
             int cs=n/2,pp=(cs/2)*4+(cs%2); int kl=2*pp+(n&1); int gK=step*128+kl;
-            float av=dfp4(hAlog[(size_t)i*Klog+gK])*due4m3(hScA[((size_t)i*ksteps+step)*4 + n/16]);
-            uint8_t bn=hB[(size_t)j*KBb+gK/2]; float bv=dfp4((gK&1)?bn>>4:bn&0xf)*due4m3(hScB[((size_t)j*ksteps+step)*4 + kl/32]);
+            float av=dfp4(hAlog[(size_t)i*Klog+gK])*due4m3(hScA[((size_t)step*M+i)*4 + n/16]);
+            uint8_t bn=hB[(size_t)j*KBb+gK/2]; float bv=dfp4((gK&1)?bn>>4:bn&0xf)*due4m3(hScB[((size_t)step*N+j)*4 + kl/32]);
             ref+=av*bv;
         }
-        float got=hC[(size_t)i*N+j]; float rel=fabsf(got-ref)/(fabsf(ref)+1.f);
+        float got=__bfloat162float(hC[(size_t)i*N+j]); float rel=fabsf(got-ref)/(fabsf(ref)+1.f);
         if(rel>maxrel)maxrel=rel;
-        if(rel>1e-3f){if(wrong<4)printf("  [%d][%d] got %.3f ref %.3f\n",i,j,got,ref);wrong++;}
+        if(rel>5e-3f){if(wrong<4)printf("  [%d][%d] got %.3f ref %.3f\n",i,j,got,ref);wrong++;}
     }
-    printf("matmul_sp_bm256v2_scaled (real ue4m3 scales): %dx%dx%d  %.3f ms  %.1f GFLOP/s  %s (maxrel %.5f)\n",
+    printf("matmul_sp_bm256v2_scaled (staged ue4m3 scales, bf16 out): %dx%dx%d  %.3f ms  %.1f GFLOP/s  %s (maxrel %.5f)\n",
            M,N,Klog,ms,gf,wrong==0?"PASS":"FAIL",maxrel);
     free(hA);free(hB);free(hAlog);free(hScA);free(hScB);free(hC);cudaFree(dA);cudaFree(dB);cudaFree(dScA);cudaFree(dScB);cudaFree(dC);
 }
