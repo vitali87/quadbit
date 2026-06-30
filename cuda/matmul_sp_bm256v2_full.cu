@@ -276,4 +276,4 @@ void run(int sz, bool do_ref) {
     cudaFree(dA);cudaFree(dB);cudaFree(dScA);cudaFree(dScB);cudaFree(dMeta);cudaFree(dC);
 }
 
-int main(){ run(512,true); run(2048,false); run(4096,false); run(8192,false); return 0; }
+int main(){ run(512,true); run(1024,true); run(2048,true); run(8192,false); return 0; }
