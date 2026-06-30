@@ -126,39 +126,22 @@ __global__ void __launch_bounds__(128) matmul_sp(const uint8_t *A, const uint8_t
     }
 }
 
-static float decode_fp4(uint8_t n) {
-    int sign = (n >> 3) & 1, exp = (n >> 1) & 3, man = n & 1;
-    float v = (exp == 0) ? (man ? 0.5f : 0.f) : ((float)(1 << (exp - 1)) * (1.f + 0.5f * man));
-    return sign ? -v : v;
-}
-
+// PROBE 3: A all-ones, B = identity (B[j][k]=1.0 iff k==j) => out[i][j]=1.0 iff logical
+// position j is SELECTED by the 2:4 metadata AND B-routing places B[j] right. out[0][j]
+// reveals the selection mask. metadata 0x44 == {0,1}/group + correct routing => 1100 1100...
 void run(int sz) {
     int M = sz, N = sz, Klog = sz;
-    int KAb = Klog / 4, KBb = Klog / 2;  // compressed A bytes (64 nz/128), full B bytes
+    int KAb = Klog / 4, KBb = Klog / 2;
     uint8_t *dA, *dB;
     float *dC;
     cudaMalloc(&dA, (size_t)M * KAb);
     cudaMalloc(&dB, (size_t)N * KBb);
     cudaMalloc(&dC, (size_t)M * N * sizeof(float));
+    cudaMemset(dA, 0x22, (size_t)M * KAb);  // all stored A = 1.0
 
-    // KEY (probe3): K=128 counts b16 PAIRS (2 fp4 each); metadata 0x44 selects PAIRS
-    // {0,1} of each 4 => fp4 mask (k/2)%4<2 i.e. k%8<4 ("11110000"). The 2 fp4 of a
-    // pair share the same select. compressed byte cs = the cs-th selected pair (its 2
-    // fp4); selected pair pp = (cs/2)*4 + (cs%2); pair pp spans fp4 2pp, 2pp+1.
-    uint8_t *hAc = (uint8_t *)malloc((size_t)M * KAb), *hB = (uint8_t *)malloc((size_t)N * KBb);
-    uint8_t *hAlog = (uint8_t *)calloc((size_t)M * Klog, 1);  // nibble per logical fp4 (0 where masked)
-    uint32_t st = 0x5A5Au;
-    auto rnd = [&]() { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return st; };
-    for (int i = 0; i < M; i++)
-        for (int cs = 0; cs < KAb; cs++) {            // cs = compressed pair index (byte)
-            int pp = (cs / 2) * 4 + (cs % 2);          // logical pair (selected: pp%4 in {0,1})
-            uint8_t lo = rnd() & 0xf, hi = rnd() & 0xf; // the pair's 2 fp4
-            hAc[(size_t)i * KAb + cs] = lo | (hi << 4);
-            hAlog[(size_t)i * Klog + 2 * pp + 0] = lo;
-            hAlog[(size_t)i * Klog + 2 * pp + 1] = hi;
-        }
-    for (size_t i = 0; i < (size_t)N * KBb; i++) hB[i] = (uint8_t)rnd();
-    cudaMemcpy(dA, hAc, (size_t)M * KAb, cudaMemcpyHostToDevice);
+    uint8_t *hB = (uint8_t *)calloc((size_t)N * KBb, 1);
+    for (int j = 0; j < N && j < Klog; j++)  // B[j][k] = 1.0 (0x2) iff k==j
+        hB[(size_t)j * KBb + j / 2] |= (j & 1) ? (0x2 << 4) : 0x2;
     cudaMemcpy(dB, hB, (size_t)N * KBb, cudaMemcpyHostToDevice);
 
     dim3 grid(N / BN, M / BM), block(128);
@@ -167,26 +150,11 @@ void run(int sz) {
 
     float *hC = (float *)malloc((size_t)M * N * sizeof(float));
     cudaMemcpy(hC, dC, (size_t)M * N * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // ref: out[i][j] = sum over nonzero fp4 k (pair (k/2)%4 < 2) of decode(Alog)*decode(B)
-    int wrong = 0; float maxrel = 0.f;
-    for (int i = 0; i < M && wrong < 8; i++)
-        for (int j = 0; j < N; j++) {
-            float ref = 0.f;
-            for (int k = 0; k < Klog; k++) {
-                if (((k / 2) & 3) >= 2) continue;  // masked pair
-                uint8_t bn = hB[(size_t)j * KBb + k / 2];
-                float bv = decode_fp4(k & 1 ? bn >> 4 : bn & 0xf);
-                ref += decode_fp4(hAlog[(size_t)i * Klog + k]) * bv;
-            }
-            float got = hC[(size_t)i * N + j];
-            float rel = fabsf(got - ref) / (fabsf(ref) + 1.f);
-            if (rel > maxrel) maxrel = rel;
-            if (rel > 1e-2f) { if (wrong < 4) printf("  [%d][%d] got %.2f ref %.2f\n", i, j, got, ref); wrong++; }
-        }
-    printf("sparse_verify (pair-granular 2:4, random A/B, unit scales): %dx%dx%d  %s (%d wrong, maxrel %.4f)\n",
-           M, N, Klog, wrong == 0 ? "PASS" : "FAIL", wrong, maxrel);
-    free(hAc); free(hB); free(hAlog); free(hC); cudaFree(dA); cudaFree(dB); cudaFree(dC);
+    printf("sp_probe3 selection mask out[0][j] (1 = logical j selected), j=0..31:\n  ");
+    for (int j = 0; j < 32; j++) printf("%c", hC[j] > 0.5f ? '1' : '0');
+    printf("\n  vals[0..7]= %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n",
+           hC[0], hC[1], hC[2], hC[3], hC[4], hC[5], hC[6], hC[7]);
+    free(hB); free(hC); cudaFree(dA); cudaFree(dB); cudaFree(dC);
 }
 
 int main() {
