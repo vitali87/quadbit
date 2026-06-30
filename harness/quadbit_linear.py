@@ -103,10 +103,10 @@ def run() -> None:
             mask.scatter_(3, kept.long(), 1.0)
             self.W_deq = (FP4[codes.long()] * mask.unsqueeze(-1)).reshape(out_f, in_f)
 
-        def pack_act(self, x):  # x: [batch, in] fp32 -> (Bbytes, scaleB), fused real ue4m3 scales
+        def pack_act(self, x):  # x: [batch, in] bf16 -> (Bbytes, scaleB), fused real ue4m3 scales
             batch = x.shape[0]
             assert batch % 128 == 0 and x.shape[1] == self.in_f, "batch%128, in matches"
-            x = x.contiguous()
+            x = x.to(torch.bfloat16).contiguous()
             Bbytes = torch.empty((batch, self.in_f // 2), dtype=torch.uint8, device=dev)
             scaleB = torch.empty((self.ks, batch, 4), dtype=torch.uint8, device=dev)
             lib.quantize_act_nvfp4(x.data_ptr(), Bbytes.data_ptr(), scaleB.data_ptr(),
@@ -164,8 +164,8 @@ def run() -> None:
     for batch in (512, 1024, 2048, 4096, 8192):
         x = torch.randn(batch, in_f, device=dev)
         xb = x.bfloat16()
-        Bb, sB = ql.pack_act(x)
-        ms_full = time_ms(lambda: ql.forward(x))
+        Bb, sB = ql.pack_act(xb)
+        ms_full = time_ms(lambda: ql.forward(xb))
         ms_kern = time_ms(lambda: ql.run(Bb, sB, batch))
         ms_bf16 = time_ms(lambda: torch.matmul(Wb, xb.t()))
         gf = 2.0 * out_f * batch * in_f / (ms_kern / 1e3) / 1e9

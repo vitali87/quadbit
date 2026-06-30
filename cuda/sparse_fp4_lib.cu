@@ -204,26 +204,29 @@ __device__ __forceinline__ uint8_t q_fp4(float q) {   // nearest e2m1 code (sign
             : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.f ? 6 : 7;
     return (uint8_t)(idx | (q < 0.f ? 8 : 0));
 }
-__global__ void quant_act(const float *x, uint8_t *Bbytes, uint8_t *scaleB, int batch, int in_f) {
+__global__ void quant_act(const __nv_bfloat162 *x, uint8_t *Bbytes, uint8_t *scaleB, int batch, int in_f) {
     int b32 = in_f / 32;                               // 32-elem blocks per row
     long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= (long)batch * b32) return;
     int n = t / b32, blk = t % b32, step = blk / 4, kb = blk % 4;
-    const float *xr = x + (long)n * in_f + blk * 32;
-    float amax = 0.f;
+    const __nv_bfloat162 *xr = x + ((long)n * in_f + blk * 32) / 2;  // 16 bf16x2 = 32 elems
+    float2 v[16]; float amax = 0.f;
 #pragma unroll
-    for (int i = 0; i < 32; i++) { float a = fabsf(xr[i]); if (a > amax) amax = a; }
+    for (int i = 0; i < 16; i++) {
+        v[i] = __bfloat1622float2(xr[i]);
+        amax = fmaxf(amax, fmaxf(fabsf(v[i].x), fabsf(v[i].y)));
+    }
     uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
     scaleB[((long)step * batch + n) * 4 + kb] = sc;
     float inv = 1.f / dec_ue4m3(sc);
     uint8_t *out = Bbytes + (long)n * (in_f / 2) + blk * 16;
 #pragma unroll
     for (int i = 0; i < 16; i++)
-        out[i] = q_fp4(xr[2 * i] * inv) | (q_fp4(xr[2 * i + 1] * inv) << 4);
+        out[i] = q_fp4(v[i].x * inv) | (q_fp4(v[i].y * inv) << 4);
 }
 extern "C" void quantize_act_nvfp4(const void *x, void *Bbytes, void *scaleB, int batch, int in_f) {
     int total = batch * (in_f / 32), tpb = 256;
-    quant_act<<<(total + tpb - 1) / tpb, tpb>>>((const float *)x, (uint8_t *)Bbytes,
+    quant_act<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat162 *)x, (uint8_t *)Bbytes,
                                                 (uint8_t *)scaleB, batch, in_f);
 }
 
