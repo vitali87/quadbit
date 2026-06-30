@@ -53,12 +53,19 @@ def run() -> None:
     lib = ctypes.CDLL(so)
     lib.sparse_fp4_mm.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
     lib.sparse_fp4_mm.restype = ctypes.c_int
+    lib.quantize_act_nvfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
+    lib.quantize_act_nvfp4.restype = None
     dev = torch.device("cuda")
 
-    # fp4 e2m1 code(0..15) -> value, and round-to-nearest fp4 (unit scale).
+    # fp4 e2m1 code(0..15) -> value, and round-to-nearest fp4 (unit scale, weight side).
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6],
                        dtype=torch.float32, device=dev)
     BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], dtype=torch.float32, device=dev)
+    # ue4m3 code(0..127) -> value (for decoding the fused quantizer's per-block scales).
+    _c = torch.arange(128, device=dev)
+    _e, _m = (_c >> 3) & 0xf, _c & 7
+    UE4M3 = torch.where(_e == 0, _m.float() * 0.001953125,
+                        (1.0 + _m.float() / 8.0) * torch.exp2((_e - 7).float()))
 
     def quant_fp4(v):
         """fp32 -> fp4 code (uint8), unit scale (round to nearest e2m1 grid)."""
@@ -96,55 +103,74 @@ def run() -> None:
             mask.scatter_(3, kept.long(), 1.0)
             self.W_deq = (FP4[codes.long()] * mask.unsqueeze(-1)).reshape(out_f, in_f)
 
-        def forward(self, x):  # x: [batch, in] fp32 -> y: [batch, out] bf16
+        def pack_act(self, x):  # x: [batch, in] fp32 -> (Bbytes, scaleB), fused real ue4m3 scales
             batch = x.shape[0]
             assert batch % 128 == 0 and x.shape[1] == self.in_f, "batch%128, in matches"
-            xc = quant_fp4(x)
-            Bbytes = (xc.view(batch, self.in_f // 2, 2)[..., 0]
-                      | (xc.view(batch, self.in_f // 2, 2)[..., 1] << 4)).to(torch.uint8).contiguous()
-            scaleB = torch.full((self.ks, batch, 4), 0x38, dtype=torch.uint8, device=dev)
-            C = torch.empty((self.out_f, batch), dtype=torch.bfloat16, device=dev)  # [out,batch]
+            x = x.contiguous()
+            Bbytes = torch.empty((batch, self.in_f // 2), dtype=torch.uint8, device=dev)
+            scaleB = torch.empty((self.ks, batch, 4), dtype=torch.uint8, device=dev)
+            lib.quantize_act_nvfp4(x.data_ptr(), Bbytes.data_ptr(), scaleB.data_ptr(),
+                                   batch, self.in_f)
+            return Bbytes, scaleB
+
+        def deq_act(self, Bbytes, scaleB):      # read packed activations back to dense (for ref)
+            batch = Bbytes.shape[0]
+            codes = torch.stack([(Bbytes & 0xf).long(), (Bbytes >> 4).long()], -1).view(batch, self.in_f)
+            sB = UE4M3[scaleB.long()].permute(1, 0, 2).reshape(batch, self.ks * 4)
+            return FP4[codes] * sB.repeat_interleave(32, dim=1)
+
+        def run(self, Bbytes, scaleB, batch):       # packed activations -> C [out, batch] bf16
+            C = torch.empty((self.out_f, batch), dtype=torch.bfloat16, device=dev)
             rc = lib.sparse_fp4_mm(self.Ac.data_ptr(), Bbytes.data_ptr(), self.scaleA.data_ptr(),
                                    scaleB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, batch, self.in_f)
             if rc != 0:
                 raise RuntimeError(f"kernel cuda error {rc}")
-            self.x_deq = FP4[xc.long()]            # dense dequant of activations (unit scale)
-            return C.t()                            # [batch, out]
+            return C
 
-    torch.manual_seed(0)
-    for (out_f, in_f, batch) in [(512, 512, 256), (4096, 4096, 512), (8192, 8192, 512)]:
-        W = torch.randn(out_f, in_f, device=dev)
-        x = torch.randn(batch, in_f, device=dev)
-        ql = QuadbitLinear(W)
-        y = ql.forward(x)                           # [batch, out] bf16
-        ref = (ql.x_deq @ ql.W_deq.t())             # [batch, out] fp32, pruned+fp4 dense matmul
-        rel = ((y.float() - ref).abs() / (ref.abs() + 1.0)).max().item()
-        ok = "PASS" if rel < 6e-3 else "FAIL"
+        def forward(self, x):  # x: [batch, in] fp32 -> y: [batch, out] bf16
+            Bbytes, scaleB = self.pack_act(x)
+            return self.run(Bbytes, scaleB, x.shape[0]).t()
 
-        it = 30
+    def time_ms(fn, it=30):
         for _ in range(5):
-            ql.forward(x)
+            fn()
         torch.cuda.synchronize()
         st, en = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         st.record()
         for _ in range(it):
-            ql.forward(x)
+            fn()
         en.record(); torch.cuda.synchronize()
-        ms = st.elapsed_time(en) / it
-        # bf16 dense baseline (same logical GEMM out x batch x in)
-        Wb, xb = W.bfloat16(), x.bfloat16()
-        for _ in range(5):
-            torch.matmul(Wb, xb.t())
-        torch.cuda.synchronize()
-        st.record()
-        for _ in range(it):
-            torch.matmul(Wb, xb.t())
-        en.record(); torch.cuda.synchronize()
-        ms_bf16 = st.elapsed_time(en) / it
-        gf = 2.0 * out_f * batch * in_f / (ms / 1e3) / 1e9
-        print(f"QuadbitLinear out={out_f} in={in_f} batch={batch}: {ms:.3f} ms {gf:.0f} GFLOP/s "
-              f"{ok} (maxrel {rel:.4f}) | torch bf16 {ms_bf16:.3f} ms -> {ms_bf16/ms:.2f}x", flush=True)
+        return st.elapsed_time(en) / it
+
+    torch.manual_seed(0)
+    print("# correctness", flush=True)
+    for (out_f, in_f, batch) in [(512, 512, 256), (8192, 8192, 512)]:
+        ql = QuadbitLinear(torch.randn(out_f, in_f, device=dev))
+        x = torch.randn(batch, in_f, device=dev)
+        Bb, sB = ql.pack_act(x)
+        y = ql.run(Bb, sB, batch).t()
+        ref = ql.deq_act(Bb, sB) @ ql.W_deq.t()
+        rel = ((y.float() - ref).abs() / (ref.abs() + 1.0)).max().item()
+        print(f"  out={out_f} in={in_f} batch={batch}: {'PASS' if rel < 6e-3 else 'FAIL'} "
+              f"(maxrel {rel:.4f})", flush=True)
+
+    # speed vs torch bf16 across the prefill batch dimension (out=in=8192, the kernel's strong size)
+    print("# speed @ out=in=8192 (full=quant+kernel, kern=kernel only, vs torch bf16 dense)", flush=True)
+    out_f = in_f = 8192
+    W = torch.randn(out_f, in_f, device=dev)
+    Wb = W.bfloat16()
+    ql = QuadbitLinear(W)
+    for batch in (512, 1024, 2048, 4096, 8192):
+        x = torch.randn(batch, in_f, device=dev)
+        xb = x.bfloat16()
+        Bb, sB = ql.pack_act(x)
+        ms_full = time_ms(lambda: ql.forward(x))
+        ms_kern = time_ms(lambda: ql.run(Bb, sB, batch))
+        ms_bf16 = time_ms(lambda: torch.matmul(Wb, xb.t()))
+        gf = 2.0 * out_f * batch * in_f / (ms_kern / 1e3) / 1e9
+        print(f"  batch={batch:5d}: full {ms_full:.3f} kern {ms_kern:.3f} ({gf:.0f} GF/s) "
+              f"bf16 {ms_bf16:.3f} | kern {ms_bf16/ms_kern:.2f}x  full {ms_bf16/ms_full:.2f}x", flush=True)
 
 
 @app.local_entrypoint()

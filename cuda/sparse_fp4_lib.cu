@@ -180,6 +180,53 @@ static void mk(CUtensorMap *m, uint8_t *p, int inner, int outer, int bi, int bo,
     if (r != CUDA_SUCCESS) { const char *s; cuGetErrorString(r, &s); printf("map fail %s\n", s); }
 }
 
+// ---- Fused NVFP4 activation quantizer: x[batch,in] f32 -> Bbytes[batch,in/2] (dense FP4,
+// 2/byte, lo=even k) + scaleB[ksteps][batch][4] ue4m3 (one scale per 32-elem block). One
+// memory pass; replaces the dozen eager-torch ops (which dominate the QuadbitLinear forward).
+__device__ __forceinline__ uint8_t enc_ue4m3(float s) {
+    if (!(s > 0.f)) return 0;
+    if (s >= 480.f) return 0x7f;                       // (1+7/8)*2^8 = e4m3 max
+    int e; float m = frexpf(s, &e);                    // s = m*2^e, m in [0.5,1)
+    float mm = 2.f * m; int biased = (e - 1) + 7;      // s = mm*2^(e-1), mm in [1,2)
+    if (biased < 1) return 1;                          // clamp tiny scales to min normal
+    int mant = __float2int_rn((mm - 1.f) * 8.f);       // 0..8
+    if (mant == 8) { mant = 0; biased++; }
+    if (biased > 15) return 0x7f;
+    return (uint8_t)((biased << 3) | mant);
+}
+__device__ __forceinline__ float dec_ue4m3(uint8_t n) {
+    int e = (n >> 3) & 0xf, m = n & 7;
+    return e == 0 ? (float)m * 0.001953125f : (1.f + m / 8.f) * exp2f((float)(e - 7));
+}
+__device__ __forceinline__ uint8_t q_fp4(float q) {   // nearest e2m1 code (signed)
+    float a = fabsf(q);
+    int idx = a < .25f ? 0 : a < .75f ? 1 : a < 1.25f ? 2 : a < 1.75f ? 3
+            : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.f ? 6 : 7;
+    return (uint8_t)(idx | (q < 0.f ? 8 : 0));
+}
+__global__ void quant_act(const float *x, uint8_t *Bbytes, uint8_t *scaleB, int batch, int in_f) {
+    int b32 = in_f / 32;                               // 32-elem blocks per row
+    long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= (long)batch * b32) return;
+    int n = t / b32, blk = t % b32, step = blk / 4, kb = blk % 4;
+    const float *xr = x + (long)n * in_f + blk * 32;
+    float amax = 0.f;
+#pragma unroll
+    for (int i = 0; i < 32; i++) { float a = fabsf(xr[i]); if (a > amax) amax = a; }
+    uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
+    scaleB[((long)step * batch + n) * 4 + kb] = sc;
+    float inv = 1.f / dec_ue4m3(sc);
+    uint8_t *out = Bbytes + (long)n * (in_f / 2) + blk * 16;
+#pragma unroll
+    for (int i = 0; i < 16; i++)
+        out[i] = q_fp4(xr[2 * i] * inv) | (q_fp4(xr[2 * i + 1] * inv) << 4);
+}
+extern "C" void quantize_act_nvfp4(const void *x, void *Bbytes, void *scaleB, int batch, int in_f) {
+    int total = batch * (in_f / 32), tpb = 256;
+    quant_act<<<(total + tpb - 1) / tpb, tpb>>>((const float *)x, (uint8_t *)Bbytes,
+                                                (uint8_t *)scaleB, batch, in_f);
+}
+
 // ---- PyTorch-callable entry: raw device pointers (torch data_ptr) -> launch ----
 extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
                              const void *scaleB, const void *meta, void *C,
