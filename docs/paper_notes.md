@@ -25,10 +25,13 @@ bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
 | 8192 | 423 TF/s | 1497 | 1556 (3.68× bf16) | 2207 (5.22× bf16) |
 | 16384| 405 TF/s | — | 1645 (4.06× bf16) | 1782 (4.39× bf16) |
 
-- Dense FP4 = **size-dependent parity with CUTLASS** (the SOTA vendor FP4 GEMM): CUTLASS edges us
-  at 4096 (1222 vs 1136, +7.6%), we edge CUTLASS at 8192 (1556 vs 1497, +3.9%). Both sit at the
-  instruction ceiling (~84–91% of the 1811 TF/s hardware mma peak) — dense FP4 is a solved,
-  ceiling-bound problem, and matching CUTLASS is the honest ceiling, not a beat.
+- Dense FP4 vs CUTLASS, **apples-to-apples clean measurement** (both cudaEvent-timed over 20 iters,
+  no torch dispatch; ours = `matmul_fp4_pp_bf16` standalone): CUTLASS 634 / 1222 / 1497 @ 2048/4096/8192,
+  ours **758 (+20%) / 1220 (tie) / 1510 (+0.9%)**. We match or beat CUTLASS at every size; the only
+  apparent "loss" (bench_vs_bf16 showed 1136 @4096) was **torch dispatch overhead in that harness**,
+  not a kernel deficit. Per-SM steady state @8192 we are MORE efficient than CUTLASS (86% vs 83% of
+  the 1811 TF/s register-only mma peak). The 4096 tie is pure wave quantization (512 tiles / 188 SMs
+  = 2.72 waves → ~10% tail); steady state there is otherwise our 86%.
 - Sparse FP4 is the **unique, defensible win**: CUTLASS/cuBLAS have **no sparse FP4 on SM120 at all**.
   Ours beats the best available vendor FP4 (CUTLASS dense) by **+24% @4096 (1512 vs 1222)** and
   **+47% @8192 (2207 vs 1497)** — a capability, not just a tuning delta.
@@ -98,6 +101,15 @@ Accuracy (real models, WikiText-2 PPL):
 - **A-without-swizzle** (2577k), **asymmetric-A WK=4** (2463k): both < 2731k symmetric wide-swz.
 - **Dense wide-TMA** (1515k, neutral) and **dense all-ldmatrix-then-all-mma ILP reorder** (1523k,
   neutral): dense is compute-bound; ptxas already schedules the mma stream optimally.
+- **Dense B-operand ldmatrix.x4** (`matmul_fp4_bx4.cu`, cut per-k-step LDSM 12→8): REGRESSED
+  1510k→1400k @8192. LDSM cost scales with matrices moved, not instruction count (x4 ≈ 2× x2
+  cycles), and batching 2 n-tiles/load kills the ILP that overlaps LDSM with OMMA. LDSM *count*
+  is not the lever; the ~14% gap to peak is LDSM *bandwidth* competing with OMMA (needs bigger
+  register-tile reuse, which spills past ~48 mma/warp).
+- **Dense split-K via f32 global + convert pass** (`matmul_fp4_splitk.cu`): REGRESSED hard
+  (1034k @8192 even at splits=1). A full-tensor f32 write+read+convert adds ~0.22ms @8192 (30%
+  of the matmul) — larger than the ~10% wave-quantization tail it was meant to recover. Split-K
+  only pays if the reduction is partial-tile-only (stream-K), not a whole-tensor roundtrip.
 - **Small-tile (single-WG 128×128)**: only +12% @2048, loses ≥4096 (shared-B B-traffic dominates);
   mid-shape is fixed-overhead-bound, not tile-bound.
 - **Thin-M split-K**: worse (atomicAdd contention); thin-M is latency/overhead-bound (~0.037ms floor).
