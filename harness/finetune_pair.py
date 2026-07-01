@@ -67,6 +67,36 @@ def run() -> None:
     def enc(s):
         return torch.bucketize(s, _MID)
 
+    def sparse_fp4_dequant(W):  # EXACT kernel dequant: pair-2:4 magnitude + FP4, returns float
+        out_f, in_f = W.shape; ks = in_f // 128
+        Wg = W.view(out_f, ks, 16, 4, 2)
+        i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        keptW = torch.gather(Wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        blk = keptW.reshape(out_f, ks, 4, 8, 2)
+        sdeq = UE4M3[enc(blk.abs().amax(dim=(3, 4)) / 6.0)]
+        kd = (FP4[q_fp4(blk / sdeq[..., None, None])] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
+        Wd = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
+        Wd.scatter_(3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kd)
+        return Wd.reshape(out_f, in_f)
+
+    def act_fp4_dequant(x):  # per-32-block NVFP4 fake-quant of activations (what the kernel does)
+        lead = x.shape[:-1]; i = x.shape[-1]
+        b = x.reshape(-1, i // 32, 32)
+        s = UE4M3[enc(b.abs().amax(-1) / 6.0)]
+        return (FP4[q_fp4(b / s[..., None])] * s[..., None]).reshape(*lead, i)
+
+    class QATLinear(nn.Module):  # trains against the EXACT sparse-FP4 kernel: weight AND act quant
+        def __init__(self, weight):
+            super().__init__()
+            self.weight = nn.Parameter(weight.clone())
+
+        def forward(self, x):
+            Wf = self.weight.float()
+            Wq = Wf + (sparse_fp4_dequant(Wf) - Wf).detach()   # STE weight fake-quant
+            xf = x.float()
+            xq = xf + (act_fp4_dequant(xf) - xf).detach()      # STE activation fake-quant
+            return F.linear(xq, Wq).to(x.dtype)
+
     class QuadbitLinear(nn.Module):
         def __init__(self, W):
             super().__init__()
@@ -183,48 +213,49 @@ def run() -> None:
     for h in hs:
         h.remove()
 
-    masks = {}
-    for _, _, lin in mlp_lins(student):
+    # SparseGPT-pair prune, then wrap each MLP linear in a QAT linear (forward = exact FP4 dequant)
+    masks, qats = {}, []
+    for mlp, nm, lin in mlp_lins(student):
         Wp = sparsegpt_pair24(lin.weight.data, Hs.pop(id(lin)))
-        lin.weight.data = Wp.to(torch.bfloat16)
-        masks[lin] = (Wp != 0).to(dev)
-    print(f"PPL one-shot SparseGPT pair-2:4 (bf16): {ppl(student):.3f}", flush=True)
+        qat = QATLinear(Wp.to(torch.bfloat16)).to(dev)
+        masks[qat] = (Wp != 0).to(dev)
+        setattr(mlp, nm, qat); qats.append(qat)
+    # student forward now runs through the FP4 fake-quant, so this == the kernel's one-shot PPL
+    print(f"PPL one-shot pair-2:4 FP4 (QAT-equivalent): {ppl(student):.3f}", flush=True)
 
-    # knowledge-distillation recovery: train only the surviving MLP weights, re-mask each step
+    # knowledge-distillation recovery: train only surviving MLP weights, re-mask each step
     for p in student.parameters():
         p.requires_grad_(False)
     params = []
-    for _, _, lin in mlp_lins(student):
-        lin.weight.requires_grad_(True); params.append(lin.weight)
+    for q in qats:
+        q.weight.requires_grad_(True); params.append(q.weight)
     opt = torch.optim.AdamW(params, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.0)
-    T, seq, steps = 2.0, 1024, 1200
+    T, seq, steps = 2.0, 1024, 1500
     starts = list(range(0, len(train_ids) - seq, seq))
     student.train()
     for step in range(steps):
-        i = starts[step % len(starts)]
-        w = train_ids[i:i + seq].unsqueeze(0).to(dev)
+        w = train_ids[starts[step % len(starts)]:starts[step % len(starts)] + seq].unsqueeze(0).to(dev)
         with torch.no_grad():
-            tl = teacher(w).logits
-        sl = student(w).logits
-        loss = F.kl_div(F.log_softmax(sl / T, -1), F.softmax(tl / T, -1),
-                        reduction="batchmean") * (T * T)
+            tl = teacher(w).logits.reshape(-1, teacher.config.vocab_size)
+        sl = student(w).logits.reshape(-1, teacher.config.vocab_size)
+        loss = F.kl_div(F.log_softmax(sl / T, -1), F.softmax(tl / T, -1), reduction="batchmean") * (T * T)
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         with torch.no_grad():
-            for lin, mk in masks.items():
-                lin.weight.data *= mk           # keep pair-2:4 structure exact
+            for q, mk in masks.items():
+                q.weight.data *= mk             # keep pair-2:4 structure exact
         if (step + 1) % 300 == 0:
-            print(f"  step {step + 1}/{steps} KD {loss.item():.4f}  PPL {ppl(student, windows=8):.3f}",
-                  flush=True)
+            print(f"  step {step + 1}/{steps} KD {loss.item():.4f}  PPL {ppl(student, windows=8):.3f}", flush=True)
             student.train()
 
-    p_ft = ppl(student)
-    print(f"PPL after recovery fine-tune (bf16 pair-2:4): {p_ft:.3f}", flush=True)
+    print(f"PPL after QAT recovery fine-tune (FP4): {ppl(student):.3f}", flush=True)
 
-    # final: FP4-quantize the recovered weights and run through the SPARSE KERNEL
-    for mlp, nm, lin in mlp_lins(student):
-        setattr(mlp, nm, QuadbitLinear(lin.weight.data).to(dev))
+    # final: build the actual sparse-FP4 KERNEL modules from the fine-tuned weights
+    for layer in student.model.layers:
+        for nm in ("gate_proj", "up_proj", "down_proj"):
+            q = getattr(layer.mlp, nm)
+            setattr(layer.mlp, nm, QuadbitLinear(q.weight.data).to(dev))
     print(f"PPL through 2:4-sparse FP4 KERNEL (final): {ppl(student):.3f}", flush=True)
 
 
