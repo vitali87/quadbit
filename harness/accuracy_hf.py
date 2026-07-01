@@ -54,9 +54,9 @@ def run() -> None:
         s = UE4M3[enc(b.abs().amax(-1) / 6.0)]                  # [out, in/16]
         return (FP4[q_fp4(b / s[..., None])] * s[..., None]).reshape(out_f, in_f)
 
-    def sparse_fp4_dequant(W):  # 2:4-by-magnitude + NVFP4 (exactly what QuadbitLinear packs)
-        out_f, in_f = W.shape
-        ks = in_f // 128
+    def sparse_fp4_dequant(W, ref=False):  # 2:4-by-magnitude + NVFP4 (what QuadbitLinear packs).
+        out_f, in_f = W.shape                # ref=True: return the 2:4-pruned full-precision weight
+        ks = in_f // 128                     #   (the "fine-tuned 2:4 model" stand-in) instead.
         Wg = W.view(out_f, ks, 16, 4, 2)
         i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
         kept = i01                                              # [out,ks,16,2] pair indices
@@ -64,7 +64,7 @@ def run() -> None:
         blk = keptW.reshape(out_f, ks, 4, 8, 2)
         sdeq = UE4M3[enc(blk.abs().amax(dim=(3, 4)) / 6.0)]
         kc = q_fp4(blk / sdeq[..., None, None])
-        kd = (FP4[kc] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
+        kd = keptW if ref else (FP4[kc] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
         Wd = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
         Wd.scatter_(3, kept.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kd)
         return Wd.reshape(out_f, in_f)
@@ -76,19 +76,19 @@ def run() -> None:
     sd = load_file(hf_hub_download(MODEL, "model.safetensors"))
     torch.manual_seed(0)
 
-    print(f"\n# per-weight reconstruction error (real trained weights vs random gaussian)")
-    print(f"{'tensor':<34}{'FP4-only':>10}{'2:4+FP4':>10}{'rand 2:4+FP4':>14}", flush=True)
-    projs = ["gate_proj", "up_proj", "down_proj"]
-    agg = {p: [] for p in projs}
+    print(f"\n# per-weight reconstruction error (real trained weights)")
+    print(f"  vs-dense: full 2:4+FP4 error   |   vs-2:4ref: FP4 error on kept values (what we own,")
+    print(f"  = the error left after 2:4 fine-tuning, since a 2:4 model's weights ARE sparse)")
+    print(f"{'tensor':<30}{'FP4-only':>10}{'2:4+FP4':>10}{'vs-2:4ref':>12}{'rand':>8}", flush=True)
     for layer in (0, 5, 11, 16, 21):
-        for p in projs:
+        for p in ["gate_proj", "up_proj", "down_proj"]:
             W = sd[f"model.layers.{layer}.mlp.{p}.weight"].float().to(dev)
             e_fp4 = rel(fp4_only_dequant(W), W)
             e_sp = rel(sparse_fp4_dequant(W), W)
+            e_own = rel(sparse_fp4_dequant(W), sparse_fp4_dequant(W, ref=True))
             Wr = torch.randn_like(W) * W.std()
             e_rand = rel(sparse_fp4_dequant(Wr), Wr)
-            agg[p].append((e_fp4, e_sp, e_rand))
-            print(f"L{layer:<2} {p:<28}{e_fp4:>10.3f}{e_sp:>10.3f}{e_rand:>14.3f}", flush=True)
+            print(f"L{layer:<2} {p:<24}{e_fp4:>10.3f}{e_sp:>10.3f}{e_own:>12.3f}{e_rand:>8.3f}", flush=True)
 
     print(f"\n# layer-output error on the down_proj (real W, real-input-like acts, incl act-quant)")
     W = sd["model.layers.0.mlp.down_proj.weight"].float().to(dev)   # [2048, 5632]
