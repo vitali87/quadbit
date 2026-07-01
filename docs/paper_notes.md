@@ -110,6 +110,16 @@ Accuracy (real models, WikiText-2 PPL):
   (1034k @8192 even at splits=1). A full-tensor f32 write+read+convert adds ~0.22ms @8192 (30%
   of the matmul) — larger than the ~10% wave-quantization tail it was meant to recover. Split-K
   only pays if the reduction is partial-tile-only (stream-K), not a whole-tensor roundtrip.
+- **Dense stream-K** (`matmul_fp4_streamk.cu`, 188 persistent CTAs, even (tile×kstep) work split,
+  bf16-direct for sole-owner tiles + f32 atomic reduction for only the ~180 boundary-split tiles):
+  CORRECT (PASS) but REGRESSED — 1380k @8192 (vs 1510 DP), 924k @4096 (vs 1220 DP). The reduction
+  was cheap (partial-tile-only, as designed), but the persistent per-CTA tile loop must DRAIN+REFILL
+  the async pipeline at every tile boundary (mbarrier reinit + 3-stage TMA prologue with no mma to
+  hide it). That kills the inter-tile overlap the HARDWARE block scheduler gives data-parallel for
+  free (it prefetches the next block while the current one's mma drains). Beating DP would require
+  cross-tile SOFTWARE pipelining (CUTLASS's true persistent design) — the wave-quant win (~10% @4096)
+  is smaller than the overlap DP already gets. Conclusion: our DP kernel is at the practical ceiling;
+  clean-measured it already matches/beats CUTLASS at all three sizes (see headline).
 - **Small-tile (single-WG 128×128)**: only +12% @2048, loses ≥4096 (shared-B B-traffic dominates);
   mid-shape is fixed-overhead-bound, not tile-bound.
 - **Thin-M split-K**: worse (atomicAdd contention); thin-M is latency/overhead-bound (~0.037ms floor).
