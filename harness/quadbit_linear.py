@@ -55,6 +55,8 @@ def run() -> None:
     lib.sparse_fp4_mm.restype = ctypes.c_int
     lib.quantize_act_nvfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
     lib.quantize_act_nvfp4.restype = None
+    lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant.restype = None
     dev = torch.device("cuda")
 
     # fp4 e2m1 code(0..15) -> value, and round-to-nearest fp4 (unit scale, weight side).
@@ -196,9 +198,9 @@ def run() -> None:
     print(f"# arbitrary batch: forward(100 tokens) -> {tuple(y100.shape)} "
           f"{'OK' if y100.shape == (100, 4096) else 'BAD'}", flush=True)
 
-    # SwiGLU FFN block (gate/up/down projections) swapped to QuadbitLinear vs torch bf16
+    # SwiGLU FFN block: unfused vs FUSED QuadbitLinear vs torch bf16
     import torch.nn.functional as F
-    print("# SwiGLU FFN block: QuadbitLinear vs torch bf16 (in=4096, hidden=11008)", flush=True)
+    print("# SwiGLU FFN block: fused-epilogue QuadbitLinear vs unfused vs torch bf16 (in=4096, hidden=11008)", flush=True)
     in_f, hidden = 4096, 11008
     Wg = torch.randn(hidden, in_f, device=dev) * 0.02
     Wu = torch.randn(hidden, in_f, device=dev) * 0.02
@@ -208,18 +210,33 @@ def run() -> None:
     for batch in (512, 2048):
         x = torch.randn(batch, in_f, device=dev).bfloat16()
 
-        def qffn():
+        def qffn():  # unfused: quant x twice, eager silu*mul, separate down-quant
             h = (F.silu(qg.forward(x).float()) * qu.forward(x).float()).bfloat16()
             return qd.forward(h)
+
+        def qffn_fused():  # quant x once (shared gate+up), fused silu*mul*quant epilogue
+            b = x.shape[0]
+            pad = (-b) % 128
+            xp = torch.cat([x, x.new_zeros(pad, in_f)], 0) if pad else x
+            pb = xp.shape[0]
+            Bb, sB = qg.pack_act(xp)                        # quant x ONCE
+            g = qg.run(Bb, sB, pb)                          # [hidden, pb]
+            u = qu.run(Bb, sB, pb)                          # [hidden, pb]
+            Hb = torch.empty((pb, hidden // 2), dtype=torch.uint8, device=dev)
+            sH = torch.empty((hidden // 128, pb, 4), dtype=torch.uint8, device=dev)
+            lib.fused_swiglu_quant(g.data_ptr(), u.data_ptr(), Hb.data_ptr(), sH.data_ptr(), pb, hidden)
+            return qd.run(Hb, sH, pb).t()[:b]
 
         def bffn():
             h = (F.silu((x @ Wgb.t()).float()) * (x @ Wub.t()).float()).bfloat16()
             return h @ Wdb.t()
 
-        rel = ((qffn().float() - bffn().float()).norm() / bffn().float().norm()).item()
-        ms_q, ms_b = time_ms(qffn), time_ms(bffn)
-        print(f"  batch={batch}: quadbit {ms_q:.3f} ms  bf16 {ms_b:.3f} ms -> {ms_b/ms_q:.2f}x "
-              f"(rel vs bf16-FFN {rel:.3f}; 2:4-prune floor on random weights)", flush=True)
+        rel_u = ((qffn().float() - bffn().float()).norm() / bffn().float().norm()).item()
+        rel_f = ((qffn_fused().float() - bffn().float()).norm() / bffn().float().norm()).item()
+        ms_u, ms_f, ms_b = time_ms(qffn), time_ms(qffn_fused), time_ms(bffn)
+        print(f"  batch={batch}: unfused {ms_u:.3f}ms ({ms_b/ms_u:.2f}x)  FUSED {ms_f:.3f}ms "
+              f"({ms_b/ms_f:.2f}x)  bf16 {ms_b:.3f}ms | fused vs unfused {ms_u/ms_f:.2f}x "
+              f"(rel unfused {rel_u:.3f} / fused {rel_f:.3f})", flush=True)
 
 
 @app.local_entrypoint()

@@ -239,6 +239,46 @@ extern "C" void quantize_act_nvfp4(const void *x, void *Bbytes, void *scaleB, in
                                                 (uint8_t *)scaleB, batch, in_f);
 }
 
+// ---- Fused SwiGLU epilogue: silu(g)*u + NVFP4 quantize in ONE pass. g,u are the gate/up GEMM
+// outputs in [hidden, batch] (the kernel's C[out,batch] layout); output Hbytes[batch,hidden/2] +
+// scaleH[hidden/128, batch, 4] is the down-proj's activation input. Replaces eager silu+mul+2
+// casts + a separate transpose + a separate quant pass (~5 memory round-trips over [batch,hidden])
+// with a single fused kernel. One thread owns one (batch b, 32-block of hidden); consecutive
+// threads take consecutive b so the strided g/u reads coalesce across the warp.
+__global__ void swiglu_quant(const __nv_bfloat16 *g, const __nv_bfloat16 *u, uint32_t *Hwords,
+                             uint8_t *scaleH, int batch, int hidden) {
+    int hb = hidden / 32;
+    long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= (long)batch * hb) return;
+    int hblock = (int)(t / batch), b = (int)(t % batch);   // b fastest -> coalesced g/u reads
+    int step = hblock / 4, kb = hblock % 4;
+    long base = (long)(hblock * 32) * batch + b;
+    float val[32]; float amax = 0.f;
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+        float gv = __bfloat162float(g[base + (long)i * batch]);
+        float uv = __bfloat162float(u[base + (long)i * batch]);
+        float h = (gv / (1.f + __expf(-gv))) * uv;         // silu(g)*u
+        val[i] = h; amax = fmaxf(amax, fabsf(h));
+    }
+    uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
+    scaleH[((long)step * batch + b) * 4 + kb] = sc;
+    float inv = 1.f / dec_ue4m3(sc);
+    uint32_t w[4] = {0, 0, 0, 0};
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        uint32_t byte = q_fp4(val[2 * i] * inv) | (q_fp4(val[2 * i + 1] * inv) << 4);
+        w[i >> 2] |= byte << ((i & 3) * 8);
+    }
+    *reinterpret_cast<uint4 *>(Hwords + (long)b * (hidden / 8) + hblock * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+}
+extern "C" void fused_swiglu_quant(const void *g, const void *u, void *Hbytes, void *scaleH,
+                                   int batch, int hidden) {
+    int total = batch * (hidden / 32), tpb = 256;
+    swiglu_quant<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
+                                                   (uint32_t *)Hbytes, (uint8_t *)scaleH, batch, hidden);
+}
+
 // ---- PyTorch-callable entry: raw device pointers (torch data_ptr) -> launch ----
 extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
                              const void *scaleB, const void *meta, void *C,

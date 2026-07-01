@@ -112,11 +112,19 @@ Accuracy (real models, WikiText-2 PPL):
    energy** → naive use gives **93.6 PPL** (vs 7.9 dense-FP4). This is the concrete "Blackwell FP4
    gap": no tooling targets pair-granular 2:4 because consumer-Blackwell FP4-sparse is unserved.
 
-5. **Deployment stack.** `QuadbitLinear` (`nn.Linear` drop-in): torch packer reproducing the
-   kernel's exact metadata/compress/scale layout (verified maxrel 0.0039) + a **fused 128-bit
-   NVFP4 activation quantizer** (one CUDA pass). End-to-end **4.0–4.2× over torch bf16** at 8192;
-   SwiGLU FFN block 2×; any token count (padding). Real per-block ue4m3 weight scales
+5. **Deployment stack + operator fusion.** `QuadbitLinear` (`nn.Linear` drop-in): torch packer
+   reproducing the kernel's exact metadata/compress/scale layout (verified maxrel 0.0039) + a
+   **fused 128-bit NVFP4 activation quantizer** (one CUDA pass). End-to-end **4.0–4.2× over torch
+   bf16** at 8192; any token count (padding). Real per-block ue4m3 weight scales
    (magnitude-independent: works at wscale=0.02).
+   - **Fused SwiGLU epilogue** (`swiglu_quant`): the unfused FFN quantizes x twice (gate+up) and
+     does silu+mul+casts+a separate down-quant in eager torch (~5 memory passes over [batch,hidden]).
+     Fusing = quant x ONCE (shared gate+up) + one kernel that reads g,u, computes silu(g)·u, and
+     emits the FP4-packed down-proj input + scales in a single transposing pass (consecutive threads
+     take consecutive batch so the strided g/u reads coalesce). SwiGLU FFN block: **2.07×→4.42× over
+     bf16** at batch=2048 (fused is **2.14× faster than unfused**), **1.73×→2.75×** at batch=512.
+     Numerically identical (rel 0.741 = same 2:4 prune floor) — pure memory-traffic win. The kernels
+     were already at the silicon ceiling; the remaining end-to-end gain was in fusion, exactly here.
 
 6. **Pair-granular recovery pipeline (one-shot + QAT), no NVIDIA equivalent.** SparseGPT retargeted
    to pair-granular masks (keep 2-of-4-pairs by `w²/[H⁻¹]²`, Hessian error compensation) →
