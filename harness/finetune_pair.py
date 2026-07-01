@@ -17,6 +17,7 @@ import modal
 
 ROOT = Path(__file__).parent.parent
 MODEL = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"  # dense base; MLP 5632x2048 %256
+# 8B-scale probe target: Qwen2.5-7B is ungated (Apache-2.0), MLP 18944x3584 both %256.
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
@@ -30,8 +31,9 @@ app = modal.App("quadbit-finetune", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
-@app.function(gpu="RTX-PRO-6000", timeout=43200, volumes={"/cache": vol})
-def run() -> None:
+@app.function(gpu="RTX-PRO-6000", timeout=86400, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])  # HF_TOKEN for gated Llama-3
+def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False) -> float:
     import ctypes
     import math
     import os
@@ -179,10 +181,10 @@ def run() -> None:
             W[:, i:e] = W1; W[:, e:] -= Err @ Hinv[i:e, e:]
         return W
 
-    tok = AutoTokenizer.from_pretrained(MODEL)
+    tok = AutoTokenizer.from_pretrained(model)
 
     def load():
-        return AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to(dev)
+        return AutoModelForCausalLM.from_pretrained(model, dtype=torch.bfloat16).to(dev)
 
     def wikitext(cfg, fn):
         p = hf_hub_download("Salesforce/wikitext", f"{cfg}/{fn}", repo_type="dataset")
@@ -191,6 +193,8 @@ def run() -> None:
 
     test_ids = wikitext("wikitext-2-raw-v1", "test-00000-of-00001.parquet")   # comparable eval
     train_ids = wikitext("wikitext-103-raw-v1", "train-00000-of-00002.parquet")  # big, no overfit
+    if both_shards:  # real-data-scale probe: full wikitext-103 train (both shards)
+        train_ids = torch.cat([train_ids, wikitext("wikitext-103-raw-v1", "train-00001-of-00002.parquet")])
     print(f"train tokens: {len(train_ids)}", flush=True)
 
     def ppl(m, windows=16, seq=2048):
@@ -217,12 +221,13 @@ def run() -> None:
     student = load()
 
     T, seq = 2.0, 1024
-    P1, P2, wu = 30000, 2000, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps
+    P1, P2, wu = p1, p2, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps
     total = P1 + P2
     lr_max, lr_min = 2e-4, 1e-5
     starts = list(range(0, len(train_ids) - seq, seq))
     targets = list(mlp_lins(student))  # (mlp, name, lin) in deterministic order; checkpoint key basis
-    ck = f"/cache/phase1_{MODEL.split('/')[-1]}_P{P1}.pt"  # phase-1 result cached on the volume
+    sh_tag = "_2sh" if both_shards else ""
+    ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{sh_tag}.pt"  # phase-1 result cached on the volume
 
     masks, qats = {}, []
     if os.path.exists(ck):
@@ -317,7 +322,8 @@ def run() -> None:
 
 
 @app.local_entrypoint()
-def main() -> None:
-    call = run.spawn()  # spawn (not remote): compute survives local-client disconnect. See memory.
+def main(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False) -> None:
+    # spawn (not remote): compute survives local-client disconnect. See memory.
+    call = run.spawn(model=model, p1=p1, p2=p2, both_shards=both_shards)
     print(f"SPAWN_ID {call.object_id}", flush=True)
     print(f"RESULT {call.get():.3f}", flush=True)  # blocks; if this waiter dies, recover via SPAWN_ID
