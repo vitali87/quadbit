@@ -60,6 +60,8 @@ def run() -> None:
     dc.dense_fp4_decode_cached.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
     dc.dense_fp4_decode_cached_async.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
     dc.dense_fp4_decode_cached_async.restype = None
+    dc.qb_decode_tn.argtypes = [ctypes.c_int]
+    dc.qb_decode_tn.restype = ctypes.c_int
 
     print(f"{torch.cuda.get_device_name(0)}\n", flush=True)
 
@@ -109,7 +111,7 @@ def run() -> None:
         ms_dc = tms(lambda: dc.dense_fp4_decode(Ad.data_ptr(), Bd.data_ptr(), Cd.data_ptr(), M, N, K))
         # cached-map decode: build both TMA maps ONCE (deployment: weight+reused-act buffer), time launch only
         mapA_h = dc.qb_encode_map(Ad.data_ptr(), M, K, 128)
-        mapB_h = dc.qb_encode_map(Bd.data_ptr(), N, K, 32)
+        mapB_h = dc.qb_encode_map(Bd.data_ptr(), N, K, dc.qb_decode_tn(N))
         # async (no per-call sync) matches how torch.matmul is timed -> fair kernel throughput
         ms_dcc = tms(lambda: dc.dense_fp4_decode_cached_async(mapA_h, mapB_h, Cd.data_ptr(), M, N, K))
         dc.qb_free_map(mapA_h); dc.qb_free_map(mapB_h)

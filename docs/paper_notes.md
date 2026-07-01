@@ -45,12 +45,12 @@ dense split-K = `cuda/dense_sk_lib.cu`, auto-tuned split factor):
 | prefill attn qkv/o | 4096³ | 3.20× | 3.04× | 1.61× | **3.20×** | 4.14× |
 | prefill ffn up | 4096/14336/4096 | 3.38× | 3.36× | 1.52× | **3.38×** | 4.49× |
 | prefill ffn down | 4096/4096/14336 | 3.64× | 3.63× | 1.60× | **3.64×** | 5.09× |
-| decode ffn up | 128/14336/4096 | 2.80× | 2.82× | 2.54× (3.09× cached+async) | **3.09×** | (M<256) |
-| decode ffn down | 128/4096/14336 | 0.50× | **1.42×** | 0.90× cached | **1.42×** | (M<256) |
-| decode attn qkv/o | 128/4096/4096 | 0.50× | 0.74× | 0.79× (**1.11× cached+async**) | **1.11×** | (M<256) |
+| decode ffn up | 128/14336/4096 | 2.76× | 2.74× | 4.53× cached+async | **4.53×** | (M<256) |
+| decode ffn down | 128/4096/14336 | 0.49× | **1.40×** | 1.11× cached | **1.40×** | (M<256) |
+| decode attn qkv/o | 128/4096/4096 | 0.49× | 0.68× | **1.27× cached+async** | **1.27×** | (M<256) |
 
-(decode-K = split-N decode kernel; "cached+async" = weight TMA map built once + fire-and-forget launch,
-the deployment path — see decode notes. **Every LLM shape now beats cuBLAS bf16.**)
+(decode-K = split-N decode kernel; "cached+async" = weight TMA map built once + fire-and-forget launch +
+ADAPTIVE config, the deployment path — see decode notes. **Every LLM shape now beats cuBLAS bf16.**)
 
 - **Prefill (bulk of training + long-context compute): 3.0–3.6× dense, 4.1–5.0× sparse over bf16.**
 - **Decode small-M underfills the SM array** (grid = N/256 × 1 = 16 blocks for N=4096, 16/188 SMs).
@@ -68,8 +68,16 @@ the deployment path — see decode notes. **Every LLM shape now beats cuBLAS bf1
     matching how torch enqueues). This was the real decode fix — the earlier 0.73× was NOT map-build
     cost (cached-with-sync was still 0.78×) but the per-call device sync exposing ~8µs launch latency
     on a 20µs kernel. With cached+async: **attn-qkv 0.50×→1.11×, ffn-up 2.80×→3.09×**.
-  - Routed best per shape: prefill all `plain` (3.0–3.6×); decode attn-qkv **1.11×** (decode+cached),
-    ffn-up **3.09×**, ffn-down **1.42×** (split-K). **Every LLM GEMM shape now beats cuBLAS bf16.**
+  - **Adaptive decode config** (occupancy sweep, `matmul_fp4_dec2.cu`): decode is bound by activation
+    re-read (L2) + weight stream (DRAM), NOT compute. More blocks backfires — each N-block re-reads
+    all of A from L2, so block count multiplies A traffic. Sweet spot by N: large N → 8 warps/block
+    (NWARP=8, more threads since blocks are plentiful); small N → 4 warps + deep pipeline (STAGES=8)
+    to hide latency. `dense_decode_lib.cu` dispatches on N. Deployment (cached+async+adaptive):
+    ffn-up **3.09×→4.53×**, attn-qkv **1.11×→1.27×**.
+  - Routed best per shape: prefill all `plain` (3.0–3.6×); decode attn-qkv **1.27×**, ffn-up **4.53×**,
+    ffn-down **1.40×** (split-K). **Every LLM GEMM shape now beats cuBLAS bf16.** Remaining headroom:
+    the ffn decode ops are weight-DRAM-bound → 2:4-SPARSE decode would ~halve weight bytes (ffn-up
+    ~4.5×→~7×); attn-qkv @4096² is latency-bound (too small to saturate memory), a practical ceiling.
 
 Accuracy (real models, WikiText-2 PPL):
 - **Dense FP4: +0.3 PPL, zero training, any model** (Sparse-Llama-3.1-8B 7.89→8.16; Qwen2.5-3B 7.60→7.91). Production-ready.

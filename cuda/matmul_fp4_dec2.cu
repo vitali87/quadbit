@@ -1,14 +1,13 @@
-// PyTorch-callable DECODE FP4 (split-N, direct bf16, no reduction) for small-M memory-bound
-// shapes. Narrow TN=NWARP*8 column tile, each warp owns one 8-col n-tile over all 128 rows +
-// full K -> grid = N/TN x M/128 blocks, direct bf16. Config is ADAPTIVE by N (from an occupancy
-// sweep): large N wants more warps/block (NWARP=8), small N wants deeper pipelines + more blocks
-// (NWARP=4, STAGES=8). More blocks than that backfires -- each N-block re-reads the full
-// activation A from L2, so block count multiplies A traffic. Long-K decode (ffn down) should use
-// split-K (dense_sk_lib) instead. Maps encode address+tiling not contents -> build weight map
-// once, reuse every step; async launch avoids per-call sync (matches torch).
+// Decode occupancy sweep. The split-N decode kernel hits only ~24% of DRAM bandwidth at
+// 128/4096/4096 (20.5us vs a 4.9us memory floor) because 128 threads/block + big smem =
+// ~16% occupancy can't hide memory latency. This templates (NWARP, STAGES) to find the
+// bandwidth-efficient config: more warps/block and shallower pipelines raise occupancy;
+// TN = NWARP*8 columns per block trades block count for threads/block. Kernel-only timing.
+//
+// Run:  uv run modal run harness/run_cuda.py --cu matmul_fp4_dec2
+
 #include <cstdio>
 #include <cstdint>
-#include <cstdlib>
 #include <cuda.h>
 #include <cuda_bf16.h>
 
@@ -106,15 +105,6 @@ decode_mm(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
     }
 }
 
-// adaptive config: large N -> 8 warps/block; small N -> 4 warps + deep pipeline.
-#define BIG_N 8192
-#define NW_BIG 8
-#define ST_BIG 4
-#define NW_SM 4
-#define ST_SM 8
-
-extern "C" int qb_decode_tn(int N) { return (N >= BIG_N ? NW_BIG : NW_SM) * 8; }
-
 static void dmk(CUtensorMap *m, uint8_t *p, int Kb, int rows, int boxrows) {
     uint64_t gd[2] = {(uint64_t)Kb, (uint64_t)rows}; uint64_t gs[1] = {(uint64_t)Kb};
     uint32_t bd[2] = {(uint32_t)BKH, (uint32_t)boxrows}, es[2] = {1, 1};
@@ -125,44 +115,48 @@ static void dmk(CUtensorMap *m, uint8_t *p, int Kb, int rows, int boxrows) {
 }
 
 template <int NWARP, int STAGES>
-static void launch(const CUtensorMap &mapA, const CUtensorMap &mapB, __nv_bfloat16 *C, int M, int N, int K) {
+void bench(uint8_t *dA, uint8_t *dB, __nv_bfloat16 *dC, CUtensorMap mapA, CUtensorMap mapB,
+           int M, int N, int K) {
     constexpr int TN = NWARP * 8;
-    int SMEM = STAGES * BM * BKH + STAGES * TN * BKH + STAGES * 8 + 128;
-    static bool set[2] = {false, false};
-    int idx = (NWARP == NW_BIG);
-    if (!set[idx]) { cudaFuncSetAttribute(decode_mm<NWARP, STAGES>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); set[idx] = true; }
+    constexpr int ASZ = BM * BKH, BSZ = TN * BKH;
+    int SMEM = STAGES * ASZ + STAGES * BSZ + STAGES * 8 + 128;
+    auto k = decode_mm<NWARP, STAGES>;
+    cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
     dim3 grid(N / TN, M / BM), block(NWARP * 32);
-    decode_mm<NWARP, STAGES><<<grid, block, SMEM>>>(mapA, mapB, C, N, K);
+    for (int i = 0; i < 10; i++) k<<<grid, block, SMEM>>>(mapA, mapB, dC, N, K);
+    if (cudaDeviceSynchronize() != cudaSuccess) { printf("  NWARP=%d ST=%d ERR %s\n", NWARP, STAGES, cudaGetErrorString(cudaGetLastError())); return; }
+    cudaEvent_t s, e; cudaEventCreate(&s); cudaEventCreate(&e);
+    int it = 200; cudaEventRecord(s);
+    for (int i = 0; i < it; i++) k<<<grid, block, SMEM>>>(mapA, mapB, dC, N, K);
+    cudaEventRecord(e); cudaEventSynchronize(e);
+    float ms = 0; cudaEventElapsedTime(&ms, s, e); ms /= it;
+    double us = ms * 1e3;
+    double wbytes = (double)N * K / 2.0 + (double)M * K / 2.0 * (N / TN);  // B once + A re-read per N-tile
+    double bw = wbytes / (us * 1e-6) / 1e12;
+    printf("  NWARP=%2d(TN=%3d,thr=%3d) ST=%d smem=%2dKB grid=%4d : %6.1f us  %5.2f TB/s\n",
+           NWARP, TN, NWARP * 32, STAGES, SMEM / 1024, (N / TN) * (M / BM), us, bw);
 }
 
-static void dispatch(const CUtensorMap &mapA, const CUtensorMap &mapB, __nv_bfloat16 *C, int M, int N, int K) {
-    if (N >= BIG_N) launch<NW_BIG, ST_BIG>(mapA, mapB, C, M, N, K);
-    else launch<NW_SM, ST_SM>(mapA, mapB, C, M, N, K);
-}
-
-extern "C" int dense_fp4_decode(const void *A, const void *B, void *C, int M, int N, int K) {
+void run(int M, int N, int K) {
     int Kb = K / 2;
-    alignas(64) CUtensorMap mapA, mapB;
-    dmk(&mapA, (uint8_t *)A, Kb, M, BM);
-    dmk(&mapB, (uint8_t *)B, Kb, N, qb_decode_tn(N));
-    dispatch(mapA, mapB, (__nv_bfloat16 *)C, M, N, K);
-    return (int)cudaDeviceSynchronize();
+    uint8_t *dA, *dB; __nv_bfloat16 *dC;
+    cudaMalloc(&dA, (size_t)M * Kb); cudaMalloc(&dB, (size_t)N * Kb);
+    cudaMalloc(&dC, (size_t)M * N * sizeof(__nv_bfloat16));
+    cudaMemset(dA, 0x22, (size_t)M * Kb); cudaMemset(dB, 0x22, (size_t)N * Kb);
+    CUtensorMap mapA; dmk(&mapA, dA, Kb, M, BM);
+    printf("=== %d/%d/%d (bf16 ref ~ attn23 ffnup127 ffndn60 us) ===\n", M, N, K);
+    { CUtensorMap mB; dmk(&mB, dB, Kb, N, 8 * 1);   bench<1, 8>(dA, dB, dC, mapA, mB, M, N, K); }
+    { CUtensorMap mB; dmk(&mB, dB, Kb, N, 8 * 2);   bench<2, 8>(dA, dB, dC, mapA, mB, M, N, K); }
+    { CUtensorMap mB; dmk(&mB, dB, Kb, N, 8 * 2);   bench<2, 10>(dA, dB, dC, mapA, mB, M, N, K); }
+    { CUtensorMap mB; dmk(&mB, dB, Kb, N, 8 * 4);   bench<4, 8>(dA, dB, dC, mapA, mB, M, N, K); }
+    { CUtensorMap mB; dmk(&mB, dB, Kb, N, 8 * 8);   bench<8, 4>(dA, dB, dC, mapA, mB, M, N, K); }
+    { CUtensorMap mB; dmk(&mB, dB, Kb, N, 8 * 8);   bench<8, 6>(dA, dB, dC, mapA, mB, M, N, K); }
+    cudaFree(dA); cudaFree(dB); cudaFree(dC);
 }
 
-// cached-map path. Build B map with boxrows = qb_decode_tn(N); A map with boxrows = 128 (BM).
-extern "C" void *qb_encode_map(const void *ptr, int rows, int K, int boxrows) {
-    CUtensorMap *m = (CUtensorMap *)aligned_alloc(64, sizeof(CUtensorMap));
-    dmk(m, (uint8_t *)ptr, K / 2, rows, boxrows);
-    return m;
-}
-extern "C" void qb_free_map(void *m) { free(m); }
-
-extern "C" int dense_fp4_decode_cached(const void *mapA, const void *mapB, void *C, int M, int N, int K) {
-    dispatch(*(const CUtensorMap *)mapA, *(const CUtensorMap *)mapB, (__nv_bfloat16 *)C, M, N, K);
-    return (int)cudaDeviceSynchronize();
-}
-
-// fire-and-forget: no device sync (caller's stream handles it, like torch) -> decode steps pipeline.
-extern "C" void dense_fp4_decode_cached_async(const void *mapA, const void *mapB, void *C, int M, int N, int K) {
-    dispatch(*(const CUtensorMap *)mapA, *(const CUtensorMap *)mapB, (__nv_bfloat16 *)C, M, N, K);
+int main() {
+    run(128, 4096, 4096);
+    run(128, 14336, 4096);
+    run(128, 4096, 14336);
+    return 0;
 }
