@@ -336,6 +336,66 @@ extern "C" void rmsnorm_quant(const void *x, const void *wt, void *Bbytes, void 
                                           (uint32_t *)Bbytes, (uint8_t *)scaleB, batch, hidden, eps);
 }
 
+// ---- Fused residual-add + RMSNorm + NVFP4 quant: the full block transition. h = inp + residual
+// (written back as the updated residual stream for the next add), then rmsnorm(h)*weight quantized
+// to FP4 for the next GEMM. Fuses the eager residual add (read2+write) into the norm+quant kernel:
+// one read of inp+residual replaces add(read2,write1) + rmsnorm(read,reduce,write) + quant(read,write).
+__global__ void add_rmsnorm_quant_k(const __nv_bfloat16 *inp, const __nv_bfloat16 *res,
+                                    const __nv_bfloat16 *wt, __nv_bfloat16 *hout, uint32_t *Bwords,
+                                    uint8_t *scaleB, int batch, int hidden, float eps) {
+    int b = blockIdx.x;
+    extern __shared__ float sm[];
+    const __nv_bfloat16 *ir = inp + (long)b * hidden;
+    const __nv_bfloat16 *rr = res + (long)b * hidden;
+    __nv_bfloat16 *ho = hout + (long)b * hidden;
+    float ls = 0.f;
+    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
+        float v = __bfloat162float(ir[i]) + __bfloat162float(rr[i]);
+        sm[i] = v; ho[i] = __float2bfloat16_rn(v); ls += v * v;   // write updated residual stream
+    }
+    for (int o = 16; o > 0; o >>= 1) ls += __shfl_down_sync(0xffffffffu, ls, o);
+    __shared__ float red[32];
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    if (lane == 0) red[warp] = ls;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float t = 0.f; int nw = blockDim.x >> 5;
+        for (int i = 0; i < nw; i++) t += red[i];
+        red[0] = rsqrtf(t / hidden + eps);
+    }
+    __syncthreads();
+    float rms = red[0];
+    int nb = hidden / 32;
+    for (int blk = threadIdx.x; blk < nb; blk += blockDim.x) {
+        int step = blk / 4, kb = blk % 4;
+        float val[32]; float amax = 0.f;
+#pragma unroll
+        for (int i = 0; i < 32; i++) {
+            float v = sm[blk * 32 + i] * rms * __bfloat162float(wt[blk * 32 + i]);
+            val[i] = v; amax = fmaxf(amax, fabsf(v));
+        }
+        uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
+        scaleB[((long)step * batch + b) * 4 + kb] = sc;
+        float inv = 1.f / dec_ue4m3(sc);
+        uint32_t w[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i = 0; i < 16; i++) {
+            uint32_t byte = q_fp4(val[2 * i] * inv) | (q_fp4(val[2 * i + 1] * inv) << 4);
+            w[i >> 2] |= byte << ((i & 3) * 8);
+        }
+        *reinterpret_cast<uint4 *>(Bwords + (long)b * (hidden / 8) + blk * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+    }
+}
+extern "C" void add_rmsnorm_quant(const void *inp, const void *res, const void *wt, void *hout,
+                                  void *Bbytes, void *scaleB, int batch, int hidden, float eps) {
+    int smem = hidden * (int)sizeof(float);
+    if (smem > 48 * 1024)
+        cudaFuncSetAttribute(add_rmsnorm_quant_k, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+    add_rmsnorm_quant_k<<<batch, 256, smem>>>((const __nv_bfloat16 *)inp, (const __nv_bfloat16 *)res,
+                                              (const __nv_bfloat16 *)wt, (__nv_bfloat16 *)hout,
+                                              (uint32_t *)Bbytes, (uint8_t *)scaleB, batch, hidden, eps);
+}
+
 // ---- PyTorch-callable entry: raw device pointers (torch data_ptr) -> launch ----
 extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
                              const void *scaleB, const void *meta, void *C,

@@ -133,6 +133,15 @@ Accuracy (real models, WikiText-2 PPL):
      eager rmsnorm (read+reduce+write) + a separate quant pass (read+write), and it's more accurate
      (no bf16 round-trip before quant). **3.7–4.3× over eager rmsnorm+quant** (0.129→0.035ms @2048),
      rel 0.105 vs true = the FP4 activation-quant floor. Feeds straight into the QKV/gate-up GEMM.
+   - **Fused residual-add + RMSNorm + quant** (`add_rmsnorm_quant_k`): the full block transition —
+     h = inp+residual (written back as the updated residual stream) then rmsnorm(h)·w then quant, one
+     kernel. Folds the eager residual add's read2+write into the norm+quant. **5.3–5.8× over eager
+     add+rmsnorm+quant** (0.215→0.037ms @2048), rel 0.105, residual maxabs-err 0.016 (bf16 rounding).
+   - **Fusion track summary:** the raw GEMMs are at the silicon ceiling, so every end-to-end LLM gain
+     came from fusing the glue between GEMMs: fused SwiGLU FFN (2.05→4.66×), fused RMSNorm+quant
+     (3.7–4.3×), fused add+RMSNorm+quant block transition (5.3–5.8×), concat gate/up. All at zero
+     accuracy cost (FP4/prune floors preserved). Every inter-GEMM memory round-trip in a transformer
+     block is now a single fused pass.
 
 6. **Pair-granular recovery pipeline (one-shot + QAT), no NVIDIA equivalent.** SparseGPT retargeted
    to pair-granular masks (keep 2-of-4-pairs by `w²/[H⁻¹]²`, Hessian error compensation) →

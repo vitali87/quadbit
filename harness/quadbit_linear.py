@@ -59,6 +59,8 @@ def run() -> None:
     lib.fused_swiglu_quant.restype = None
     lib.rmsnorm_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_float]
     lib.rmsnorm_quant.restype = None
+    lib.add_rmsnorm_quant.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_float]
+    lib.add_rmsnorm_quant.restype = None
     dev = torch.device("cuda")
 
     # fp4 e2m1 code(0..15) -> value, and round-to-nearest fp4 (unit scale, weight side).
@@ -286,6 +288,42 @@ def run() -> None:
         ms_e, ms_f = time_ms(eager), time_ms(fused)
         print(f"  batch={batch}: eager {ms_e:.3f}ms  FUSED {ms_f:.3f}ms -> {ms_e/ms_f:.2f}x "
               f"(fused rel-vs-true-rmsnorm {rel:.3f} = FP4 quant floor)", flush=True)
+
+    # Fused residual-add + RMSNorm + quant (block transition) vs eager add+rmsnorm+quant
+    print("# add+RMSNorm+quant fusion: fused kernel vs eager add+rmsnorm+quant_act (hidden=4096)", flush=True)
+    for batch in (512, 2048):
+        xn = torch.randn(batch, hid, device=dev).bfloat16()
+        rn = torch.randn(batch, hid, device=dev).bfloat16()
+        Bbe = torch.empty((batch, hid // 2), dtype=torch.uint8, device=dev)
+        sBe = torch.empty((hid // 128, batch, 4), dtype=torch.uint8, device=dev)
+        Bbf, sBf = torch.empty_like(Bbe), torch.empty_like(sBe)
+        hoe = torch.empty((batch, hid), dtype=torch.bfloat16, device=dev)
+        hof = torch.empty_like(hoe)
+
+        def eager_a():  # residual add (-> new residual bf16) + rmsnorm + separate quant
+            h = xn.float() + rn.float()
+            hoe.copy_(h.bfloat16())
+            r = (h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps) * wn.float()).bfloat16()
+            lib.quantize_act_nvfp4(r.data_ptr(), Bbe.data_ptr(), sBe.data_ptr(), batch, hid)
+
+        def fused_a():
+            lib.add_rmsnorm_quant(xn.data_ptr(), rn.data_ptr(), wn.data_ptr(), hof.data_ptr(),
+                                  Bbf.data_ptr(), sBf.data_ptr(), batch, hid, eps)
+
+        eager_a(); fused_a()
+
+        def deq2(Bb, sB):
+            codes = torch.stack([(Bb & 0xf).long(), (Bb >> 4).long()], -1).view(batch, hid)
+            s = UE4M3[sB.long()].permute(1, 0, 2).reshape(batch, hid // 32)
+            return FP4[codes] * s.repeat_interleave(32, dim=1)
+
+        h = xn.float() + rn.float()
+        true = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps) * wn.float()
+        rel = ((deq2(Bbf, sBf).float() - true).norm() / true.norm()).item()
+        hres = ((hof.float() - h).abs().max()).item()  # residual-stream output accuracy
+        ms_e, ms_f = time_ms(eager_a), time_ms(fused_a)
+        print(f"  batch={batch}: eager {ms_e:.3f}ms  FUSED {ms_f:.3f}ms -> {ms_e/ms_f:.2f}x "
+              f"(rel {rel:.3f}, residual maxabs-err {hres:.4f})", flush=True)
 
 
 @app.local_entrypoint()
