@@ -1,5 +1,12 @@
 # Kernels and results
 
+> **HISTORICAL — the CubeCL/Rust track (superseded).** This document describes the early
+> CubeCL/Rust kernels (`src/bin/`, `run_rust.py`), whose best design topped out at ~505k GFLOP/s
+> with "CUTLASS ~3× faster." That track was **abandoned**. The current raw-PTX CUDA kernels
+> (`cuda/*.cu`, `harness/run_cuda.py`) reach ~1510k dense (matching CUTLASS) and ~2012k sparse.
+> For current results and honest standing see [paper_notes.md](paper_notes.md) and
+> [standing.md](standing.md). Kept only as a record of the CubeCL-era negative results.
+
 Every kernel is a standalone binary in `src/bin/`, run with:
 
 ```bash
