@@ -42,7 +42,7 @@ def run() -> None:
 
     outs = {}
     for name, src in (("sp", "sparse_fp4_lib"), ("de", "dense_fp4_lib"), ("sk", "dense_sk_lib"),
-                      ("dc", "dense_decode_lib")):
+                      ("dc", "dense_decode_lib"), ("ss", "sparse_sk_lib")):
         so = f"/root/{name}.so"
         c = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
                             "-o", so, f"/root/cuda/{src}.cu", "-lcuda"], capture_output=True, text=True)
@@ -62,6 +62,8 @@ def run() -> None:
     dc.dense_fp4_decode_cached_async.restype = None
     dc.qb_decode_tn.argtypes = [ctypes.c_int]
     dc.qb_decode_tn.restype = ctypes.c_int
+    ss = outs["ss"]
+    ss.sparse_fp4_mm_sk.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_int] * 4
 
     print(f"{torch.cuda.get_device_name(0)}\n", flush=True)
 
@@ -144,12 +146,22 @@ def run() -> None:
             sBw = torch.full((ks, No, 4), 0x38, dtype=torch.uint8, device="cuda")
             mtw = torch.full((ks, Mo, 2), 0x44444444, dtype=torch.int32, device="cuda")
             Csw = torch.empty((Mo, No), dtype=torch.bfloat16, device="cuda")
-            try:
-                t = tms(lambda: sp.sparse_fp4_mm(Acw.data_ptr(), Bxw.data_ptr(), sAw.data_ptr(),
-                                                 sBw.data_ptr(), mtw.data_ptr(), Csw.data_ptr(), Mo, No, K))
-                sp_dec = f"  spDEC {ms_bf16/t:4.2f}x"
-            except Exception as ex:
-                sp_dec = f"  spDEC err {ex}"
+            Cfw = torch.empty((Mo, No), dtype=torch.float32, device="cuda")
+            ktot = K // 256  # chunks (128*WK)
+            best_ss, best_ssp = 1e9, 1
+            for spl in sorted({1, 2, 3, 4, 6}):
+                if spl > ktot:
+                    continue
+                try:
+                    t = tms(lambda: ss.sparse_fp4_mm_sk(Acw.data_ptr(), Bxw.data_ptr(), sAw.data_ptr(),
+                                                        sBw.data_ptr(), mtw.data_ptr(), Csw.data_ptr(),
+                                                        Cfw.data_ptr(), Mo, No, K, spl))
+                    if t < best_ss:
+                        best_ss, best_ssp = t, spl
+                except Exception as ex:
+                    sp_dec = f"  spDEC err {ex}"; break
+            if best_ss < 1e9:
+                sp_dec = f"  spDEC {ms_bf16/best_ss:4.2f}x s={best_ssp}"
 
         def cell(ms):
             return f"{ms_bf16/ms:5.2f}x"

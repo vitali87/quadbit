@@ -182,13 +182,15 @@ Accuracy (real models, WikiText-2 PPL):
 - **Recovery without weight update**: magnitude pair-2:4 = 93.6/16129 PPL, Wanda (importance-only)
   = 59.1 — the Hessian compensation (SparseGPT) is essential for the constrained pair mask.
 - **One-shot SparseGPT-pair** (independent per-layer) = 20.6–21.8 PPL: needs recovery fine-tuning.
-- **Sparse weight-stationary DECODE via the existing prefill sparse kernel** (orient C[out,tok]=W@Xᵀ
-  so the 2:4 weight is the compressed mma-A): REGRESSED for decode — ffn-up spDEC 3.36× vs the dense
-  decode kernel's 4.53×, attn 0.57×. The thin tok=128 N-dim + 256-row M-tiling gives only 16–56
-  blocks (underfill); the prefill sparse kernel isn't built for thin decode. It ties normal sparse for
-  PREFILL (4.2–5.0×, confirming the orientation is correct), so a decode sparse win needs a DEDICATED
-  mma.sp kernel with the split-N decode occupancy treatment — the dense decode kernel is the better
-  decode vehicle as-is.
+- **Sparse weight-stationary DECODE** (`sparse_sk_lib.cu`, orient C[out,tok]=W@Xᵀ so the 2:4 weight is
+  the compressed mma-A, M=out large; + split-K to fill SMs): WORKS (correct, novel — first 2:4 FP4
+  decode on SM120) but net MARGINAL. Wins only long-K ffn-down (128/4096/14336: 1.42×→**1.54×**, s=6);
+  loses ffn-up (3.40× < dense 4.43×) and attn (0.80×). The half-weight-DRAM benefit is real but the
+  thin [out,tok] output forces either split-K (f32 atomic + convert overhead eats the savings) or
+  too-few blocks (s=1 = 56, underfill). Dense adaptive decode (direct-bf16 split-N) is already too
+  efficient to beat on ffn-up. Confirms sparse decode is a real capability but not a big lever; the
+  half-weight win is capped by the reduction overhead the thin output forces. Prefill sparse remains
+  the big sparse win (4–5×).
 
 ## Reproducibility
 
