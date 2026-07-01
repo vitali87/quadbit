@@ -141,8 +141,8 @@ void run(int sz) {
     auto rnd = [&]() { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return st; };
     for (size_t i = 0; i < (size_t)M * Kb; i++) hA[i] = (uint8_t)rnd();
     for (size_t i = 0; i < (size_t)N * Kb; i++) hB[i] = (uint8_t)rnd();
-    for (size_t i = 0; i < (size_t)M * Ksf16; i++) hSFA[i] = 54 + (rnd() % 5);   // ue4m3 ~1.0 (0x38=56)
-    for (size_t i = 0; i < (size_t)N * Ksf16; i++) hSFB[i] = 54 + (rnd() % 5);
+    for (size_t i = 0; i < (size_t)M * Ksf16; i++) hSFA[i] = 40 + (rnd() % 32);  // WIDE ue4m3 range ~2^-4..2^2
+    for (size_t i = 0; i < (size_t)N * Ksf16; i++) hSFB[i] = 40 + (rnd() % 32);
     cudaMemcpy(dA, hA, (size_t)M * Kb, cudaMemcpyHostToDevice);
     cudaMemcpy(dB, hB, (size_t)N * Kb, cudaMemcpyHostToDevice);
     cudaMemcpy(dSFA, hSFA, (size_t)M * Ksf16, cudaMemcpyHostToDevice);

@@ -185,12 +185,14 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
 - **NVFP4 (ue4m3, per-16) dense mma — DERIVED + VERIFIED** (`verify_nvfp4_dense.cu`): the dense
   `scale_vec::4X.m16n8k64...ue4m3` scale lane layout was unknown; probed and confirmed it's the SAME
   A/B row→lane mapping as the ue8m0 2X case (fixed by m16n8k64), just a 4-byte (4 per-16) scale reg —
-  **PASS, maxrel 0.0000**. Built deployable NVFP4 kernel (`dense_nvfp4_fast_lib.cu`, SFA/SFB[step][·][8]
+  **PASS, maxrel 0.0000 with BOTH uniform AND wide-range (2^-4..2^2) ue4m3 scales** — the wide-range
+  probe is the strong test (it confirms the 4 per-16 scale bytes map to the right k-sub-blocks; a
+  uniform-scale probe can't). Built deployable NVFP4 kernel (`dense_nvfp4_fast_lib.cu`, SFA/SFB[step][·][8]
   per-16). Per-linear on real Qwen3-8B THROUGH the kernel: **NVFP4 rel 0.138 vs MXFP4 0.165** (~2.1–2.4×
-  bf16), the accuracy gain is real. KNOWN ISSUE: the NVFP4 *fused-block* harness path regresses (block
-  rel 0.38 while the identical-structure MXFP4 block is 0.13 and per-linear NVFP4 is 0.138) — a block
-  integration bug not yet isolated (the mma itself is verified). Per-linear dilution predicts a correct
-  NVFP4 block ≈0.11; the harness bug is flagged, not claimed as success.
+  bf16), the accuracy gain is real. The mma is DEFINITIVELY correct (wide-scale maxrel 0). KNOWN ISSUE:
+  the NVFP4 *fused-block* harness regresses (block rel 0.38 vs MXFP4-block 0.13, per-linear NVFP4 0.138)
+  — proven to be a HARNESS-side quantizer/chaining bug, NOT the kernel; not yet root-caused. Per-linear
+  dilution predicts a correct NVFP4 block ≈0.11; flagged honestly, not claimed as success.
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
