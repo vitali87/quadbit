@@ -213,8 +213,16 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   N=4096, TN=32 gives only 128 blocks on 188 SMs, and it's the cheapest decode op. Both ways to add
   parallelism lose — smaller TN blows up activation L2 re-reads (swept), and split-K's f32 workspace
   (memset + atomic + convert ≈ doubles DRAM traffic) exceeds the fill gain even on a clean
-  cached-map async path (correctness maxrel 0; s1 1.23× but s≥2 = 0.79–0.86×). So decode is at its
-  practical SM120 ceiling: expensive ops bandwidth-saturated, attn-4096² fill-bound at 1.38×.
+  cached-map async path (correctness maxrel 0; s1 1.23× but s≥2 = 0.79–0.86×). FUSED shapes:
+  fused QKV MHA (N=12288) = 72% (5.47×, fusion fills SMs), but fused QKV **GQA** (N=6144) = 30%
+  (worse than isolated 4096 — 192 blocks re-read the 256 KB activation → ~48 MB L2, the
+  co-bottleneck grows with block count). Root cause: fp4's 8 MB weight is 4× smaller → too few bytes
+  to fill 188 SMs + amortize the 32-step pipeline, so it tips latency/L2-bound while bf16 (32 MB
+  weight) stays bandwidth-bound at 96% of peak. **This is the ceiling of the split-N/split-K GEMM
+  family, not the hardware** — the untried lever is a purpose-built low-batch (Marlin/Machete-style)
+  kernel: weight pre-permuted for coalesced streaming + all-SM Stream-K with a cheap *in-kernel*
+  reduction (not the global f32 workspace whose traffic tax sank split-K). Real GQA decode attention
+  (o_proj + fused-QKV-6144) is where the headroom is.
 
 ## Dead-ends (what didn't work — for the paper's honesty + "we tried X")
 

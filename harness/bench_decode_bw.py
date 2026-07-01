@@ -24,14 +24,15 @@ image = (
 )
 app = modal.App("quadbit-decode-bw", image=image)
 
-# (label, M tokens, N out, K in)
+# (label, M tokens, N out, K in). Real decoders FUSE Q+K+V (N=12288 for H=4096, or 6144 GQA) and
+# gate+up; the isolated 4096x4096 is only o_proj (the cheapest op). Testing fused vs isolated.
 SHAPES = [
-    ("attn qkv/o   128x 4096x 4096", 128, 4096, 4096),
-    ("ffn  up       128x14336x 4096", 128, 14336, 4096),
-    ("ffn  down     128x 4096x14336", 128, 4096, 14336),
-    ("attn qkv M=64  64x 4096x 4096", 64, 4096, 4096),
-    ("attn qkv M=256 256x 4096x 4096", 256, 4096, 4096),
-    ("big-N        128x28672x 4096", 128, 28672, 4096),
+    ("o_proj (isolated)  128x 4096x 4096", 128, 4096, 4096),
+    ("fused QKV GQA      128x 6144x 4096", 128, 6144, 4096),
+    ("fused QKV MHA      128x12288x 4096", 128, 12288, 4096),
+    ("ffn  up            128x14336x 4096", 128, 14336, 4096),
+    ("ffn  down          128x 4096x14336", 128, 4096, 14336),
+    ("fused gate+up      128x28672x 4096", 128, 28672, 4096),
 ]
 
 
