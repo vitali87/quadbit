@@ -37,9 +37,9 @@ def run() -> None:
                         "-o", so, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
     if c.returncode != 0:
         print(c.stderr, flush=True); return
-    so2 = "/root/dense_scaled.so"
+    so2 = "/root/dense_scaled_fast.so"
     c2 = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
-                         "-o", so2, "/root/cuda/dense_scaled_lib.cu", "-lcuda"], capture_output=True, text=True)
+                         "-o", so2, "/root/cuda/dense_scaled_fast_lib.cu", "-lcuda"], capture_output=True, text=True)
     if c2.returncode != 0:
         print(c2.stderr, flush=True); return
 
@@ -61,7 +61,7 @@ def run() -> None:
     lib.add_rmsnorm_quant.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_float]
     lib.add_rmsnorm_quant.restype = None
     dlib = ctypes.CDLL(so2)
-    dlib.dense_scaled_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
+    dlib.dense_scaled_fast_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
     dlib.quantize_act_mxfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
     dlib.quantize_act_mxfp4.restype = None
     dev = torch.device("cuda")
@@ -293,8 +293,8 @@ def run() -> None:
 
         def run(self, Bb, SFB, batch):
             C = torch.empty((self.out, batch), dtype=torch.bfloat16, device=dev)
-            dlib.dense_scaled_mm(self.Ab.data_ptr(), Bb.data_ptr(), self.SFA.data_ptr(),
-                                 SFB.data_ptr(), C.data_ptr(), self.out, batch, self.inn)
+            dlib.dense_scaled_fast_mm(self.Ab.data_ptr(), Bb.data_ptr(), self.SFA.data_ptr(),
+                                      SFB.data_ptr(), C.data_ptr(), self.out, batch, self.inn)
             return C
 
     def quant_act_mx(a):
@@ -304,7 +304,7 @@ def run() -> None:
         dlib.quantize_act_mxfp4(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
         return Bb, SFB
 
-    B = 512
+    B = 2048
     for nm, W in [("q_proj", Wq), ("o_proj", Wo), ("gate_proj", Wg), ("down_proj", Wd)]:
         d = DenseMX(W)
         x = (torch.randn(B, d.inn, device=dev) * 0.1).bfloat16()

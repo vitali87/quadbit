@@ -165,11 +165,15 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
 - **Full fused FP4 decoder block on REAL Qwen3-8B weights** (fused RMSNorm+quant → concat-QKV → attn(bf16)
   → o-proj → fused add+RMSNorm+quant → fused SwiGLU) vs a fair bf16 tensor-core block: **2.26× @512,
   3.22× @2048 tokens**. Block accuracy: sparse 2:4 = 0.55 (needs recovery), dense-FP4 sim = 0.103 (deployable).
-- **Deployable dense real-scale FP4 THROUGH the kernel** (`dense_scaled_lib.cu`, MXFP4 e2m1+ue8m0 both
-  operands, from the proven verify_scaled mma; fused MXFP4 act quantizer): real Qwen3-8B linears
-  **rel 0.165, NO training** — the drop-in that works on any model. Caveats: reuses the BM=64
-  verify_scaled tiling so it's ~bf16 speed (porting real scales into the fast pingpong kernel = perf
-  follow-up); MXFP4/per-32 gives 0.165, NVFP4/ue4m3/per-16 would reach ~0.10 (needs the ue4m3 dense mma).
+- **Deployable dense real-scale FP4 THROUGH the kernel** (MXFP4 e2m1+ue8m0 both operands, from the
+  proven verify_scaled mma; fused MXFP4 act quantizer): real Qwen3-8B linears **rel 0.165, NO training**
+  — the drop-in that works on any model. Two kernels: `dense_scaled_lib.cu` (BM=64 verify_scaled tiling,
+  ~bf16 speed) and `dense_scaled_fast_lib.cu` (the fast 2-warpgroup pingpong tiling + real scales:
+  the mma is identical so the scale lane layout ports directly). Fast kernel on real Qwen3-8B @B=2048:
+  **1.23–1.48× over bf16** (q/o 1.31×, gate 1.48×, down 1.23×). NOT yet the ~3× of the unit-scale
+  kernel: the scales are loaded per-k-step from global/L2, not smem-staged. Path to ~3×: stage SFA/SFB
+  in smem via cp.async (as the sparse kernel does) — needs STAGES 3→2 to fit the 99 KB cap. Accuracy
+  follow-up: MXFP4/per-32 = 0.165; NVFP4/ue4m3/per-16 ≈ 0.10 (needs the ue4m3 dense mma, scale_vec::4X).
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
