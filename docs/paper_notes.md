@@ -15,17 +15,23 @@ one-shot + QAT recovery pipeline that makes the sparse path usable on real model
 
 ## Headline results (real, measured, RTX PRO 6000)
 
-Throughput vs cuBLAS bf16 (what production runs), `harness/bench_vs_bf16.py`, M=N=K:
+Throughput vs cuBLAS bf16 (what production runs) and vs real CUTLASS FP4, M=N=K.
+bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
+(example 79b nvfp4×nvfp4→f32, `-DCUTLASS_NVCC_ARCHS=120a`, verification Passed). Same RTX PRO 6000:
 
-| size | cuBLAS bf16 | dense FP4 (ours) | 2:4-sparse FP4 (ours) |
-|------|-------------|------------------|------------------------|
-| 4096 | 372 TF/s | 1136 (3.06×) | 1512 (4.07×) |
-| 8192 | 423 TF/s | 1556 (3.68×) | 2207 (5.22×) |
-| 16384| 405 TF/s | 1645 (4.06×) | 1782 (4.39×) |
+| size | cuBLAS bf16 | CUTLASS FP4 | dense FP4 (ours) | 2:4-sparse FP4 (ours) |
+|------|-------------|-------------|------------------|------------------------|
+| 4096 | 372 TF/s | 1222 | 1136 (3.06× bf16) | 1512 (4.07× bf16) |
+| 8192 | 423 TF/s | 1497 | 1556 (3.68× bf16) | 2207 (5.22× bf16) |
+| 16384| 405 TF/s | — | 1645 (4.06× bf16) | 1782 (4.39× bf16) |
 
-- Dense FP4 = **84–91% of the 1811 TF/s hardware mma peak**; matches/edges CUTLASS FP4 (~1504).
-  Both sit at the instruction ceiling — dense FP4 is a solved, ceiling-bound problem.
-- Sparse FP4 = **+42% over the dense ceiling**, and a capability CUTLASS/cuBLAS do not have on SM120.
+- Dense FP4 = **size-dependent parity with CUTLASS** (the SOTA vendor FP4 GEMM): CUTLASS edges us
+  at 4096 (1222 vs 1136, +7.6%), we edge CUTLASS at 8192 (1556 vs 1497, +3.9%). Both sit at the
+  instruction ceiling (~84–91% of the 1811 TF/s hardware mma peak) — dense FP4 is a solved,
+  ceiling-bound problem, and matching CUTLASS is the honest ceiling, not a beat.
+- Sparse FP4 is the **unique, defensible win**: CUTLASS/cuBLAS have **no sparse FP4 on SM120 at all**.
+  Ours beats the best available vendor FP4 (CUTLASS dense) by **+24% @4096 (1512 vs 1222)** and
+  **+47% @8192 (2207 vs 1497)** — a capability, not just a tuning delta.
 - Unit-scale headline (perf ceiling): sparse **2731k GFLOP/s**, dense **1515k**, both @8192.
 
 Accuracy (real models, WikiText-2 PPL):
@@ -105,7 +111,8 @@ Accuracy (real models, WikiText-2 PPL):
   (deployable sparse 2116k), `cuda/matmul_fp4_pp_bf16.cu` (dense 1503k), `cuda/dense_fp4_lib.cu`,
   `cuda/sparse_fp4_lib.cu` (PyTorch-callable + fused quantizer).
 - Probes: `mma_peak`, `tma_bw`, `smemq`, `sp_*_probe`, `verify_*`, `pack_verify`, `pack_accuracy`.
-- Harnesses: `bench_vs_bf16.py` (throughput), `quadbit_linear.py` (drop-in), `accuracy_hf.py` /
+- Harnesses: `bench_vs_bf16.py` (throughput), `cutlass_fp4.py` (real CUTLASS FP4 baseline +
+  SASS dissect), `quadbit_linear.py` (drop-in), `accuracy_hf.py` /
   `accuracy_sparse.py` (weight-recon), `perplexity_sparse.py` (end-to-end PPL),
   `sparsegpt_pair.py` (one-shot), `finetune_pair.py` (recovery).
 - Full chronological build log (breakthroughs + tedium): memory `quadbit-raw-ptx.md`.
