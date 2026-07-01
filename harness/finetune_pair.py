@@ -30,7 +30,7 @@ app = modal.App("quadbit-finetune", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
-@app.function(gpu="RTX-PRO-6000", timeout=14400, volumes={"/cache": vol})
+@app.function(gpu="RTX-PRO-6000", timeout=43200, volumes={"/cache": vol})
 def run() -> None:
     import ctypes
     import math
@@ -236,7 +236,7 @@ def run() -> None:
     for q in qats:
         q.weight.requires_grad_(True); params.append(q.weight)
     T, seq = 2.0, 1024
-    P1, P2, wu = 12000, 3000, 300
+    P1, P2, wu = 30000, 2000, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps (measured flat 500->9000)
     total = P1 + P2
     lr_max, lr_min = 2e-4, 1e-5
     opt = torch.optim.AdamW(params, lr=lr_max, betas=(0.9, 0.95), weight_decay=0.0)
@@ -285,9 +285,13 @@ def run() -> None:
         for nm in ("gate_proj", "up_proj", "down_proj"):
             q = getattr(layer.mlp, nm)
             setattr(layer.mlp, nm, QuadbitLinear(q.weight.data).to(dev))
-    print(f"PPL through 2:4-sparse FP4 KERNEL (final): {ppl(student):.3f}", flush=True)
+    kernel_ppl = ppl(student)
+    print(f"PPL through 2:4-sparse FP4 KERNEL (final): {kernel_ppl:.3f}", flush=True)
+    return kernel_ppl
 
 
 @app.local_entrypoint()
 def main() -> None:
-    run.remote()
+    call = run.spawn()  # spawn (not remote): compute survives local-client disconnect. See memory.
+    print(f"SPAWN_ID {call.object_id}", flush=True)
+    print(f"RESULT {call.get():.3f}", flush=True)  # blocks; if this waiter dies, recover via SPAWN_ID

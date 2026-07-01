@@ -146,13 +146,16 @@ Accuracy (real models, WikiText-2 PPL):
 6. **Pair-granular recovery pipeline (one-shot + QAT), no NVIDIA equivalent.** SparseGPT retargeted
    to pair-granular masks (keep 2-of-4-pairs by `w²/[H⁻¹]²`, Hessian error compensation) →
    KD from the dense teacher (mask frozen) → QAT with straight-through fake-quant of BOTH weights
-   (exact kernel dequant) and activations. Long WikiText-103 run (TinyLlama-1.1B, 12k bf16 + 3k QAT
+   (exact kernel dequant) and activations. Deepest WikiText-103 run (TinyLlama-1.1B, 30k bf16 + 2k QAT
    steps, cosine LR): dense fp16 teacher 7.53; one-shot pair-2:4 FP4 **19.1**; after phase-1 bf16
-   recovery **9.33**; after phase-2 QAT (FP4 fake-quant) **9.49**; **through the real 2:4-sparse FP4
-   kernel 10.34** — within ~2.5 PPL of dense, up from the short run's 13.3 (WikiText-2, 1.5M tokens).
-   Recovery is monotonic in data; NM used 13B tokens for element-2:4, so production parity is a
-   data-scale question, not a method gap. The pipeline (pair-granular SparseGPT + STE QAT matching
-   the exact kernel dequant) is proven end-to-end.
+   recovery **8.95**; after phase-2 QAT (FP4 fake-quant) **9.15**; **through the real 2:4-sparse FP4
+   kernel 10.03** — within ~2.5 PPL of dense, up from the 12k+3k run's 10.34 and the short run's 13.3
+   (WikiText-2, 1.5M tokens). Phase-2 QAT converges by ~1k steps (measured flat 500→9000 on the 10k
+   run), so the win is in phase-1 data scale, not QAT length. The ~0.9 gap between QAT fake-quant PPL
+   (9.15) and through-kernel (10.03) is STE-vs-real-kernel scale/rounding mismatch. Recovery is
+   monotonic in data; NM used 13B tokens for element-2:4, so production parity is a data-scale
+   question, not a method gap. The pipeline (pair-granular SparseGPT + STE QAT matching the exact
+   kernel dequant) is proven end-to-end.
 
 ## Real open-weight models (July 2026), on this hardware
 
