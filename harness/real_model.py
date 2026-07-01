@@ -37,6 +37,11 @@ def run() -> None:
                         "-o", so, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
     if c.returncode != 0:
         print(c.stderr, flush=True); return
+    so2 = "/root/dense_scaled.so"
+    c2 = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                         "-o", so2, "/root/cuda/dense_scaled_lib.cu", "-lcuda"], capture_output=True, text=True)
+    if c2.returncode != 0:
+        print(c2.stderr, flush=True); return
 
     import ctypes
     import os
@@ -55,6 +60,10 @@ def run() -> None:
     lib.rmsnorm_quant.restype = None
     lib.add_rmsnorm_quant.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_float]
     lib.add_rmsnorm_quant.restype = None
+    dlib = ctypes.CDLL(so2)
+    dlib.dense_scaled_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
+    dlib.quantize_act_mxfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
+    dlib.quantize_act_mxfp4.restype = None
     dev = torch.device("cuda")
 
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6],
@@ -263,6 +272,50 @@ def run() -> None:
             ms = tms(lambda: ql.run(Bb, sB, B))
             parts.append(f"{sn} {ms*1e3:.0f}us")
         print(f"  {name:26s} {'ALL-TILE-OK' if allok else 'HAS-FAIL'} | " + "  ".join(parts), flush=True)
+
+    # DEPLOYABLE dense real-scale FP4 THROUGH THE KERNEL (MXFP4, no training) on REAL Qwen3-8B linears
+    print("\n# Deployable dense FP4 (real ue8m0 scales) THROUGH THE KERNEL on real Qwen3-8B weights", flush=True)
+
+    def mxfp4_pack(W):  # W[out,in] -> Abytes[out,in/2], SFA[out,in/32] ue8m0 (matches kernel layout)
+        out, inn = W.shape
+        Wb = W.float().view(out, inn // 32, 32)
+        _, e = torch.frexp(Wb.abs().amax(-1) / 6.0)          # amax/6 = m*2^e -> scale 2^e
+        code = (e + 127).clamp(0, 255)
+        scale = torch.ldexp(torch.ones_like(code, dtype=torch.float32), code - 127)
+        q = quant_fp4(Wb / scale[..., None]).view(out, inn)
+        Ab = (q[:, 0::2] | (q[:, 1::2] << 4)).to(torch.uint8).contiguous()
+        return Ab, code.to(torch.uint8).contiguous()
+
+    class DenseMX:
+        def __init__(self, W):
+            self.out, self.inn = W.shape
+            self.Ab, self.SFA = mxfp4_pack(W.to(dev))
+
+        def run(self, Bb, SFB, batch):
+            C = torch.empty((self.out, batch), dtype=torch.bfloat16, device=dev)
+            dlib.dense_scaled_mm(self.Ab.data_ptr(), Bb.data_ptr(), self.SFA.data_ptr(),
+                                 SFB.data_ptr(), C.data_ptr(), self.out, batch, self.inn)
+            return C
+
+    def quant_act_mx(a):
+        B, inn = a.shape
+        Bb = torch.empty((B, inn // 2), dtype=torch.uint8, device=dev)
+        SFB = torch.empty((B, inn // 32), dtype=torch.uint8, device=dev)
+        dlib.quantize_act_mxfp4(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
+        return Bb, SFB
+
+    B = 512
+    for nm, W in [("q_proj", Wq), ("o_proj", Wo), ("gate_proj", Wg), ("down_proj", Wd)]:
+        d = DenseMX(W)
+        x = (torch.randn(B, d.inn, device=dev) * 0.1).bfloat16()
+        Bb, SFB = quant_act_mx(x)
+        y = d.run(Bb, SFB, B).t()                              # [B, out] through kernel
+        ref = (x.float() @ W.to(dev).t().float())              # true bf16-input matmul
+        rel = ((y.float() - ref).norm() / ref.norm()).item()
+        ms = tms(lambda: d.run(Bb, SFB, B))
+        msb = tms(lambda: (x @ W.to(dev).bfloat16().t()))
+        print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: dense-FP4-KERNEL rel {rel:.3f} "
+              f"(no train)  {ms*1e3:.0f}us  bf16 {msb*1e3:.0f}us  {msb/ms:.2f}x", flush=True)
 
 
 @app.local_entrypoint()

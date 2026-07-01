@@ -154,6 +154,23 @@ Accuracy (real models, WikiText-2 PPL):
    data-scale question, not a method gap. The pipeline (pair-granular SparseGPT + STE QAT matching
    the exact kernel dequant) is proven end-to-end.
 
+## Real open-weight models (July 2026), on this hardware
+
+Verified against ACTUAL current model configs (not assumptions), `harness/real_model.py` on RTX PRO 6000:
+- **Every projection of the current frontier tiles onto the kernel** (out%256, in%256), because head_dim=128
+  and hidden sizes are all multiples of 256. Ran each model's real linear shapes THROUGH the kernel:
+  Qwen3.5-397B (Qwen3Moe), GLM-5.2 (Glm4Moe, H=5120), MiniMax-M3 (H=6144), DeepSeek-V3/R1 (H=7168) —
+  all ALL-TILE-OK, 24–150µs/linear. Big models deploy via expert/tensor/pipeline sharding; each shard's
+  linears ARE the kernel. Small models (Qwen3-8B, Gemma-4, Phi-4) run whole on one card.
+- **Full fused FP4 decoder block on REAL Qwen3-8B weights** (fused RMSNorm+quant → concat-QKV → attn(bf16)
+  → o-proj → fused add+RMSNorm+quant → fused SwiGLU) vs a fair bf16 tensor-core block: **2.26× @512,
+  3.22× @2048 tokens**. Block accuracy: sparse 2:4 = 0.55 (needs recovery), dense-FP4 sim = 0.103 (deployable).
+- **Deployable dense real-scale FP4 THROUGH the kernel** (`dense_scaled_lib.cu`, MXFP4 e2m1+ue8m0 both
+  operands, from the proven verify_scaled mma; fused MXFP4 act quantizer): real Qwen3-8B linears
+  **rel 0.165, NO training** — the drop-in that works on any model. Caveats: reuses the BM=64
+  verify_scaled tiling so it's ~bf16 speed (porting real scales into the fast pingpong kernel = perf
+  follow-up); MXFP4/per-32 gives 0.165, NVFP4/ue4m3/per-16 would reach ~0.10 (needs the ue4m3 dense mma).
+
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
 - mma peaks (register-only, DCE-defeated): sparse `mma.sp` m16n8k128 = **3626k**, dense
