@@ -244,6 +244,22 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   served by the weight-stationary prefill kernel (3.6–5×). Decode kernel owns only the small-M
   regime, where it is at the shape's hardware ceiling. No middle-ground batch size to chase.
 
+  **Decode/prefill router, measured (`harness/bench_router.py`).** The split-N decode kernel is
+  unit-scale (no real scales), so a *deployable* router can only dispatch between real-scale kernels;
+  the only real-scale one is the weight-stationary MXFP4 prefill kernel `dense_scaled_fast_mm`. Swept
+  its speedup vs cuBLAS bf16 over token counts 256–4096 on real linear shapes. It does **not**
+  uniformly beat bf16 at decode sizes: it *loses* (0.68–0.77×) in exactly one regime — small tokens
+  (256) AND small output-N (4096: o_proj, ffn-down) — and wins everywhere else (large-N even at
+  M256: qkv 2.75×, ffn-up 2.53×; all shapes at M≥1024: 2.0–2.8×). The loss is the same fill deficit:
+  grid = ⌈M/256⌉·⌈N/128⌉, and below ~48 blocks the 188-SM array underfills. So the router is a
+  **never-regress fill rule**: use FP4 iff ⌈M/256⌉·⌈N/128⌉ ≥ 48 blocks, else fall back to bf16
+  (`route_dense()`; the bench asserts FP4 is never selected in a losing cell, and it held — routed
+  speedup ≥ bf16 in every cell). This makes the go-to call regression-free today. The remaining
+  0.68–0.77× corner (small-batch o_proj/ffn-down) is the target for a **real-scale split-N decode
+  kernel**: it would lift those cells to ~1.3× (the measured small-N decode ceiling) instead of the
+  bf16 fallback's 1.0×. That kernel (porting the ue8m0/ue4m3 scale layout into `dense_decode_lib.cu`)
+  is the next build.
+
 ## Dead-ends (what didn't work — for the paper's honesty + "we tried X")
 
 - **Cluster TMA B-multicast**: ptxas advisory "reduced performance on sm_120a" (datacenter-gated),
