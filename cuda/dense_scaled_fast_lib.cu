@@ -1,9 +1,8 @@
-// FAST real-scale DENSE FP4: the 1500k pingpong kernel (dense_fp4_lib) + real per-32-block ue8m0
-// scales (both operands), PyTorch-callable. The mma is identical to verify_scaled
-// (m16n8k64 scale_vec::2X ue8m0), so the scale LANE layout is the same (sa_row=(lane>>2)+8*(lane&1),
-// sb_col=lane>>2); only the tile row/col mapping (a_rowt/b_col, 2 warpgroups) differs. This makes
-// the DEPLOYABLE dense drop-in also the FAST path: 3x over bf16 AND real scales -> rel ~0.16 no-train.
-// C[M,N]=A[M,K]@B[N,K]^T, A=weight/B=act dense FP4, SFA[M,K/32]/SFB[N,K/32] ue8m0. M=out, N=batch.
+// FAST real-scale DENSE FP4: the pingpong kernel + real per-32-block ue8m0 scales, with scales
+// PREFETCHED (step-major layout + cp.async.bulk on the tile's mbarrier) so they arrive with the
+// tile -- no synchronous stall. This closes the gap to the unit-scale ceiling: deployable dense
+// FP4 drop-in at ~3x over bf16 AND real scales (rel ~0.16, no training). C[M,N]=A[M,K]@B[N,K]^T,
+// A=weight/B=act dense FP4, SFA[step][M][4]/SFB[step][N][4] ue8m0 (step-major, like the sparse kernel).
 #include <cstdio>
 #include <cstdint>
 #include <cuda.h>
@@ -12,15 +11,16 @@
 #define DBN 128
 #define DBK 128
 #define DBKH 64
-#define DSTAGES 3
+#define DSTAGES 3                    // 3-stage tile pipeline (scales single-buffered, staged in-loop)
 #define DASZ (DBM * DBKH)
 #define DBSZ (DBN * DBKH)
 #define DWG (DSTAGES * DASZ + DSTAGES * DBSZ)
-#define DSMEM (2 * DWG + 2 * DSTAGES * 8 + 128)
+#define SCB 512                      // one step's scales per WG: 128 rows/cols x 4 kblocks (bytes)
+#define DSMEM (2 * DWG + 2 * DSTAGES * 8 + 16 + 2 * 2 * SCB + 128)
 
 __global__ void __launch_bounds__(256)
 dmatmul_sf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
-           __nv_bfloat16 *C, int N, int Kfp4, const uint8_t *SFA, const uint8_t *SFB, int Ksf) {
+           __nv_bfloat16 *C, int M, int N, int Kfp4, const uint8_t *SFA, const uint8_t *SFB, int Ksf) {
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -28,6 +28,8 @@ dmatmul_sf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUt
     uint8_t *a_s = smem + wg * DWG;
     uint8_t *b_s = a_s + DSTAGES * DASZ;
     uint64_t *full = (uint64_t *)(smem + 2 * DWG + wg * DSTAGES * 8);
+    uint8_t *sca = smem + 2 * DWG + 2 * DSTAGES * 8 + 16 + wg * (2 * SCB);   // single-buffered
+    uint8_t *scb = sca + SCB;
     int sync_id = wg + 1;
     int block_row = blockIdx.y * DBM, block_col = blockIdx.x * (2 * DBN) + wg * DBN;
     int ksteps = Kfp4 / DBK;
@@ -38,7 +40,6 @@ dmatmul_sf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUt
     for (int mt = 0; mt < 4; mt++) a_rowt[mt] = wm * 64 + mt * 16;
 #pragma unroll
     for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
-    // real-scale lane layout (identical mma -> identical mapping as verify_scaled)
     int sa_row = (lane >> 2) + 8 * (lane & 1), sa_ok = (lane & 3) < 2;
     int sb_col = lane >> 2, sb_ok = (lane & 3) == 0;
     float acc[32][4];
@@ -70,11 +71,21 @@ dmatmul_sf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUt
         int s = step % DSTAGES;
         uint32_t par = (step / DSTAGES) & 1;
         asm volatile("{\n\t.reg .pred p;\nWA:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WA;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        // stage this step's scales (step-major -> contiguous 512B; coalesced uint32 loads)
+        {
+            const uint32_t *srcA = (const uint32_t *)(SFA + (size_t)step * M * 4 + block_row * 4);
+            const uint32_t *srcB = (const uint32_t *)(SFB + (size_t)step * N * 4 + block_col * 4);
+            uint32_t *dstA = (uint32_t *)sca, *dstB = (uint32_t *)scb;
+            dstA[wtid] = srcA[wtid];   // 128 threads x uint32 = 512 bytes, one each
+            dstB[wtid] = srcB[wtid];
+        }
+        asm volatile("bar.sync %0, 128;" ::"r"(sync_id));
         int aoff = s * DASZ, boff = s * DBSZ;
+        const uint16_t *scaS = (const uint16_t *)sca;   // [row][kpair] uint16 pairs (single buffer)
+        const uint16_t *scbS = (const uint16_t *)scb;
 #pragma unroll
         for (int ks = 0; ks < DBK / 64; ks++) {
             int kb = ks * 32;
-            int kbi = step * (DBK / 32) + ks * 2;      // global 32-block index of this mma's k64
             uint32_t af[4][4], bf[8][2], saR[4], sbR[8];
 #pragma unroll
             for (int mt = 0; mt < 4; mt++) {
@@ -82,11 +93,7 @@ dmatmul_sf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUt
                 uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
                 asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
                              : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
-                saR[mt] = 0;
-                if (sa_ok) {
-                    const uint8_t *p = &SFA[(size_t)(block_row + a_rowt[mt] + sa_row) * Ksf + kbi];
-                    saR[mt] = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
-                }
+                saR[mt] = sa_ok ? (uint32_t)scaS[(a_rowt[mt] + sa_row) * 2 + ks] : 0;
             }
 #pragma unroll
             for (int n = 0; n < 8; n++) {
@@ -94,11 +101,7 @@ dmatmul_sf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUt
                 uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
                 asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared::cta.b16 {%0,%1}, [%2];"
                              : "=r"(bf[n][0]), "=r"(bf[n][1]) : "r"(bd));
-                sbR[n] = 0;
-                if (sb_ok) {
-                    const uint8_t *p = &SFB[(size_t)(block_col + b_col[n] + sb_col) * Ksf + kbi];
-                    sbR[n] = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
-                }
+                sbR[n] = sb_ok ? (uint32_t)scbS[(b_col[n] + sb_col) * 2 + ks] : 0;
             }
 #pragma unroll
             for (int mt = 0; mt < 4; mt++)
@@ -142,11 +145,12 @@ __device__ __forceinline__ uint8_t q_fp4(float q) {
             : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.f ? 6 : 7;
     return (uint8_t)(idx | (q < 0.f ? 8 : 0));
 }
+// step-major SFB[step][batch][4] to match the kernel's prefetch (like the sparse quantizer)
 __global__ void quant_act_mx(const int4 *x4, uint32_t *Bwords, uint8_t *SFB, int batch, int in_f) {
     int b32 = in_f / 32;
     long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= (long)batch * b32) return;
-    int n = t / b32, blk = t % b32;
+    int n = t / b32, blk = t % b32, step = blk / 4, kb = blk % 4;
     long base = (long)n * (in_f / 8) + blk * 4;
     float2 v[16]; float amax = 0.f;
 #pragma unroll
@@ -159,9 +163,8 @@ __global__ void quant_act_mx(const int4 *x4, uint32_t *Bwords, uint8_t *SFB, int
             amax = fmaxf(amax, fmaxf(fabsf(v[q * 4 + j].x), fabsf(v[q * 4 + j].y)));
         }
     }
-    uint8_t code = enc_ue8m0(amax);
-    SFB[(long)n * b32 + blk] = code;
-    float inv = 1.f / ldexpf(1.f, (int)code - 127);
+    SFB[((long)step * batch + n) * 4 + kb] = enc_ue8m0(amax);
+    float inv = 1.f / ldexpf(1.f, (int)SFB[((long)step * batch + n) * 4 + kb] - 127);
     uint32_t w[4] = {0, 0, 0, 0};
 #pragma unroll
     for (int i = 0; i < 16; i++) {
@@ -192,7 +195,7 @@ extern "C" int dense_scaled_fast_mm(const void *A, const void *B, const void *SF
     mkmap(&mapB, (uint8_t *)B, Kb, N, DBN);
     cudaFuncSetAttribute(dmatmul_sf, cudaFuncAttributeMaxDynamicSharedMemorySize, DSMEM);
     dim3 grid(N / (2 * DBN), M / DBM), block(256);
-    dmatmul_sf<<<grid, block, DSMEM>>>(mapA, mapB, (__nv_bfloat16 *)C, N, K,
+    dmatmul_sf<<<grid, block, DSMEM>>>(mapA, mapB, (__nv_bfloat16 *)C, M, N, K,
                                        (const uint8_t *)SFA, (const uint8_t *)SFB, Ksf);
     return (int)cudaDeviceSynchronize();
 }

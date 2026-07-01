@@ -42,6 +42,11 @@ def run() -> None:
                          "-o", so2, "/root/cuda/dense_scaled_fast_lib.cu", "-lcuda"], capture_output=True, text=True)
     if c2.returncode != 0:
         print(c2.stderr, flush=True); return
+    so3 = "/root/dense_unit.so"
+    c3 = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                         "-o", so3, "/root/cuda/dense_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
+    if c3.returncode != 0:
+        print(c3.stderr, flush=True); return
 
     import ctypes
     import os
@@ -64,6 +69,8 @@ def run() -> None:
     dlib.dense_scaled_fast_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
     dlib.quantize_act_mxfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
     dlib.quantize_act_mxfp4.restype = None
+    ulib = ctypes.CDLL(so3)
+    ulib.dense_fp4_mm.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3   # unit-scale speed ceiling
     dev = torch.device("cuda")
 
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6],
@@ -276,15 +283,16 @@ def run() -> None:
     # DEPLOYABLE dense real-scale FP4 THROUGH THE KERNEL (MXFP4, no training) on REAL Qwen3-8B linears
     print("\n# Deployable dense FP4 (real ue8m0 scales) THROUGH THE KERNEL on real Qwen3-8B weights", flush=True)
 
-    def mxfp4_pack(W):  # W[out,in] -> Abytes[out,in/2], SFA[out,in/32] ue8m0 (matches kernel layout)
+    def mxfp4_pack(W):  # W[out,in] -> Abytes[out,in/2], SFA[step][out][4] ue8m0 (step-major, kernel layout)
         out, inn = W.shape
         Wb = W.float().view(out, inn // 32, 32)
-        _, e = torch.frexp(Wb.abs().amax(-1) / 6.0)          # amax/6 = m*2^e -> scale 2^e
+        _, e = torch.frexp(Wb.abs().amax(-1) / 6.0)          # [out, in/32]; amax/6 = m*2^e -> scale 2^e
         code = (e + 127).clamp(0, 255)
         scale = torch.ldexp(torch.ones_like(code, dtype=torch.float32), code - 127)
         q = quant_fp4(Wb / scale[..., None]).view(out, inn)
         Ab = (q[:, 0::2] | (q[:, 1::2] << 4)).to(torch.uint8).contiguous()
-        return Ab, code.to(torch.uint8).contiguous()
+        SFA = code.view(out, inn // 128, 4).permute(1, 0, 2).contiguous().to(torch.uint8)  # [step,out,4]
+        return Ab, SFA
 
     class DenseMX:
         def __init__(self, W):
@@ -304,18 +312,24 @@ def run() -> None:
         dlib.quantize_act_mxfp4(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
         return Bb, SFB
 
-    B = 2048
-    for nm, W in [("q_proj", Wq), ("o_proj", Wo), ("gate_proj", Wg), ("down_proj", Wd)]:
+    for B in (2048, 4096):
+      print(f"  -- batch={B} --", flush=True)
+      for nm, W in [("q_proj", Wq), ("o_proj", Wo), ("gate_proj", Wg), ("down_proj", Wd)]:
         d = DenseMX(W)
         x = (torch.randn(B, d.inn, device=dev) * 0.1).bfloat16()
         Bb, SFB = quant_act_mx(x)
         y = d.run(Bb, SFB, B).t()                              # [B, out] through kernel
-        ref = (x.float() @ W.to(dev).t().float())              # true bf16-input matmul
+        ref = (x.float() @ W.to(dev).t().float())
         rel = ((y.float() - ref).norm() / ref.norm()).item()
         ms = tms(lambda: d.run(Bb, SFB, B))
         msb = tms(lambda: (x @ W.to(dev).bfloat16().t()))
-        print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: dense-FP4-KERNEL rel {rel:.3f} "
-              f"(no train)  {ms*1e3:.0f}us  bf16 {msb*1e3:.0f}us  {msb/ms:.2f}x", flush=True)
+        Ad_u = torch.zeros((d.out, d.inn // 2), dtype=torch.uint8, device=dev)  # unit-scale speed ceiling
+        Bd_u = torch.zeros((B, d.inn // 2), dtype=torch.uint8, device=dev)
+        Cu = torch.empty((d.out, B), dtype=torch.bfloat16, device=dev)
+        msu = tms(lambda: ulib.dense_fp4_mm(Ad_u.data_ptr(), Bd_u.data_ptr(), Cu.data_ptr(), d.out, B, d.inn))
+        print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: real-scale rel {rel:.3f} (no train)  "
+              f"{ms*1e3:.0f}us {msb/ms:.2f}x bf16 | unit-scale {msu*1e3:.0f}us {msb/msu:.2f}x (speed ceiling)",
+              flush=True)
 
 
 @app.local_entrypoint()

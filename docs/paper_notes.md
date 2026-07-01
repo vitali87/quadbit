@@ -169,11 +169,16 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   proven verify_scaled mma; fused MXFP4 act quantizer): real Qwen3-8B linears **rel 0.165, NO training**
   — the drop-in that works on any model. Two kernels: `dense_scaled_lib.cu` (BM=64 verify_scaled tiling,
   ~bf16 speed) and `dense_scaled_fast_lib.cu` (the fast 2-warpgroup pingpong tiling + real scales:
-  the mma is identical so the scale lane layout ports directly). Fast kernel on real Qwen3-8B @B=2048:
-  **1.23–1.48× over bf16** (q/o 1.31×, gate 1.48×, down 1.23×). NOT yet the ~3× of the unit-scale
-  kernel: the scales are loaded per-k-step from global/L2, not smem-staged. Path to ~3×: stage SFA/SFB
-  in smem via cp.async (as the sparse kernel does) — needs STAGES 3→2 to fit the 99 KB cap. Accuracy
-  follow-up: MXFP4/per-32 = 0.165; NVFP4/ue4m3/per-16 ≈ 0.10 (needs the ue4m3 dense mma, scale_vec::4X).
+  the mma is identical so the scale lane layout ports directly). Optimized via step-major scale layout
+  + coalesced synchronous smem staging (STAGES=3 tile pipeline, single-buffer scales): real Qwen3-8B
+  linears **2.28–2.62× over bf16, rel 0.165, no training** (q/o 2.29×, gate 2.40–2.58×, down 2.57–2.62×).
+  That is **75–85% of the unit-scale speed ceiling** (measured 2.9–3.5× at the same shapes). The residual
+  gap is FUNDAMENTAL: with real scales the scale operands are per-k-step smem LDS in the mma hot loop
+  (unit-scale has them as free compile-time zeros), and that LDS-vs-OMMA issue contention caps block-scaled
+  FP4 — CUTLASS pays it too. Tried: per-mma global loads (1.3×), smem-staged STAGES=2 (2.0×), cp.async
+  prefetch STAGES=2 (1.9×, the extra bulk ops + lost stage hurt), coalesced sync STAGES=3 (**2.6×, best**).
+  So ~2.6× is the real-scale ceiling; 3× is unit-scale-only. Accuracy follow-up: MXFP4/per-32 = 0.165;
+  NVFP4/ue4m3/per-16 ≈ 0.10 (needs the ue4m3 dense mma, scale_vec::4X).
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
