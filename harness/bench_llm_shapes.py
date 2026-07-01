@@ -54,6 +54,12 @@ def run() -> None:
     de.dense_fp4_mm.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
     sk.dense_fp4_mm_sk.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 4
     dc.dense_fp4_decode.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
+    dc.qb_encode_map.argtypes = [ctypes.c_void_p] + [ctypes.c_int] * 3
+    dc.qb_encode_map.restype = ctypes.c_void_p
+    dc.qb_free_map.argtypes = [ctypes.c_void_p]
+    dc.dense_fp4_decode_cached.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
+    dc.dense_fp4_decode_cached_async.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
+    dc.dense_fp4_decode_cached_async.restype = None
 
     print(f"{torch.cuda.get_device_name(0)}\n", flush=True)
 
@@ -68,8 +74,8 @@ def run() -> None:
         e.record(); torch.cuda.synchronize()
         return s.elapsed_time(e) / it
 
-    hdr = (f"{'shape':>22} | {'M/N/K':>16} | {'bf16':>9} | {'plain':>13} | "
-           f"{'split-K':>16} | {'decode':>13} | {'BEST dense':>18} | {'2:4 FP4':>15}")
+    hdr = (f"{'shape':>22} | {'M/N/K':>16} | {'bf16':>9} | {'plain':>8} | "
+           f"{'split-K':>8} | {'decode':>8} | {'dec-cache':>9} | {'BEST dense':>18} | {'2:4 FP4':>15}")
     print(hdr, flush=True)
     print("-" * len(hdr), flush=True)
 
@@ -101,8 +107,14 @@ def run() -> None:
 
         # decode kernel (split-N direct bf16): best for small-M low-K
         ms_dc = tms(lambda: dc.dense_fp4_decode(Ad.data_ptr(), Bd.data_ptr(), Cd.data_ptr(), M, N, K))
+        # cached-map decode: build both TMA maps ONCE (deployment: weight+reused-act buffer), time launch only
+        mapA_h = dc.qb_encode_map(Ad.data_ptr(), M, K, 128)
+        mapB_h = dc.qb_encode_map(Bd.data_ptr(), N, K, 32)
+        # async (no per-call sync) matches how torch.matmul is timed -> fair kernel throughput
+        ms_dcc = tms(lambda: dc.dense_fp4_decode_cached_async(mapA_h, mapB_h, Cd.data_ptr(), M, N, K))
+        dc.qb_free_map(mapA_h); dc.qb_free_map(mapB_h)
         # best FP4 dense strategy for this shape
-        best_dense = min(ms_de, best_sk, ms_dc)
+        best_dense = min(ms_de, best_sk, ms_dc, ms_dcc)
 
         # sparse needs M % 256 (bm256 tiling); skip small-M decode rows
         sp_str = "  n/a (M<256)"
@@ -120,9 +132,10 @@ def run() -> None:
 
         def cell(ms):
             return f"{ms_bf16/ms:5.2f}x"
-        best_kind = {ms_de: "plain", best_sk: f"splitK{best_sp}", ms_dc: "decode"}[best_dense]
+        best_kind = {ms_de: "plain", best_sk: f"splitK{best_sp}", ms_dc: "decode",
+                     ms_dcc: "dec-cache"}[best_dense]
         print(f"{label:>22} | {f'{M}/{N}/{K}':>16} | {ms_bf16*1e3:6.1f}us | "
-              f"{cell(ms_de):>13} | {cell(best_sk):>16} | {cell(ms_dc):>13} | "
+              f"{cell(ms_de):>8} | {cell(best_sk):>8} | {cell(ms_dc):>8} | {cell(ms_dcc):>9} | "
               f"{ms_bf16/best_dense:5.2f}x {best_kind:>9} | {sp_str:>15}", flush=True)
 
 

@@ -5,6 +5,7 @@
 // 128/14336/4096); long-K decode (ffn down) should use split-K (dense_sk_lib) instead.
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cuda.h>
 #include <cuda_bf16.h>
 #define BM 128
@@ -120,4 +121,42 @@ extern "C" int dense_fp4_decode(const void *A, const void *B, void *C, int M, in
     dim3 grid(N / TN, M / BM), block(128);
     decode_mm<<<grid, block, SMEM>>>(mapA, mapB, (__nv_bfloat16 *)C, N, K);
     return (int)cudaDeviceSynchronize();
+}
+
+// Cached-map path: a TMA map encodes a buffer's address + tiling, NOT its contents, so a map
+// built once for a fixed weight (or a reused activation buffer) stays valid across decode steps
+// even as the data changes. Build once with qb_encode_map (A: boxrows=128, B: boxrows=32), then
+// launch per step with dense_fp4_decode_cached -> no per-call cuTensorMapEncodeTiled host cost.
+extern "C" void *qb_encode_map(const void *ptr, int rows, int K, int boxrows) {
+    CUtensorMap *m = (CUtensorMap *)aligned_alloc(64, sizeof(CUtensorMap));
+    dmk(m, (uint8_t *)ptr, K / 2, rows, boxrows);
+    return m;
+}
+
+extern "C" void qb_free_map(void *m) { free(m); }
+
+extern "C" int dense_fp4_decode_cached(const void *mapA, const void *mapB, void *C, int M, int N, int K) {
+    static bool attr_set = false;
+    if (!attr_set) {
+        cudaFuncSetAttribute(decode_mm, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+        attr_set = true;
+    }
+    dim3 grid(N / TN, M / BM), block(128);
+    decode_mm<<<grid, block, SMEM>>>(*(const CUtensorMap *)mapA, *(const CUtensorMap *)mapB,
+                                     (__nv_bfloat16 *)C, N, K);
+    return (int)cudaDeviceSynchronize();
+}
+
+// Fire-and-forget: no device sync (the caller's stream/synchronize handles it, like torch). This
+// is the deployment path -- decode steps enqueue back-to-back and pipeline; a per-call sync would
+// expose launch latency (~8us) on top of a 20us kernel and defeat overlap.
+extern "C" void dense_fp4_decode_cached_async(const void *mapA, const void *mapB, void *C, int M, int N, int K) {
+    static bool attr_set = false;
+    if (!attr_set) {
+        cudaFuncSetAttribute(decode_mm, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+        attr_set = true;
+    }
+    dim3 grid(N / TN, M / BM), block(128);
+    decode_mm<<<grid, block, SMEM>>>(*(const CUtensorMap *)mapA, *(const CUtensorMap *)mapB,
+                                     (__nv_bfloat16 *)C, N, K);
 }
