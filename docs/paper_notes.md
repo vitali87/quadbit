@@ -181,8 +181,16 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   (unit-scale has them as free compile-time zeros), and that LDS-vs-OMMA issue contention caps block-scaled
   FP4 — CUTLASS pays it too. Tried: per-mma global loads (1.3×), smem-staged STAGES=2 (2.0×), cp.async
   prefetch STAGES=2 (1.9×, the extra bulk ops + lost stage hurt), coalesced sync STAGES=3 (**2.6×, best**).
-  So ~2.6× is the real-scale ceiling; 3× is unit-scale-only. Accuracy follow-up: MXFP4/per-32 = 0.165;
-  NVFP4/ue4m3/per-16 ≈ 0.10 (needs the ue4m3 dense mma, scale_vec::4X).
+  So ~2.6× is the real-scale ceiling; 3× is unit-scale-only.
+- **NVFP4 (ue4m3, per-16) dense mma — DERIVED + VERIFIED** (`verify_nvfp4_dense.cu`): the dense
+  `scale_vec::4X.m16n8k64...ue4m3` scale lane layout was unknown; probed and confirmed it's the SAME
+  A/B row→lane mapping as the ue8m0 2X case (fixed by m16n8k64), just a 4-byte (4 per-16) scale reg —
+  **PASS, maxrel 0.0000**. Built deployable NVFP4 kernel (`dense_nvfp4_fast_lib.cu`, SFA/SFB[step][·][8]
+  per-16). Per-linear on real Qwen3-8B THROUGH the kernel: **NVFP4 rel 0.138 vs MXFP4 0.165** (~2.1–2.4×
+  bf16), the accuracy gain is real. KNOWN ISSUE: the NVFP4 *fused-block* harness path regresses (block
+  rel 0.38 while the identical-structure MXFP4 block is 0.13 and per-linear NVFP4 is 0.138) — a block
+  integration bug not yet isolated (the mma itself is verified). Per-linear dilution predicts a correct
+  NVFP4 block ≈0.11; the harness bug is flagged, not claimed as success.
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 

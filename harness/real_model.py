@@ -47,6 +47,11 @@ def run() -> None:
                          "-o", so3, "/root/cuda/dense_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
     if c3.returncode != 0:
         print(c3.stderr, flush=True); return
+    so4 = "/root/dense_nvfp4.so"
+    c4 = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                         "-o", so4, "/root/cuda/dense_nvfp4_fast_lib.cu", "-lcuda"], capture_output=True, text=True)
+    if c4.returncode != 0:
+        print(c4.stderr, flush=True); return
 
     import ctypes
     import os
@@ -75,6 +80,14 @@ def run() -> None:
     dlib.swiglu_mxfp4.restype = None
     ulib = ctypes.CDLL(so3)
     ulib.dense_fp4_mm.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3   # unit-scale speed ceiling
+    nvlib = ctypes.CDLL(so4)
+    nvlib.dense_nvfp4_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
+    nvlib.quantize_act_nvfp4b.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
+    nvlib.quantize_act_nvfp4b.restype = None
+    nvlib.rmsnorm_nvfp4.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_float]
+    nvlib.rmsnorm_nvfp4.restype = None
+    nvlib.swiglu_nvfp4.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    nvlib.swiglu_nvfp4.restype = None
     dev = torch.device("cuda")
 
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6],
@@ -316,6 +329,34 @@ def run() -> None:
         dlib.quantize_act_mxfp4(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
         return Bb, SFB
 
+    def nvfp4_pack(W):  # W[out,in] -> Abytes[out,in/2], SFA[step][out][8] ue4m3 per-16 (step-major)
+        out, inn = W.shape
+        Wb = W.float().to(dev).view(out, inn // 16, 16)
+        scode = enc_ue4m3(Wb.abs().amax(-1) / 6.0)           # [out, in/16] ue4m3 codes
+        sdeq = UE4M3[scode.long()]
+        q = quant_fp4(Wb / sdeq[..., None]).view(out, inn)
+        Ab = (q[:, 0::2] | (q[:, 1::2] << 4)).to(torch.uint8).contiguous()
+        SFA = scode.view(out, inn // 128, 8).permute(1, 0, 2).contiguous().to(torch.uint8)
+        return Ab, SFA
+
+    class DenseNV:
+        def __init__(self, W):
+            self.out, self.inn = W.shape
+            self.Ab, self.SFA = nvfp4_pack(W)
+
+        def run(self, Bb, SFB, batch):
+            C = torch.empty((self.out, batch), dtype=torch.bfloat16, device=dev)
+            nvlib.dense_nvfp4_mm(self.Ab.data_ptr(), Bb.data_ptr(), self.SFA.data_ptr(),
+                                 SFB.data_ptr(), C.data_ptr(), self.out, batch, self.inn)
+            return C
+
+    def quant_act_nv(a):
+        B, inn = a.shape
+        Bb = torch.empty((B, inn // 2), dtype=torch.uint8, device=dev)
+        SFB = torch.empty((inn // 128, B, 8), dtype=torch.uint8, device=dev)
+        nvlib.quantize_act_nvfp4b(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
+        return Bb, SFB
+
     for B in (2048, 4096):
       print(f"  -- batch={B} --", flush=True)
       for nm, W in [("q_proj", Wq), ("o_proj", Wo), ("gate_proj", Wg), ("down_proj", Wd)]:
@@ -327,13 +368,14 @@ def run() -> None:
         rel = ((y.float() - ref).norm() / ref.norm()).item()
         ms = tms(lambda: d.run(Bb, SFB, B))
         msb = tms(lambda: (x @ W.to(dev).bfloat16().t()))
-        Ad_u = torch.zeros((d.out, d.inn // 2), dtype=torch.uint8, device=dev)  # unit-scale speed ceiling
-        Bd_u = torch.zeros((B, d.inn // 2), dtype=torch.uint8, device=dev)
-        Cu = torch.empty((d.out, B), dtype=torch.bfloat16, device=dev)
-        msu = tms(lambda: ulib.dense_fp4_mm(Ad_u.data_ptr(), Bd_u.data_ptr(), Cu.data_ptr(), d.out, B, d.inn))
-        print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: real-scale rel {rel:.3f} (no train)  "
-              f"{ms*1e3:.0f}us {msb/ms:.2f}x bf16 | unit-scale {msu*1e3:.0f}us {msb/msu:.2f}x (speed ceiling)",
-              flush=True)
+        # NVFP4 (per-16 ue4m3, scale_vec::4X) -- higher accuracy path
+        dn = DenseNV(W)
+        nb, nS = quant_act_nv(x)
+        yn = dn.run(nb, nS, B).t()
+        reln = ((yn.float() - ref).norm() / ref.norm()).item()
+        msn = tms(lambda: dn.run(nb, nS, B))
+        print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: MXFP4 rel {rel:.3f} {msb/ms:.2f}x | "
+              f"NVFP4 rel {reln:.3f} {msb/msn:.2f}x (no train, both real-scale)", flush=True)
 
     # CAPSTONE: fully-fused DENSE real-scale FP4 decoder block on REAL Qwen3-8B, NO TRAINING, vs bf16
     print("\n# DEPLOYABLE fused dense real-scale FP4 block on real Qwen3-8B (NO training) vs bf16", flush=True)
@@ -364,13 +406,37 @@ def run() -> None:
         ffn = dd.run(Db, DS, B).t()
         return resid + ffn
 
+    # NVFP4 fused block (per-16 ue4m3): higher-accuracy deployable variant
+    nqkv = DenseNV(torch.cat([Wq, Wk, Wv], 0))
+    no = DenseNV(Wo)
+    ngu = DenseNV(torch.cat([Wg, Wu], 0))
+    ndd = DenseNV(Wd)
+
+    def nvfp4_fused_block(x):  # verified NVFP4 mma (DenseNV + quant_act_nv), torch glue -> isolates mma accuracy
+        B = x.shape[0]
+        hb, hs = quant_act_nv(rmsnorm(x, ln1))
+        qkv = nqkv.run(hb, hs, B).t()
+        q, k, v = qkv[:, :qdim], qkv[:, qdim:qdim + kvdim], qkv[:, qdim + kvdim:]
+        a = attn(q.contiguous(), k.contiguous(), v.contiguous(), B)
+        ab, aS = quant_act_nv(a)
+        o = no.run(ab, aS, B).t()
+        x2 = x + o
+        h2b, h2s = quant_act_nv(rmsnorm(x2, ln2))
+        gu = ngu.run(h2b, h2s, B)
+        g, u = gu[:I].t(), gu[I:].t()
+        ffn_in = (F.silu(g.float()) * u.float()).bfloat16()
+        db, ds = quant_act_nv(ffn_in)
+        ffn = ndd.run(db, ds, B).t()
+        return x2 + ffn
+
     for B in (2048, 4096):
         x = (torch.randn(B, H, device=dev) * 0.1).bfloat16()
-        yq, yb = dense_fused_block(x), bf16_block(x)
-        rel = ((yq.float() - yb.float()).norm() / yb.float().norm()).item()
-        msq, msb = tms(lambda: dense_fused_block(x)), tms(lambda: bf16_block(x))
-        print(f"  tokens={B}: dense-FP4-fused {msq*1e3:.0f}us  bf16 {msb*1e3:.0f}us -> {msb/msq:.2f}x  "
-              f"(block rel {rel:.3f}, NO training)", flush=True)
+        yq, yn, yb = dense_fused_block(x), nvfp4_fused_block(x), bf16_block(x)
+        relm = ((yq.float() - yb.float()).norm() / yb.float().norm()).item()
+        reln = ((yn.float() - yb.float()).norm() / yb.float().norm()).item()
+        msq, msn, msb = tms(lambda: dense_fused_block(x)), tms(lambda: nvfp4_fused_block(x)), tms(lambda: bf16_block(x))
+        print(f"  tokens={B}: MXFP4 block rel {relm:.3f} {msb/msq:.2f}x | NVFP4 block rel {reln:.3f} {msb/msn:.2f}x "
+              f"| bf16 {msb*1e3:.0f}us (NO training)", flush=True)
 
 
 @app.local_entrypoint()
