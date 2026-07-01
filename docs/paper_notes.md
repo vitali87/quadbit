@@ -229,7 +229,12 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   exposed per-block latency at 1 block/SM; you cannot manufacture parallelism, and Marlin-style
   weight pre-permutation wouldn't change the tile count. bf16 escapes only because its 4×-larger
   weight gives 4× more tiles. **fp4's memory advantage is exactly what starves small decode.**
-  Remedy for GQA `o_proj`/fused-QKV-6144 is serving-level (larger batch M), not the kernel.
+  Batched-M sweep (measured) settles the remedy: batching this split-N decode kernel does NOT
+  recover the ceiling — %peak *falls* (o_proj 39→11% over M 128→2048) and speedup plateaus ~1.45×,
+  because BM=128 blocks re-read the weight per 128-row tile (weight is not stationary across M), so
+  batching multiplies weight traffic. The real remedy is a **kernel switch**: large M is prefill,
+  served by the weight-stationary prefill kernel (3.6–5×). Decode kernel owns only the small-M
+  regime, where it is at the shape's hardware ceiling. No middle-ground batch size to chase.
 
 ## Dead-ends (what didn't work — for the paper's honesty + "we tried X")
 

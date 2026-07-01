@@ -54,6 +54,7 @@ def run() -> None:
     lib.qb_encode_map.restype = ctypes.c_void_p
     lib.qb_decode_tn.argtypes = [ctypes.c_int]; lib.qb_decode_tn.restype = ctypes.c_int
     lib.dense_fp4_decode_cached_async.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
+    lib.qb_free_map.argtypes = [ctypes.c_void_p]
     sk = build("dense_sk_lib.cu", "/root/sk.so")
     sk.dense_fp4_mm_sk.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 4
     dev = torch.device("cuda")
@@ -121,6 +122,31 @@ def run() -> None:
     # Marlin-style per-tile semaphore, tested in-tree then reverted): the f32-partial reduction
     # overhead exceeds the SM-fill gain because the 8 MB fp4 weight is too small to amortize it. It
     # only wins long-K ffn-down (s8 1.52x). Small-N attn is fill/latency-bound at the shape's ceiling.
+
+    # batched-decode M-sweep. HYPOTHESIS (refuted): batching serving requests fills the SM array and
+    # climbs %peak. MEASURED: %peak FALLS (o_proj 39->11%) and speedup plateaus ~1.45x. Root cause:
+    # this split-N kernel uses fixed BM=128 blocks, so each 128-row block RE-READS the full weight ->
+    # batching multiplies weight traffic instead of amortizing it (weight not stationary across M).
+    # So the remedy for batched M is NOT this kernel: large M is prefill, use the weight-stationary
+    # prefill kernel (matmul_fp4_pp, 3.6-5x). Decode kernel's job is small-M, where it's ceiling-bound.
+    print("\nbatched-decode M-sweep (speedup vs bf16 / %DRAM-peak; fill recovers as M grows):", flush=True)
+    for label, N, K in [("o_proj      4096x4096", 4096, 4096), ("fused QKV GQA 6144x4096", 6144, 4096)]:
+        Bb = torch.randn(N, K, device=dev, dtype=torch.bfloat16)
+        Bd = torch.full((N, K // 2), 0x22, dtype=torch.uint8, device=dev)
+        mapB = lib.qb_encode_map(Bd.data_ptr(), N, K, lib.qb_decode_tn(N))
+        row = f"{label:>24}:"
+        for M in (128, 256, 512, 1024, 2048):
+            Ab = torch.randn(M, K, device=dev, dtype=torch.bfloat16)
+            tb = tms(lambda: torch.matmul(Ab, Bb.t()))
+            Ad = torch.full((M, K // 2), 0x22, dtype=torch.uint8, device=dev)
+            C = torch.empty((M, N), dtype=torch.bfloat16, device=dev)
+            mapA = lib.qb_encode_map(Ad.data_ptr(), M, K, 128)
+            tf = tms(lambda: lib.dense_fp4_decode_cached_async(mapA, mapB, C.data_ptr(), M, N, K))
+            lib.qb_free_map(mapA)
+            pk = 100 * (N * K / 2 + M * N * 2) / (tf / 1e3) / 1e12 / peak
+            row += f"  M{M}={tb / tf:.2f}x/{pk:.0f}%"
+        lib.qb_free_map(mapB)
+        print(row, flush=True)
 
 
 @app.local_entrypoint()
