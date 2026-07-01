@@ -188,11 +188,16 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   **PASS, maxrel 0.0000 with BOTH uniform AND wide-range (2^-4..2^2) ue4m3 scales** — the wide-range
   probe is the strong test (it confirms the 4 per-16 scale bytes map to the right k-sub-blocks; a
   uniform-scale probe can't). Built deployable NVFP4 kernel (`dense_nvfp4_fast_lib.cu`, SFA/SFB[step][·][8]
-  per-16). Per-linear on real Qwen3-8B THROUGH the kernel: **NVFP4 rel 0.138 vs MXFP4 0.165** (~2.1–2.4×
-  bf16), the accuracy gain is real. The mma is DEFINITIVELY correct (wide-scale maxrel 0). KNOWN ISSUE:
-  the NVFP4 *fused-block* harness regresses (block rel 0.38 vs MXFP4-block 0.13, per-linear NVFP4 0.138)
-  — proven to be a HARNESS-side quantizer/chaining bug, NOT the kernel; not yet root-caused. Per-linear
-  dilution predicts a correct NVFP4 block ≈0.11; flagged honestly, not claimed as success.
+  per-16). The mma is DEFINITIVELY correct (wide-scale maxrel 0).
+  - **TWO-LEVEL NVFP4 (per-16 ue4m3 local × per-row fp32 global) — SOLVED the block.** The single-level
+    NVFP4 block regressed to 0.38: the ue4m3 scale carries a mantissa, so per-block scale-rounding bias
+    accumulates across the 3-matmul chain (MXFP4's power-of-2 ue8m0 has no scale-rounding, stays robust).
+    Fix = the standard NVFP4 two-level recipe: per-row global gA=rowamax/2688 (2688=e4m3max·e2m1max)
+    rescales the local ue4m3 scales into e4m3's precise range; the mma applies the locals, the fp32
+    globals multiply the accumulator in the epilogue (`dmatmul_nvf` + `quant_act_nv2_k`). Result on real
+    Qwen3-8B, NO training, through the kernel: **per-linear 0.165→0.134, full block 0.13→0.097** — below
+    the ~0.10 target. Speed 1.2–2.3× over bf16 (STAGES=2 + per-16 scales); NVFP4 = the accuracy path
+    (0.097), MXFP4 = the speed path (2.15× @ 0.13). The ue4m3 dense mma accuracy follow-up is DONE.
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 

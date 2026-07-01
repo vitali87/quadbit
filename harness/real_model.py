@@ -81,9 +81,11 @@ def run() -> None:
     ulib = ctypes.CDLL(so3)
     ulib.dense_fp4_mm.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3   # unit-scale speed ceiling
     nvlib = ctypes.CDLL(so4)
-    nvlib.dense_nvfp4_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
+    nvlib.dense_nvfp4_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     nvlib.quantize_act_nvfp4b.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
     nvlib.quantize_act_nvfp4b.restype = None
+    nvlib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    nvlib.quantize_act_nvfp4_2lvl.restype = None
     nvlib.rmsnorm_nvfp4.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_float]
     nvlib.rmsnorm_nvfp4.restype = None
     nvlib.swiglu_nvfp4.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
@@ -329,33 +331,38 @@ def run() -> None:
         dlib.quantize_act_mxfp4(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
         return Bb, SFB
 
-    def nvfp4_pack(W):  # W[out,in] -> Abytes[out,in/2], SFA[step][out][8] ue4m3 per-16 (step-major)
+    def nvfp4_pack(W):  # TWO-LEVEL: Ab[out,in/2], SFA[step][out][8] ue4m3 local, gA[out] fp32 global
         out, inn = W.shape
-        Wb = W.float().to(dev).view(out, inn // 16, 16)
-        scode = enc_ue4m3(Wb.abs().amax(-1) / 6.0)           # [out, in/16] ue4m3 codes
-        sdeq = UE4M3[scode.long()]
+        Wf = W.float().to(dev)
+        gA = (Wf.abs().amax(-1) / 2688.0).clamp(min=1e-30)   # per-row global (2688 = e4m3max*e2m1max)
+        Wb = Wf.view(out, inn // 16, 16)
+        scode = enc_ue4m3((Wb.abs().amax(-1) / 6.0) / gA[:, None])  # local relative to global
+        sdeq = UE4M3[scode.long()] * gA[:, None]                     # effective scale = local*global
         q = quant_fp4(Wb / sdeq[..., None]).view(out, inn)
         Ab = (q[:, 0::2] | (q[:, 1::2] << 4)).to(torch.uint8).contiguous()
         SFA = scode.view(out, inn // 128, 8).permute(1, 0, 2).contiguous().to(torch.uint8)
-        return Ab, SFA
+        return Ab, SFA, gA.contiguous()
 
     class DenseNV:
         def __init__(self, W):
             self.out, self.inn = W.shape
-            self.Ab, self.SFA = nvfp4_pack(W)
+            self.Ab, self.SFA, self.gA = nvfp4_pack(W)
 
-        def run(self, Bb, SFB, batch):
+        def run(self, Bb, SFB, gB, batch):
             C = torch.empty((self.out, batch), dtype=torch.bfloat16, device=dev)
             nvlib.dense_nvfp4_mm(self.Ab.data_ptr(), Bb.data_ptr(), self.SFA.data_ptr(),
-                                 SFB.data_ptr(), C.data_ptr(), self.out, batch, self.inn)
+                                 SFB.data_ptr(), C.data_ptr(), self.out, batch, self.inn,
+                                 self.gA.data_ptr(), gB.data_ptr())
             return C
 
-    def quant_act_nv(a):
+    def quant_act_nv(a):  # two-level: returns Bb, SFB(local), gB(per-row global)
         B, inn = a.shape
         Bb = torch.empty((B, inn // 2), dtype=torch.uint8, device=dev)
         SFB = torch.empty((inn // 128, B, 8), dtype=torch.uint8, device=dev)
-        nvlib.quantize_act_nvfp4b(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(), B, inn)
-        return Bb, SFB
+        gB = torch.empty((B,), dtype=torch.float32, device=dev)
+        nvlib.quantize_act_nvfp4_2lvl(a.contiguous().data_ptr(), Bb.data_ptr(), SFB.data_ptr(),
+                                      gB.data_ptr(), B, inn)
+        return Bb, SFB, gB
 
     for B in (2048, 4096):
       print(f"  -- batch={B} --", flush=True)
@@ -368,12 +375,12 @@ def run() -> None:
         rel = ((y.float() - ref).norm() / ref.norm()).item()
         ms = tms(lambda: d.run(Bb, SFB, B))
         msb = tms(lambda: (x @ W.to(dev).bfloat16().t()))
-        # NVFP4 (per-16 ue4m3, scale_vec::4X) -- higher accuracy path
+        # NVFP4 two-level (per-16 ue4m3 local + per-row fp32 global) -- higher accuracy path
         dn = DenseNV(W)
-        nb, nS = quant_act_nv(x)
-        yn = dn.run(nb, nS, B).t()
+        nb, nS, ngB = quant_act_nv(x)
+        yn = dn.run(nb, nS, ngB, B).t()
         reln = ((yn.float() - ref).norm() / ref.norm()).item()
-        msn = tms(lambda: dn.run(nb, nS, B))
+        msn = tms(lambda: dn.run(nb, nS, ngB, B))
         print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: MXFP4 rel {rel:.3f} {msb/ms:.2f}x | "
               f"NVFP4 rel {reln:.3f} {msb/msn:.2f}x (no train, both real-scale)", flush=True)
 
@@ -412,21 +419,21 @@ def run() -> None:
     ngu = DenseNV(torch.cat([Wg, Wu], 0))
     ndd = DenseNV(Wd)
 
-    def nvfp4_fused_block(x):  # verified NVFP4 mma (DenseNV + quant_act_nv), torch glue -> isolates mma accuracy
+    def nvfp4_fused_block(x):  # two-level NVFP4 through the verified mma, torch glue
         B = x.shape[0]
-        hb, hs = quant_act_nv(rmsnorm(x, ln1))
-        qkv = nqkv.run(hb, hs, B).t()
+        hb, hs, hg = quant_act_nv(rmsnorm(x, ln1))
+        qkv = nqkv.run(hb, hs, hg, B).t()
         q, k, v = qkv[:, :qdim], qkv[:, qdim:qdim + kvdim], qkv[:, qdim + kvdim:]
         a = attn(q.contiguous(), k.contiguous(), v.contiguous(), B)
-        ab, aS = quant_act_nv(a)
-        o = no.run(ab, aS, B).t()
+        ab, aS, ag = quant_act_nv(a)
+        o = no.run(ab, aS, ag, B).t()
         x2 = x + o
-        h2b, h2s = quant_act_nv(rmsnorm(x2, ln2))
-        gu = ngu.run(h2b, h2s, B)
+        h2b, h2s, h2g = quant_act_nv(rmsnorm(x2, ln2))
+        gu = ngu.run(h2b, h2s, h2g, B)
         g, u = gu[:I].t(), gu[I:].t()
         ffn_in = (F.silu(g.float()) * u.float()).bfloat16()
-        db, ds = quant_act_nv(ffn_in)
-        ffn = ndd.run(db, ds, B).t()
+        db, ds, dg = quant_act_nv(ffn_in)
+        ffn = ndd.run(db, ds, dg, B).t()
         return x2 + ffn
 
     for B in (2048, 4096):

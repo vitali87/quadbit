@@ -19,7 +19,8 @@
 
 __global__ void __launch_bounds__(256)
 dmatmul_nvf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
-            __nv_bfloat16 *C, int M, int N, int Kfp4, const uint8_t *SFA, const uint8_t *SFB, int Ksf16) {
+            __nv_bfloat16 *C, int M, int N, int Kfp4, const uint8_t *SFA, const uint8_t *SFB, int Ksf16,
+            const float *gA, const float *gB) {   // gA[M],gB[N] per-row fp32 global scales (two-level NVFP4)
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -124,8 +125,9 @@ dmatmul_nvf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CU
         for (int n = 0; n < 8; n++) {
             int idx = mt * 8 + n;
             int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + b_col[n] + (lane & 3) * 2;
-            *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0], acc[idx][1]);
-            *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2], acc[idx][3]);
+            float ga0 = gA[gr], ga1 = gA[gr + 8], gb0 = gB[gc], gb1 = gB[gc + 1];   // two-level global scale
+            *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0] * ga0 * gb0, acc[idx][1] * ga0 * gb1);
+            *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2] * ga1 * gb0, acc[idx][3] * ga1 * gb1);
         }
 }
 
@@ -266,7 +268,7 @@ static void mkmap(CUtensorMap *m, uint8_t *p, int Kb, int rows, int boxrows) {
 }
 
 extern "C" int dense_nvfp4_mm(const void *A, const void *B, const void *SFA, const void *SFB,
-                              void *C, int M, int N, int K) {
+                              void *C, int M, int N, int K, const void *gA, const void *gB) {
     int Kb = K / 2, Ksf16 = K / 16;
     alignas(64) CUtensorMap mapA, mapB;
     mkmap(&mapA, (uint8_t *)A, Kb, M, DBM);
@@ -274,6 +276,48 @@ extern "C" int dense_nvfp4_mm(const void *A, const void *B, const void *SFA, con
     cudaFuncSetAttribute(dmatmul_nvf, cudaFuncAttributeMaxDynamicSharedMemorySize, DSMEM);
     dim3 grid(N / (2 * DBN), M / DBM), block(256);
     dmatmul_nvf<<<grid, block, DSMEM>>>(mapA, mapB, (__nv_bfloat16 *)C, M, N, K,
-                                        (const uint8_t *)SFA, (const uint8_t *)SFB, Ksf16);
+                                        (const uint8_t *)SFA, (const uint8_t *)SFB, Ksf16,
+                                        (const float *)gA, (const float *)gB);
     return (int)cudaDeviceSynchronize();
+}
+
+// Two-level NVFP4 activation quantizer: per-row fp32 global gB[n]=rowamax/2688, per-16 ue4m3 LOCAL
+// relative to gB (uses e4m3's full range -> precise local scales, no subnormal bias). One CTA/row.
+__global__ void quant_act_nv2_k(const __nv_bfloat16 *x, uint32_t *Bwords, uint8_t *SFB, float *gB,
+                                int in_f) {
+    int n = blockIdx.x;
+    const __nv_bfloat16 *xr = x + (long)n * in_f;
+    float la = 0.f;
+    for (int i = threadIdx.x; i < in_f; i += blockDim.x) la = fmaxf(la, fabsf(__bfloat162float(xr[i])));
+    for (int o = 16; o > 0; o >>= 1) la = fmaxf(la, __shfl_down_sync(0xffffffffu, la, o));
+    __shared__ float red[32];
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = la;
+    __syncthreads();
+    if (threadIdx.x == 0) { float t = 0; int nw = blockDim.x >> 5; for (int i = 0; i < nw; i++) t = fmaxf(t, red[i]); red[0] = t; }
+    __syncthreads();
+    float rowamax = red[0];
+    float g = rowamax > 0.f ? rowamax / 2688.f : 1.f;   // 2688 = e4m3max(448) * e2m1max(6)
+    if (threadIdx.x == 0) gB[n] = g;
+    int b16 = in_f / 16;
+    for (int blk = threadIdx.x; blk < b16; blk += blockDim.x) {
+        int step = blk / 8, kb = blk % 8;
+        float amax = 0.f, v[16];
+#pragma unroll
+        for (int i = 0; i < 16; i++) { v[i] = __bfloat162float(xr[blk * 16 + i]); amax = fmaxf(amax, fabsf(v[i])); }
+        uint8_t code = enc_ue4m3((amax / 6.f) / g);      // local relative to global -> e4m3 sweet spot
+        SFB[((long)step * gridDim.x + n) * 8 + kb] = code;
+        float inv = 1.f / (dec_ue4m3(code) * g);
+        uint32_t w2[2] = {0, 0};
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            uint32_t byte = q_fp4(v[2 * i] * inv) | (q_fp4(v[2 * i + 1] * inv) << 4);
+            w2[i >> 2] |= byte << ((i & 3) * 8);
+        }
+        *reinterpret_cast<uint2 *>(Bwords + (long)n * (in_f / 8) + blk * 2) = make_uint2(w2[0], w2[1]);
+    }
+}
+extern "C" void quantize_act_nvfp4_2lvl(const void *x, void *Bbytes, void *SFB, void *gB, int batch, int in_f) {
+    int smem = 0;
+    quant_act_nv2_k<<<batch, 256, smem>>>((const __nv_bfloat16 *)x, (uint32_t *)Bbytes, (uint8_t *)SFB,
+                                          (float *)gB, in_f);
 }
