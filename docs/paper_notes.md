@@ -127,6 +127,12 @@ Accuracy (real models, WikiText-2 PPL):
      → +concat **4.66×** at batch=2048 (**2.27× over unfused**); **1.74×→2.95×** at batch=512.
      Numerically identical (rel 0.741 = same 2:4 prune floor) — pure memory-traffic win. The kernels
      were already at the silicon ceiling; the remaining end-to-end gain was in fusion, exactly here.
+   - **Fused RMSNorm + NVFP4 quant** (`rmsnorm_quant_k`): the block entry (fires twice/block:
+     pre-attn, pre-FFN). One CTA per row loads x to smem, block-reduces the sum-of-squares, then
+     each thread normalizes (×rms×weight) and quantizes its 32-blocks — a single read of x replaces
+     eager rmsnorm (read+reduce+write) + a separate quant pass (read+write), and it's more accurate
+     (no bf16 round-trip before quant). **3.7–4.3× over eager rmsnorm+quant** (0.129→0.035ms @2048),
+     rel 0.105 vs true = the FP4 activation-quant floor. Feeds straight into the QKV/gate-up GEMM.
 
 6. **Pair-granular recovery pipeline (one-shot + QAT), no NVIDIA equivalent.** SparseGPT retargeted
    to pair-granular masks (keep 2-of-4-pairs by `w²/[H⁻¹]²`, Hessian error compensation) →
