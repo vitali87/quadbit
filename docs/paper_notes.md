@@ -37,6 +37,26 @@ bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
   **+47% @8192 (2207 vs 1497)** — a capability, not just a tuning delta.
 - Unit-scale headline (perf ceiling): sparse **2731k GFLOP/s**, dense **1515k**, both @8192.
 
+Real Llama-3-8B GEMM shapes (`harness/bench_llm_shapes.py`, hidden 4096 / FFN 14336, vs cuBLAS bf16;
+dense split-K = `cuda/dense_sk_lib.cu`, auto-tuned split factor):
+
+| shape | M/N/K | dense FP4 | dense FP4 split-K | 2:4 FP4 |
+|-------|-------|-----------|-------------------|---------|
+| prefill attn qkv/o | 4096³ | 3.02× | — | 4.06× |
+| prefill ffn up | 4096/14336/4096 | 3.31× | — | 4.36× |
+| prefill ffn down | 4096/4096/14336 | 3.61× | — | 5.03× |
+| decode ffn up | 128/14336/4096 | 2.88× | — | (M<256) |
+| decode ffn down | 128/4096/14336 | 0.50× | **1.40× (s=8)** | (M<256) |
+| decode attn qkv/o | 128/4096/4096 | 0.48× | 0.68× (s=4) | (M<256) |
+
+- **Prefill (bulk of training + long-context compute): 3.0–3.6× dense, 4.1–5.0× sparse over bf16.**
+- **Decode small-M underfills the SM array** (grid = N/256 × 1 = 16 blocks for N=4096, 16/188 SMs).
+  Split-K (`dense_fp4_mm_sk`, gridDim.z CTAs summing K-subranges into a tiny f32 workspace) refills
+  idle SMs — decode ffn-down flips 0.50×→**1.40×** (2.8× kernel-level). Unlike square GEMM, decode
+  output is tiny so the f32 reduction is negligible. The one remaining loss (attn qkv/o @4096²,
+  ~21µs) is launch/overhead-bound (neither side is memory-bound at 4096²); it needs a dedicated
+  GEMV kernel, not worth it for the cheapest decode op.
+
 Accuracy (real models, WikiText-2 PPL):
 - **Dense FP4: +0.3 PPL, zero training, any model** (Sparse-Llama-3.1-8B 7.89→8.16; Qwen2.5-3B 7.60→7.91). Production-ready.
 - Sparse FP4 needs pair-granular 2:4 recovery (see below).
