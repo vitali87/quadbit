@@ -30,7 +30,7 @@ app = modal.App("quadbit-finetune", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
-@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol})
+@app.function(gpu="RTX-PRO-6000", timeout=14400, volumes={"/cache": vol})
 def run() -> None:
     import ctypes
     import math
@@ -85,12 +85,15 @@ def run() -> None:
         s = UE4M3[enc(b.abs().amax(-1) / 6.0)]
         return (FP4[q_fp4(b / s[..., None])] * s[..., None]).reshape(*lead, i)
 
-    class QATLinear(nn.Module):  # trains against the EXACT sparse-FP4 kernel: weight AND act quant
+    class QATLinear(nn.Module):  # phase1: plain masked bf16 (fast); phase2 (qat=True): FP4 STE
         def __init__(self, weight):
             super().__init__()
             self.weight = nn.Parameter(weight.clone())
+            self.qat = False
 
         def forward(self, x):
+            if not self.qat:
+                return F.linear(x, self.weight)                # masked bf16 (weight kept sparse)
             Wf = self.weight.float()
             Wq = Wf + (sparse_fp4_dequant(Wf) - Wf).detach()   # STE weight fake-quant
             xf = x.float()
@@ -165,12 +168,14 @@ def run() -> None:
     def load():
         return AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to(dev)
 
-    def wikitext(split):
-        p = hf_hub_download("Salesforce/wikitext", f"wikitext-2-raw-v1/{split}-00000-of-00001.parquet",
-                            repo_type="dataset")
-        return tok("\n\n".join(pq.read_table(p).column("text").to_pylist()), return_tensors="pt").input_ids[0]
+    def wikitext(cfg, fn):
+        p = hf_hub_download("Salesforce/wikitext", f"{cfg}/{fn}", repo_type="dataset")
+        txt = "\n\n".join(pq.read_table(p).column("text").to_pylist())[:200_000_000]
+        return tok(txt, return_tensors="pt").input_ids[0]
 
-    test_ids, train_ids = wikitext("test"), wikitext("train")
+    test_ids = wikitext("wikitext-2-raw-v1", "test-00000-of-00001.parquet")   # comparable eval
+    train_ids = wikitext("wikitext-103-raw-v1", "train-00000-of-00002.parquet")  # big, no overfit
+    print(f"train tokens: {len(train_ids)}", flush=True)
 
     def ppl(m, windows=16, seq=2048):
         m.eval()
@@ -223,33 +228,57 @@ def run() -> None:
     # student forward now runs through the FP4 fake-quant, so this == the kernel's one-shot PPL
     print(f"PPL one-shot pair-2:4 FP4 (QAT-equivalent): {ppl(student):.3f}", flush=True)
 
-    # knowledge-distillation recovery: train only surviving MLP weights, re-mask each step
+    # KD recovery: only surviving MLP weights, re-mask each step. Phase 1 = fast bf16 masked
+    # (recovers the sparsity, the big error); Phase 2 = QAT to adapt to weight+act FP4.
     for p in student.parameters():
         p.requires_grad_(False)
     params = []
     for q in qats:
         q.weight.requires_grad_(True); params.append(q.weight)
-    opt = torch.optim.AdamW(params, lr=1e-4, betas=(0.9, 0.95), weight_decay=0.0)
-    T, seq, steps = 2.0, 1024, 1500
+    T, seq = 2.0, 1024
+    P1, P2, wu = 12000, 3000, 300
+    total = P1 + P2
+    lr_max, lr_min = 2e-4, 1e-5
+    opt = torch.optim.AdamW(params, lr=lr_max, betas=(0.9, 0.95), weight_decay=0.0)
     starts = list(range(0, len(train_ids) - seq, seq))
-    student.train()
-    for step in range(steps):
-        w = train_ids[starts[step % len(starts)]:starts[step % len(starts)] + seq].unsqueeze(0).to(dev)
+
+    def kd_step(step):
+        for g in opt.param_groups:                    # warmup + cosine decay
+            if step < wu:
+                g["lr"] = lr_max * (step + 1) / wu
+            else:
+                t = (step - wu) / max(1, total - wu)
+                g["lr"] = lr_min + 0.5 * (lr_max - lr_min) * (1 + math.cos(math.pi * t))
+        i = starts[(step * 2654435761) % len(starts)]  # shuffled window pick
+        w = train_ids[i:i + seq].unsqueeze(0).to(dev)
         with torch.no_grad():
             tl = teacher(w).logits.reshape(-1, teacher.config.vocab_size)
         sl = student(w).logits.reshape(-1, teacher.config.vocab_size)
         loss = F.kl_div(F.log_softmax(sl / T, -1), F.softmax(tl / T, -1), reduction="batchmean") * (T * T)
         opt.zero_grad(); loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, 1.0)
-        opt.step()
+        torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step()
         with torch.no_grad():
             for q, mk in masks.items():
-                q.weight.data *= mk             # keep pair-2:4 structure exact
-        if (step + 1) % 300 == 0:
-            print(f"  step {step + 1}/{steps} KD {loss.item():.4f}  PPL {ppl(student, windows=8):.3f}", flush=True)
-            student.train()
+                q.weight.data *= mk
+        return loss.item()
 
-    print(f"PPL after QAT recovery fine-tune (FP4): {ppl(student):.3f}", flush=True)
+    student.train()
+    for step in range(P1):                            # phase 1: bf16 masked (fast)
+        loss = kd_step(step)
+        if (step + 1) % 1000 == 0:
+            print(f"  P1 {step + 1}/{P1} KD {loss:.4f} PPL(bf16) {ppl(student, windows=8):.3f}", flush=True)
+            student.train()
+    print(f"PPL after phase-1 bf16 recovery: {ppl(student):.3f}", flush=True)
+
+    for q in qats:
+        q.qat = True                                  # phase 2: QAT (weight+act FP4 STE)
+    student.train()
+    for step in range(P1, total):
+        loss = kd_step(step)
+        if (step + 1) % 500 == 0:
+            print(f"  P2 {step + 1 - P1}/{P2} KD {loss:.4f} PPL(FP4) {ppl(student, windows=8):.3f}", flush=True)
+            student.train()
+    print(f"PPL after phase-2 QAT recovery (FP4): {ppl(student):.3f}", flush=True)
 
     # final: build the actual sparse-FP4 KERNEL modules from the fine-tuned weights
     for layer in student.model.layers:
