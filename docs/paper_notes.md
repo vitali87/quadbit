@@ -206,6 +206,15 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
 - L2→smem TMA bandwidth ceiling = **7.3 TB/s** (`tma_bw.cu`).
 - smem cap = **99 KB/block** (101376 B), 100 KB/SM. L2 = 128 MB.
 - Dense FP4 is compute-bound (~84% of 1811k); sparse FP4 is load-bound (swizzle floor 6.0 TB/s).
+- **Peak DRAM BW = 1.46 TB/s** (measured, 1 GiB d2d copy). Decode is DRAM-bound on the weight
+  stream + output write (`bench_decode_bw.py`, achieved = (N·K/2 + M·N·2)/time): **ffn-up = 84.6%
+  of peak (4.75×), big-N = 91.8% (4.12×)** → the memory-bound 4× is realized once the op fills the
+  SMs. **attn-qkv/o (128×4096×4096) = 39% (1.38×, 16.5 µs vs 6.5 ideal)** is latency/fill-bound: at
+  N=4096, TN=32 gives only 128 blocks on 188 SMs, and it's the cheapest decode op. Both ways to add
+  parallelism lose — smaller TN blows up activation L2 re-reads (swept), and split-K's f32 workspace
+  (memset + atomic + convert ≈ doubles DRAM traffic) exceeds the fill gain even on a clean
+  cached-map async path (correctness maxrel 0; s1 1.23× but s≥2 = 0.79–0.86×). So decode is at its
+  practical SM120 ceiling: expensive ops bandwidth-saturated, attn-4096² fill-bound at 1.38×.
 
 ## Dead-ends (what didn't work — for the paper's honesty + "we tried X")
 
