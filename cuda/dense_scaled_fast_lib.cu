@@ -178,6 +178,77 @@ extern "C" void quantize_act_mxfp4(const void *x, void *Bbytes, void *SFB, int b
     quant_act_mx<<<(total + tpb - 1) / tpb, tpb>>>((const int4 *)x, (uint32_t *)Bbytes, (uint8_t *)SFB, batch, in_f);
 }
 
+// ---- Fused ops with MXFP4 (ue8m0, step-major SFB[step][batch][4]) output for the dense scaled kernel.
+__device__ __forceinline__ void mx_pack_row(const float *val, uint32_t *Bwords, uint8_t *SFB,
+                                             int batch, int in_f, int n, int blk) {
+    int step = blk / 4, kb = blk % 4;
+    float amax = 0.f;
+#pragma unroll
+    for (int i = 0; i < 32; i++) amax = fmaxf(amax, fabsf(val[i]));
+    SFB[((long)step * batch + n) * 4 + kb] = enc_ue8m0(amax);
+    float inv = 1.f / ldexpf(1.f, (int)SFB[((long)step * batch + n) * 4 + kb] - 127);
+    uint32_t w[4] = {0, 0, 0, 0};
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        uint32_t byte = q_fp4(val[2 * i] * inv) | (q_fp4(val[2 * i + 1] * inv) << 4);
+        w[i >> 2] |= byte << ((i & 3) * 8);
+    }
+    *reinterpret_cast<uint4 *>(Bwords + (long)n * (in_f / 8) + blk * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+}
+__global__ void rmsnorm_mx_k(const __nv_bfloat16 *x, const __nv_bfloat16 *res, const __nv_bfloat16 *wt,
+                             __nv_bfloat16 *hout, uint32_t *Bwords, uint8_t *SFB, int batch, int hidden, float eps) {
+    int b = blockIdx.x;
+    extern __shared__ float sm[];
+    const __nv_bfloat16 *xr = x + (long)b * hidden;
+    float ls = 0.f;
+    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
+        float v = __bfloat162float(xr[i]);
+        if (res) { v += __bfloat162float(res[(long)b * hidden + i]); hout[(long)b * hidden + i] = __float2bfloat16_rn(v); }
+        sm[i] = v; ls += v * v;
+    }
+    for (int o = 16; o > 0; o >>= 1) ls += __shfl_down_sync(0xffffffffu, ls, o);
+    __shared__ float red[32];
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = ls;
+    __syncthreads();
+    if (threadIdx.x == 0) { float t = 0; int nw = blockDim.x >> 5; for (int i = 0; i < nw; i++) t += red[i]; red[0] = rsqrtf(t / hidden + eps); }
+    __syncthreads();
+    float rms = red[0];
+    for (int blk = threadIdx.x; blk < hidden / 32; blk += blockDim.x) {
+        float val[32];
+#pragma unroll
+        for (int i = 0; i < 32; i++) val[i] = sm[blk * 32 + i] * rms * __bfloat162float(wt[blk * 32 + i]);
+        mx_pack_row(val, Bwords, SFB, batch, hidden, b, blk);
+    }
+}
+extern "C" void rmsnorm_mxfp4(const void *x, const void *res, const void *wt, void *hout,
+                              void *Bbytes, void *SFB, int batch, int hidden, float eps) {
+    int smem = hidden * (int)sizeof(float);
+    if (smem > 48 * 1024) cudaFuncSetAttribute(rmsnorm_mx_k, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+    rmsnorm_mx_k<<<batch, 256, smem>>>((const __nv_bfloat16 *)x, (const __nv_bfloat16 *)res,
+                                       (const __nv_bfloat16 *)wt, (__nv_bfloat16 *)hout,
+                                       (uint32_t *)Bbytes, (uint8_t *)SFB, batch, hidden, eps);
+}
+__global__ void swiglu_mx_k(const __nv_bfloat16 *g, const __nv_bfloat16 *u, uint32_t *Hwords,
+                            uint8_t *SFB, int batch, int hidden) {
+    int hb = hidden / 32;
+    long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= (long)batch * hb) return;
+    int blk = (int)(t / batch), b = (int)(t % batch);   // b fastest -> coalesced g/u reads
+    long base = (long)(blk * 32) * batch + b;
+    float val[32];
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+        float gv = __bfloat162float(g[base + (long)i * batch]), uv = __bfloat162float(u[base + (long)i * batch]);
+        val[i] = (gv / (1.f + __expf(-gv))) * uv;
+    }
+    mx_pack_row(val, Hwords, SFB, batch, hidden, b, blk);
+}
+extern "C" void swiglu_mxfp4(const void *g, const void *u, void *Hbytes, void *SFB, int batch, int hidden) {
+    int total = batch * (hidden / 32), tpb = 256;
+    swiglu_mx_k<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
+                                                  (uint32_t *)Hbytes, (uint8_t *)SFB, batch, hidden);
+}
+
 static void mkmap(CUtensorMap *m, uint8_t *p, int Kb, int rows, int boxrows) {
     uint64_t gd[2] = {(uint64_t)Kb, (uint64_t)rows}; uint64_t gs[1] = {(uint64_t)Kb};
     uint32_t bd[2] = {(uint32_t)DBKH, (uint32_t)boxrows}, es[2] = {1, 1};

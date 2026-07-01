@@ -69,6 +69,10 @@ def run() -> None:
     dlib.dense_scaled_fast_mm.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 3
     dlib.quantize_act_mxfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
     dlib.quantize_act_mxfp4.restype = None
+    dlib.rmsnorm_mxfp4.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_float]
+    dlib.rmsnorm_mxfp4.restype = None
+    dlib.swiglu_mxfp4.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    dlib.swiglu_mxfp4.restype = None
     ulib = ctypes.CDLL(so3)
     ulib.dense_fp4_mm.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3   # unit-scale speed ceiling
     dev = torch.device("cuda")
@@ -330,6 +334,43 @@ def run() -> None:
         print(f"  {nm:10s} out={d.out:5d} in={d.inn:5d}: real-scale rel {rel:.3f} (no train)  "
               f"{ms*1e3:.0f}us {msb/ms:.2f}x bf16 | unit-scale {msu*1e3:.0f}us {msb/msu:.2f}x (speed ceiling)",
               flush=True)
+
+    # CAPSTONE: fully-fused DENSE real-scale FP4 decoder block on REAL Qwen3-8B, NO TRAINING, vs bf16
+    print("\n# DEPLOYABLE fused dense real-scale FP4 block on real Qwen3-8B (NO training) vs bf16", flush=True)
+    dqkv = DenseMX(torch.cat([Wq, Wk, Wv], 0))
+    do = DenseMX(Wo)
+    dgu = DenseMX(torch.cat([Wg, Wu], 0))
+    dd = DenseMX(Wd)
+
+    def dense_fused_block(x):
+        B = x.shape[0]
+        Bb = torch.empty((B, H // 2), dtype=torch.uint8, device=dev)
+        SFB = torch.empty((H // 128, B, 4), dtype=torch.uint8, device=dev)
+        dlib.rmsnorm_mxfp4(x.data_ptr(), None, ln1.data_ptr(), None, Bb.data_ptr(), SFB.data_ptr(), B, H, eps)
+        qkv = dqkv.run(Bb, SFB, B).t()
+        q, k, v = qkv[:, :qdim], qkv[:, qdim:qdim + kvdim], qkv[:, qdim + kvdim:]
+        a = attn(q.contiguous(), k.contiguous(), v.contiguous(), B)
+        ab, aS = quant_act_mx(a)
+        o = do.run(ab, aS, B).t()
+        resid = torch.empty((B, H), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((B, H // 2), dtype=torch.uint8, device=dev)
+        HS = torch.empty((H // 128, B, 4), dtype=torch.uint8, device=dev)
+        dlib.rmsnorm_mxfp4(o.data_ptr(), x.data_ptr(), ln2.data_ptr(), resid.data_ptr(),
+                           Hb.data_ptr(), HS.data_ptr(), B, H, eps)
+        gu = dgu.run(Hb, HS, B)
+        Db = torch.empty((B, I // 2), dtype=torch.uint8, device=dev)
+        DS = torch.empty((I // 128, B, 4), dtype=torch.uint8, device=dev)
+        dlib.swiglu_mxfp4(gu.data_ptr(), gu.data_ptr() + I * B * 2, Db.data_ptr(), DS.data_ptr(), B, I)
+        ffn = dd.run(Db, DS, B).t()
+        return resid + ffn
+
+    for B in (2048, 4096):
+        x = (torch.randn(B, H, device=dev) * 0.1).bfloat16()
+        yq, yb = dense_fused_block(x), bf16_block(x)
+        rel = ((yq.float() - yb.float()).norm() / yb.float().norm()).item()
+        msq, msb = tms(lambda: dense_fused_block(x)), tms(lambda: bf16_block(x))
+        print(f"  tokens={B}: dense-FP4-fused {msq*1e3:.0f}us  bf16 {msb*1e3:.0f}us -> {msb/msq:.2f}x  "
+              f"(block rel {rel:.3f}, NO training)", flush=True)
 
 
 @app.local_entrypoint()

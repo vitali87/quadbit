@@ -164,7 +164,11 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   linears ARE the kernel. Small models (Qwen3-8B, Gemma-4, Phi-4) run whole on one card.
 - **Full fused FP4 decoder block on REAL Qwen3-8B weights** (fused RMSNorm+quant → concat-QKV → attn(bf16)
   → o-proj → fused add+RMSNorm+quant → fused SwiGLU) vs a fair bf16 tensor-core block: **2.26× @512,
-  3.22× @2048 tokens**. Block accuracy: sparse 2:4 = 0.55 (needs recovery), dense-FP4 sim = 0.103 (deployable).
+  3.22× @2048 tokens** (sparse path). Block accuracy: sparse 2:4 = 0.55 (needs recovery), dense-FP4 sim = 0.103.
+- **DEPLOYABLE capstone — full fused DENSE real-scale FP4 block on real Qwen3-8B, NO training** (all linears
+  through `dense_scaled_fast_mm` + MXFP4 fused RMSNorm/add-RMSNorm/SwiGLU ops): **2.16–2.19× over bf16,
+  block rel 0.13**. Zero fine-tuning, real frontier weights, real scales, through the actual CUDA kernels —
+  the universal drop-in. (Block rel 0.13 < per-linear 0.165 because attention stays bf16 + residuals dilute.)
 - **Deployable dense real-scale FP4 THROUGH the kernel** (MXFP4 e2m1+ue8m0 both operands, from the
   proven verify_scaled mma; fused MXFP4 act quantizer): real Qwen3-8B linears **rel 0.165, NO training**
   — the drop-in that works on any model. Two kernels: `dense_scaled_lib.cu` (BM=64 verify_scaled tiling,
