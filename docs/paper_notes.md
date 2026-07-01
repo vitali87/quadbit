@@ -117,12 +117,14 @@ Accuracy (real models, WikiText-2 PPL):
    **fused 128-bit NVFP4 activation quantizer** (one CUDA pass). End-to-end **4.0–4.2× over torch
    bf16** at 8192; any token count (padding). Real per-block ue4m3 weight scales
    (magnitude-independent: works at wscale=0.02).
-   - **Fused SwiGLU epilogue** (`swiglu_quant`): the unfused FFN quantizes x twice (gate+up) and
-     does silu+mul+casts+a separate down-quant in eager torch (~5 memory passes over [batch,hidden]).
-     Fusing = quant x ONCE (shared gate+up) + one kernel that reads g,u, computes silu(g)·u, and
-     emits the FP4-packed down-proj input + scales in a single transposing pass (consecutive threads
-     take consecutive batch so the strided g/u reads coalesce). SwiGLU FFN block: **2.07×→4.42× over
-     bf16** at batch=2048 (fused is **2.14× faster than unfused**), **1.73×→2.75×** at batch=512.
+   - **Fused SwiGLU FFN** (`swiglu_quant` + concatenated gate/up): the unfused FFN quantizes x twice
+     (gate+up) and does silu+mul+casts+a separate down-quant in eager torch (~5 memory passes over
+     [batch,hidden]). Two fusions: (a) **fused epilogue** — quant x ONCE (shared gate+up) + one kernel
+     that reads g,u, computes silu(g)·u, and emits the FP4-packed down-proj input + scales in a single
+     transposing pass (consecutive threads take consecutive batch so the strided g/u reads coalesce);
+     (b) **concat gate+up** into one GEMM (out=2·hidden, one launch, one shared xq read, better SM
+     fill). SwiGLU FFN block vs torch bf16, cumulative: unfused **2.05×** → +fused-epilogue **4.45×**
+     → +concat **4.66×** at batch=2048 (**2.27× over unfused**); **1.74×→2.95×** at batch=512.
      Numerically identical (rel 0.741 = same 2:4 prune floor) — pure memory-traffic win. The kernels
      were already at the silicon ceiling; the remaining end-to-end gain was in fusion, exactly here.
 

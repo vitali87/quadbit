@@ -206,6 +206,7 @@ def run() -> None:
     Wu = torch.randn(hidden, in_f, device=dev) * 0.02
     Wd = torch.randn(in_f, hidden, device=dev) * 0.02
     qg, qu, qd = QuadbitLinear(Wg), QuadbitLinear(Wu), QuadbitLinear(Wd)
+    qgu = QuadbitLinear(torch.cat([Wg, Wu], 0))  # fused gate+up: one GEMM, out=2*hidden
     Wgb, Wub, Wdb = Wg.bfloat16(), Wu.bfloat16(), Wd.bfloat16()
     for batch in (512, 2048):
         x = torch.randn(batch, in_f, device=dev).bfloat16()
@@ -227,16 +228,31 @@ def run() -> None:
             lib.fused_swiglu_quant(g.data_ptr(), u.data_ptr(), Hb.data_ptr(), sH.data_ptr(), pb, hidden)
             return qd.run(Hb, sH, pb).t()[:b]
 
+        def qffn_concat():  # gate+up as ONE concatenated GEMM + fused silu*mul*quant epilogue
+            b = x.shape[0]
+            pad = (-b) % 128
+            xp = torch.cat([x, x.new_zeros(pad, in_f)], 0) if pad else x
+            pb = xp.shape[0]
+            Bb, sB = qgu.pack_act(xp)                       # quant x once
+            C = qgu.run(Bb, sB, pb)                         # [2*hidden, pb] : rows 0..h-1 gate, h..2h-1 up
+            gp = C.data_ptr()
+            up = C.data_ptr() + hidden * pb * 2             # bf16 = 2 bytes; u = second half
+            Hb = torch.empty((pb, hidden // 2), dtype=torch.uint8, device=dev)
+            sH = torch.empty((hidden // 128, pb, 4), dtype=torch.uint8, device=dev)
+            lib.fused_swiglu_quant(gp, up, Hb.data_ptr(), sH.data_ptr(), pb, hidden)
+            return qd.run(Hb, sH, pb).t()[:b]
+
         def bffn():
             h = (F.silu((x @ Wgb.t()).float()) * (x @ Wub.t()).float()).bfloat16()
             return h @ Wdb.t()
 
         rel_u = ((qffn().float() - bffn().float()).norm() / bffn().float().norm()).item()
         rel_f = ((qffn_fused().float() - bffn().float()).norm() / bffn().float().norm()).item()
-        ms_u, ms_f, ms_b = time_ms(qffn), time_ms(qffn_fused), time_ms(bffn)
-        print(f"  batch={batch}: unfused {ms_u:.3f}ms ({ms_b/ms_u:.2f}x)  FUSED {ms_f:.3f}ms "
-              f"({ms_b/ms_f:.2f}x)  bf16 {ms_b:.3f}ms | fused vs unfused {ms_u/ms_f:.2f}x "
-              f"(rel unfused {rel_u:.3f} / fused {rel_f:.3f})", flush=True)
+        rel_c = ((qffn_concat().float() - bffn().float()).norm() / bffn().float().norm()).item()
+        ms_u, ms_f, ms_c, ms_b = time_ms(qffn), time_ms(qffn_fused), time_ms(qffn_concat), time_ms(bffn)
+        print(f"  batch={batch}: unfused {ms_u:.3f}ms ({ms_b/ms_u:.2f}x)  fused {ms_f:.3f}ms "
+              f"({ms_b/ms_f:.2f}x)  CONCAT+fused {ms_c:.3f}ms ({ms_b/ms_c:.2f}x)  bf16 {ms_b:.3f}ms | "
+              f"rel u{rel_u:.3f}/f{rel_f:.3f}/c{rel_c:.3f}", flush=True)
 
 
 @app.local_entrypoint()
