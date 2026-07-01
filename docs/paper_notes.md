@@ -79,10 +79,13 @@ Accuracy (real models, WikiText-2 PPL):
 6. **Pair-granular recovery pipeline (one-shot + QAT), no NVIDIA equivalent.** SparseGPT retargeted
    to pair-granular masks (keep 2-of-4-pairs by `w²/[H⁻¹]²`, Hessian error compensation) →
    KD from the dense teacher (mask frozen) → QAT with straight-through fake-quant of BOTH weights
-   (exact kernel dequant) and activations. Trajectory (TinyLlama-1.1B): one-shot pair-2:4 FP4
-   24.3 → QAT recovery 11.6 (fake-quant) / **13.3 through the real kernel**, on only **1.5M tokens**
-   (NM used 13B for element-2:4). Recovery is monotonic/converging; production parity is a
-   data-scale question, not a method gap. (Long WikiText-103 run in progress.)
+   (exact kernel dequant) and activations. Long WikiText-103 run (TinyLlama-1.1B, 12k bf16 + 3k QAT
+   steps, cosine LR): dense fp16 teacher 7.53; one-shot pair-2:4 FP4 **19.1**; after phase-1 bf16
+   recovery **9.33**; after phase-2 QAT (FP4 fake-quant) **9.49**; **through the real 2:4-sparse FP4
+   kernel 10.34** — within ~2.5 PPL of dense, up from the short run's 13.3 (WikiText-2, 1.5M tokens).
+   Recovery is monotonic in data; NM used 13B tokens for element-2:4, so production parity is a
+   data-scale question, not a method gap. The pipeline (pair-granular SparseGPT + STE QAT matching
+   the exact kernel dequant) is proven end-to-end.
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
@@ -118,8 +121,19 @@ Accuracy (real models, WikiText-2 PPL):
   hide it). That kills the inter-tile overlap the HARDWARE block scheduler gives data-parallel for
   free (it prefetches the next block while the current one's mma drains). Beating DP would require
   cross-tile SOFTWARE pipelining (CUTLASS's true persistent design) — the wave-quant win (~10% @4096)
-  is smaller than the overlap DP already gets. Conclusion: our DP kernel is at the practical ceiling;
-  clean-measured it already matches/beats CUTLASS at all three sizes (see headline).
+  is smaller than the overlap DP already gets.
+- **Dense persistent cross-tile pipeline** (`matmul_fp4_persist.cu`): the true CUTLASS persistent
+  design — 188 CTAs walk ONE continuous (tile×kstep) unit stream, TMA issues STAGES ahead across
+  tile boundaries (mbarriers inited once, never drained), tile change just flushes+resets the
+  register accumulator, partial-tile-only atomic reduction. CORRECT (PASS) but REGRESSED: 1207k
+  @8192, 853k @4096, and 3× slower at 2048. Root cause is REGISTER PRESSURE — the 128-register FP4
+  accumulator tile + the persistent producer/consumer cursor state pins the kernel at 254 registers
+  (vs DP's 187), throttling the mma stream; and small sizes turn every tile into an all-atomic tiny
+  segment. Incremental-cursor rewrite (no hot-loop division) did not drop below 254. VERDICT (3
+  persistent/stream-K variants, all regressed): on SM120 FP4 the huge accumulator tile leaves no
+  register headroom for a software scheduler, and the HW block scheduler already overlaps consecutive
+  tiles for free — data-parallel is at the practical ceiling and beats explicit persistence here.
+  Clean-measured, DP already matches/beats CUTLASS at all three sizes (see headline).
 - **Small-tile (single-WG 128×128)**: only +12% @2048, loses ≥4096 (shared-B B-traffic dominates);
   mid-shape is fixed-overhead-bound, not tile-bound.
 - **Thin-M split-K**: worse (atomicAdd contention); thin-M is latency/overhead-bound (~0.037ms floor).
