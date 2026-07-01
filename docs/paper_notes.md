@@ -148,22 +148,23 @@ Accuracy (real models, WikiText-2 PPL):
    KD from the dense teacher (mask frozen) → QAT with straight-through fake-quant of BOTH weights
    (exact kernel dequant) and activations. Deepest WikiText-103 run (TinyLlama-1.1B, 30k bf16 + 2k QAT
    steps, cosine LR): dense fp16 teacher 7.53; one-shot pair-2:4 FP4 **19.1**; after phase-1 bf16
-   recovery **8.95**; after phase-2 QAT (FP4 fake-quant) **9.15**; **through the real 2:4-sparse FP4
-   kernel 10.03** — within ~2.5 PPL of dense, up from the 12k+3k run's 10.34 and the short run's 13.3
-   (WikiText-2, 1.5M tokens). Phase-2 QAT converges by ~1k steps (measured flat 500→9000 on the 10k
-   run), so the win is in phase-1 data scale, not QAT length. The ~0.9 gap between QAT fake-quant PPL
-   (9.15) and through-kernel (10.03) was **localized** (`harness/probe_ste_kernel.py`, real
-   non-uniform weights + activations): it is **100% the activation quantizer**, not the weights. The
-   kernel's weight path is arithmetically exact (kernel output vs its own dequant, rel **0.0017** —
-   the earlier "wscale=0.02 PASS" used uniform weights that hid any scale/layout permutation, this
-   drives real weights and confirms none). The entire per-linear divergence (rel **~0.04**) is the
-   fp32 STE activation fake-quant vs the deployed NVFP4 `quant_act` (bf16 pre-round + no-denormal
-   ue4m3 scales + reciprocal-multiply), compounding over 66 MLP linears into the 0.9 PPL. Fix: the
-   QAT STE now bit-matches the kernel's activation quantizer (scale codes verified identical, rel
-   0.0000; residual is irreducible fp4-boundary noise), so QAT trains against exactly what ships;
-   retrain in flight to measure the closed gap. Phase-1 result is now checkpointed to the volume so
-   phase-2 experiments skip the 30k-step rebuild. Recovery is monotonic in data; NM used 13B tokens
-   for element-2:4, so production parity is a data-scale question, not a method gap.
+   recovery **8.95**; after phase-2 matched-STE QAT (FP4 fake-quant) **9.57**; **through the real
+   2:4-sparse FP4 kernel 9.60** — within ~2.1 PPL of dense, beating the earlier fp32-STE run's 10.03.
+   Phase-2 QAT converges by ~1k steps (measured flat 500→9000 on the 10k run), so the win is in
+   phase-1 data scale, not QAT length. **The STE-vs-kernel gap is closed.** It was first **localized**
+   (`harness/probe_ste_kernel.py`, real non-uniform weights + activations): it is **100% the
+   activation quantizer**, not the weights. The kernel's weight path is arithmetically exact (kernel
+   output vs its own dequant, rel **0.0017** — the earlier "wscale=0.02 PASS" used uniform weights
+   that hid any scale/layout permutation, this drives real weights and confirms none). The entire
+   per-linear divergence (rel **~0.04**) was the fp32 STE activation fake-quant vs the deployed NVFP4
+   `quant_act` (bf16 pre-round + no-denormal ue4m3 scales + reciprocal-multiply), compounding over 66
+   MLP linears into ~0.9 PPL. Fix landed: the QAT STE now bit-matches the kernel's activation
+   quantizer (scale codes verified identical). Result — the matched-STE fake-quant PPL (9.57) now
+   tracks the through-kernel PPL (9.60) within **0.04**, versus the old ~0.9 gap, and the deployed
+   number dropped 10.03→9.60. Training against exactly what ships is worth ~0.43 PPL. Phase-1 result
+   is checkpointed to the volume so phase-2 experiments skip the 30k-step rebuild. Recovery is
+   monotonic in data; NM used 13B tokens for element-2:4, so production parity is a data-scale
+   question, not a method gap.
 
 ## Real open-weight models (July 2026), on this hardware
 
