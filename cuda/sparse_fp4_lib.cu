@@ -204,29 +204,38 @@ __device__ __forceinline__ uint8_t q_fp4(float q) {   // nearest e2m1 code (sign
             : a < 2.5f ? 4 : a < 3.5f ? 5 : a < 5.f ? 6 : 7;
     return (uint8_t)(idx | (q < 0.f ? 8 : 0));
 }
-__global__ void quant_act(const __nv_bfloat162 *x, uint8_t *Bbytes, uint8_t *scaleB, int batch, int in_f) {
+__global__ void quant_act(const int4 *x4, uint32_t *Bwords, uint8_t *scaleB, int batch, int in_f) {
     int b32 = in_f / 32;                               // 32-elem blocks per row
     long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= (long)batch * b32) return;
     int n = t / b32, blk = t % b32, step = blk / 4, kb = blk % 4;
-    const __nv_bfloat162 *xr = x + ((long)n * in_f + blk * 32) / 2;  // 16 bf16x2 = 32 elems
+    long base = (long)n * (in_f / 8) + blk * 4;        // 4 int4 = 32 bf16 = one 32-block
     float2 v[16]; float amax = 0.f;
 #pragma unroll
-    for (int i = 0; i < 16; i++) {
-        v[i] = __bfloat1622float2(xr[i]);
-        amax = fmaxf(amax, fmaxf(fabsf(v[i].x), fabsf(v[i].y)));
+    for (int q = 0; q < 4; q++) {                      // 128-bit coalesced loads
+        int4 p = x4[base + q];
+        const __nv_bfloat162 *bp = (const __nv_bfloat162 *)&p;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            v[q * 4 + j] = __bfloat1622float2(bp[j]);
+            amax = fmaxf(amax, fmaxf(fabsf(v[q * 4 + j].x), fabsf(v[q * 4 + j].y)));
+        }
     }
     uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
     scaleB[((long)step * batch + n) * 4 + kb] = sc;
     float inv = 1.f / dec_ue4m3(sc);
-    uint8_t *out = Bbytes + (long)n * (in_f / 2) + blk * 16;
+    uint32_t w[4] = {0, 0, 0, 0};                       // 16 packed bytes = 4 u32 (128-bit store)
 #pragma unroll
-    for (int i = 0; i < 16; i++)
-        out[i] = q_fp4(v[i].x * inv) | (q_fp4(v[i].y * inv) << 4);
+    for (int i = 0; i < 16; i++) {
+        uint32_t byte = q_fp4(v[i].x * inv) | (q_fp4(v[i].y * inv) << 4);
+        w[i >> 2] |= byte << ((i & 3) * 8);
+    }
+    uint4 out = make_uint4(w[0], w[1], w[2], w[3]);
+    *reinterpret_cast<uint4 *>(Bwords + (long)n * (in_f / 8) + blk * 4) = out;
 }
 extern "C" void quantize_act_nvfp4(const void *x, void *Bbytes, void *scaleB, int batch, int in_f) {
     int total = batch * (in_f / 32), tpb = 256;
-    quant_act<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat162 *)x, (uint8_t *)Bbytes,
+    quant_act<<<(total + tpb - 1) / tpb, tpb>>>((const int4 *)x, (uint32_t *)Bbytes,
                                                 (uint8_t *)scaleB, batch, in_f);
 }
 
