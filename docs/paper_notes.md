@@ -254,11 +254,20 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   grid = ⌈M/256⌉·⌈N/128⌉, and below ~48 blocks the 188-SM array underfills. So the router is a
   **never-regress fill rule**: use FP4 iff ⌈M/256⌉·⌈N/128⌉ ≥ 48 blocks, else fall back to bf16
   (`route_dense()`; the bench asserts FP4 is never selected in a losing cell, and it held — routed
-  speedup ≥ bf16 in every cell). This makes the go-to call regression-free today. The remaining
-  0.68–0.77× corner (small-batch o_proj/ffn-down) is the target for a **real-scale split-N decode
-  kernel**: it would lift those cells to ~1.3× (the measured small-N decode ceiling) instead of the
-  bf16 fallback's 1.0×. That kernel (porting the ue8m0/ue4m3 scale layout into `dense_decode_lib.cu`)
-  is the next build.
+  speedup ≥ bf16 in every cell). This makes the go-to call regression-free today.
+
+  **Real-scale decode kernel: built, measured, negative (settles the corner).** To try to turn the
+  0.68–0.77× corner into an FP4 win, we built the split-N decode kernel *with* real per-32-block
+  ue8m0 scales fed to the mma (the layout ported from the prefill kernel). Correctness verified
+  (maxrel 0.003 vs a torch dequant-matmul reference). But it does **not** beat the bf16 fallback:
+  smem scale-staging + an extra barrier tanked it to 0.44–0.59× (latency-bound kernel, staging
+  serialized the pipeline); reading scales directly from L2-resident global lifted it to 0.68–0.88×;
+  the fair cached-map + async path (no per-call sync) reached only **1.01× at o_proj M128 and
+  0.73–0.99× elsewhere**. The unit-scale decode kernel hit 1.27× here, but carrying the *mandatory*
+  real scales erases the win. So the small-batch + small-N corner has no real-scale FP4 kernel that
+  beats bf16, and the router's **bf16 fallback is provably optimal there**, not a stopgap. Kernel
+  reverted from the deployable lib (finding kept), matching the split-K reversion. **Router
+  question closed:** FP4 where the grid fills, bf16 in the one corner it can't.
 
 ## Dead-ends (what didn't work — for the paper's honesty + "we tried X")
 
