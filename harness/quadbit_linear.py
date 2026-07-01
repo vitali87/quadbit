@@ -137,9 +137,13 @@ def run() -> None:
                 raise RuntimeError(f"kernel cuda error {rc}")
             return C
 
-        def forward(self, x):  # x: [batch, in] fp32 -> y: [batch, out] bf16
+        def forward(self, x):  # x: [batch, in] bf16 -> y: [batch, out] bf16 (any batch)
+            b = x.shape[0]
+            pad = (-b) % 128
+            if pad:
+                x = torch.cat([x, x.new_zeros(pad, self.in_f)], 0)  # zero rows -> discarded
             Bbytes, scaleB = self.pack_act(x)
-            return self.run(Bbytes, scaleB, x.shape[0]).t()
+            return self.run(Bbytes, scaleB, x.shape[0]).t()[:b]
 
     def time_ms(fn, it=30):
         for _ in range(5):
@@ -185,6 +189,37 @@ def run() -> None:
         gf = 2.0 * out_f * batch * in_f / (ms_kern / 1e3) / 1e9
         print(f"  batch={batch:5d}: full {ms_full:.3f} kern {ms_kern:.3f} ({gf:.0f} GF/s) "
               f"bf16 {ms_bf16:.3f} | kern {ms_bf16/ms_kern:.2f}x  full {ms_bf16/ms_full:.2f}x", flush=True)
+
+    # arbitrary batch (padding): 100 tokens is not a multiple of 128
+    q = QuadbitLinear(torch.randn(4096, 4096, device=dev) * 0.02)
+    y100 = q.forward(torch.randn(100, 4096, device=dev).bfloat16())
+    print(f"# arbitrary batch: forward(100 tokens) -> {tuple(y100.shape)} "
+          f"{'OK' if y100.shape == (100, 4096) else 'BAD'}", flush=True)
+
+    # SwiGLU FFN block (gate/up/down projections) swapped to QuadbitLinear vs torch bf16
+    import torch.nn.functional as F
+    print("# SwiGLU FFN block: QuadbitLinear vs torch bf16 (in=4096, hidden=11008)", flush=True)
+    in_f, hidden = 4096, 11008
+    Wg = torch.randn(hidden, in_f, device=dev) * 0.02
+    Wu = torch.randn(hidden, in_f, device=dev) * 0.02
+    Wd = torch.randn(in_f, hidden, device=dev) * 0.02
+    qg, qu, qd = QuadbitLinear(Wg), QuadbitLinear(Wu), QuadbitLinear(Wd)
+    Wgb, Wub, Wdb = Wg.bfloat16(), Wu.bfloat16(), Wd.bfloat16()
+    for batch in (512, 2048):
+        x = torch.randn(batch, in_f, device=dev).bfloat16()
+
+        def qffn():
+            h = (F.silu(qg.forward(x).float()) * qu.forward(x).float()).bfloat16()
+            return qd.forward(h)
+
+        def bffn():
+            h = (F.silu((x @ Wgb.t()).float()) * (x @ Wub.t()).float()).bfloat16()
+            return h @ Wdb.t()
+
+        rel = ((qffn().float() - bffn().float()).norm() / bffn().float().norm()).item()
+        ms_q, ms_b = time_ms(qffn), time_ms(bffn)
+        print(f"  batch={batch}: quadbit {ms_q:.3f} ms  bf16 {ms_b:.3f} ms -> {ms_b/ms_q:.2f}x "
+              f"(rel vs bf16-FFN {rel:.3f}; 2:4-prune floor on random weights)", flush=True)
 
 
 @app.local_entrypoint()
