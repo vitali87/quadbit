@@ -218,11 +218,15 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   (worse than isolated 4096 — 192 blocks re-read the 256 KB activation → ~48 MB L2, the
   co-bottleneck grows with block count). Root cause: fp4's 8 MB weight is 4× smaller → too few bytes
   to fill 188 SMs + amortize the 32-step pipeline, so it tips latency/L2-bound while bf16 (32 MB
-  weight) stays bandwidth-bound at 96% of peak. **This is the ceiling of the split-N/split-K GEMM
-  family, not the hardware** — the untried lever is a purpose-built low-batch (Marlin/Machete-style)
-  kernel: weight pre-permuted for coalesced streaming + all-SM Stream-K with a cheap *in-kernel*
-  reduction (not the global f32 workspace whose traffic tax sank split-K). Real GQA decode attention
-  (o_proj + fused-QKV-6144) is where the headroom is.
+  weight) stays bandwidth-bound at 96% of peak. **Every lever to add parallelism was built and
+  loses:** smaller TN blows up the activation re-read; split-K's f32-partial reduction costs more
+  than the fill gain in *both* forms tried — global-atomic (0.86×) and a Marlin-style
+  per-tile-semaphore in-kernel reduction (no memset, no separate convert, plain non-atomic writes;
+  0.64–0.77×, reverted). The shape yields only 128 output tiles (8 MB weight) → 68% max SM fill +
+  exposed per-block latency at 1 block/SM; you cannot manufacture parallelism, and Marlin-style
+  weight pre-permutation wouldn't change the tile count. bf16 escapes only because its 4×-larger
+  weight gives 4× more tiles. **fp4's memory advantage is exactly what starves small decode.**
+  Remedy for GQA `o_proj`/fused-QKV-6144 is serving-level (larger batch M), not the kernel.
 
 ## Dead-ends (what didn't work — for the paper's honesty + "we tried X")
 

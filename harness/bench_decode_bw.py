@@ -56,7 +56,6 @@ def run() -> None:
     lib.dense_fp4_decode_cached_async.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
     sk = build("dense_sk_lib.cu", "/root/sk.so")
     sk.dense_fp4_mm_sk.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 4
-    lib.dense_fp4_decode_sk_async.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 4
     dev = torch.device("cuda")
     name = torch.cuda.get_device_name(0)
     print(name, flush=True)
@@ -118,43 +117,10 @@ def run() -> None:
                                                 Cf.data_ptr(), M, N, K, sp))
             row += f"  s{sp}={tb/ts:.2f}x({ts*1e3:.0f}us)"
         print(row, flush=True)
-
-    # NEW async split-K over the narrow-TN split-N decode structure (cached maps, no per-call sync)
-    # correctness: split-K (s=4) must match the verified split-N path on random FP4 bytes
-    print("\nasync split-K decode (dense_fp4_decode_sk_async, cached maps):", flush=True)
-    M, N, K = 128, 4096, 4096
-    Ad = torch.randint(0, 256, (M, K // 2), dtype=torch.uint8, device=dev)
-    Bd = torch.randint(0, 256, (N, K // 2), dtype=torch.uint8, device=dev)
-    Cref = torch.empty((M, N), dtype=torch.bfloat16, device=dev)
-    Csk = torch.empty((M, N), dtype=torch.bfloat16, device=dev)
-    Cf = torch.empty((M, N), dtype=torch.float32, device=dev)
-    mapA = lib.qb_encode_map(Ad.data_ptr(), M, K, 128)
-    mapB = lib.qb_encode_map(Bd.data_ptr(), N, K, lib.qb_decode_tn(N))
-    lib.dense_fp4_decode_cached_async(mapA, mapB, Cref.data_ptr(), M, N, K); torch.cuda.synchronize()
-    lib.dense_fp4_decode_sk_async(mapA, mapB, Csk.data_ptr(), Cf.data_ptr(), M, N, K, 4); torch.cuda.synchronize()
-    rel = (Cref.float() - Csk.float()).abs().max() / (Cref.float().abs().max() + 1e-6)
-    print(f"  correctness s4 vs split-N: maxrel {rel:.5f}", flush=True)
-
-    for label, M, N, K in [("attn qkv/o 128x4096x4096", 128, 4096, 4096),
-                           ("attn qkv M=256 256x4096x4096", 256, 4096, 4096),
-                           ("ffn down  128x4096x14336", 128, 4096, 14336)]:
-        Ab = torch.randn(M, K, device=dev, dtype=torch.bfloat16)
-        Bb = torch.randn(N, K, device=dev, dtype=torch.bfloat16)
-        tb = tms(lambda: torch.matmul(Ab, Bb.t()))
-        Ad = torch.full((M, K // 2), 0x22, dtype=torch.uint8, device=dev)
-        Bd = torch.full((N, K // 2), 0x22, dtype=torch.uint8, device=dev)
-        C = torch.empty((M, N), dtype=torch.bfloat16, device=dev)
-        Cf = torch.empty((M, N), dtype=torch.float32, device=dev)
-        mapA = lib.qb_encode_map(Ad.data_ptr(), M, K, 128)
-        mapB = lib.qb_encode_map(Bd.data_ptr(), N, K, lib.qb_decode_tn(N))
-        dram = N * K / 2 + M * N * 2
-        row = f"{label:>28} (bf16 {tb*1e3:.1f}us):"
-        best = 1e9
-        for sp in (1, 2, 3, 4, 6):
-            ts = tms(lambda: lib.dense_fp4_decode_sk_async(mapA, mapB, C.data_ptr(), Cf.data_ptr(), M, N, K, sp))
-            best = min(best, ts)
-            row += f"  s{sp}={tb/ts:.2f}x"
-        print(row + f"  | best {100*(dram/(best/1e3)/1e12)/peak:.0f}%peak", flush=True)
+    # NOTE: split-K loses for small-N decode (attn) in every reduction form tried (global-atomic AND
+    # Marlin-style per-tile semaphore, tested in-tree then reverted): the f32-partial reduction
+    # overhead exceeds the SM-fill gain because the 8 MB fp4 weight is too small to amortize it. It
+    # only wins long-K ffn-down (s8 1.52x). Small-N attn is fill/latency-bound at the shape's ceiling.
 
 
 @app.local_entrypoint()
