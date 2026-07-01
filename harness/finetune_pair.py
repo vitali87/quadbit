@@ -34,6 +34,7 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 def run() -> None:
     import ctypes
     import math
+    import os
 
     import pyarrow.parquet as pq
     import torch
@@ -79,11 +80,26 @@ def run() -> None:
         Wd.scatter_(3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kd)
         return Wd.reshape(out_f, in_f)
 
-    def act_fp4_dequant(x):  # per-32-block NVFP4 fake-quant of activations (what the kernel does)
-        lead = x.shape[:-1]; i = x.shape[-1]
-        b = x.reshape(-1, i // 32, 32)
-        s = UE4M3[enc(b.abs().amax(-1) / 6.0)]
-        return (FP4[q_fp4(b / s[..., None])] * s[..., None]).reshape(*lead, i)
+    def enc_ue4m3_t(s):  # torch replica of the kernel's enc_ue4m3: no denormals, min-normal clamp
+        mant_f, e = torch.frexp(s.clamp_min(1e-30))    # s = mant_f * 2^e, mant_f in [0.5,1)
+        mm = 2.0 * mant_f                              # [1,2)
+        biased = (e - 1) + 7
+        mant = torch.round((mm - 1.0) * 8.0).long()    # 0..8
+        carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant)
+        biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def act_fp4_dequant(x):  # DEPLOY-MATCHED NVFP4 act quant: bf16 pre-round + no-denormal ue4m3 +
+        lead = x.shape[:-1]; i = x.shape[-1]           # reciprocal-multiply, exactly like quant_act.
+        b = x.to(torch.bfloat16).float().reshape(-1, i // 32, 32)  # kernel reads activations as bf16
+        s = UE4M3[enc_ue4m3_t(b.abs().amax(-1) / 6.0)]
+        inv = (1.0 / s)[..., None]
+        return (FP4[q_fp4(b * inv)] * s[..., None]).reshape(*lead, i)
 
     class QATLinear(nn.Module):  # phase1: plain masked bf16 (fast); phase2 (qat=True): FP4 STE
         def __init__(self, weight):
@@ -200,33 +216,45 @@ def run() -> None:
 
     student = load()
 
-    # H calibration on the student MLP inputs, then SparseGPT-pair prune + freeze mask
-    Hs, ns = {}, {}
+    T, seq = 2.0, 1024
+    P1, P2, wu = 30000, 2000, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps
+    total = P1 + P2
+    lr_max, lr_min = 2e-4, 1e-5
+    starts = list(range(0, len(train_ids) - seq, seq))
+    targets = list(mlp_lins(student))  # (mlp, name, lin) in deterministic order; checkpoint key basis
+    ck = f"/cache/phase1_{MODEL.split('/')[-1]}_P{P1}.pt"  # phase-1 result cached on the volume
 
-    def hook(mod, inp, _o):
-        x = inp[0].detach().float().reshape(-1, inp[0].shape[-1]); k = id(mod); nn_ = x.shape[0]
-        if k not in Hs:
-            Hs[k] = torch.zeros(x.shape[1], x.shape[1], device=dev); ns[k] = 0
-        Hs[k] *= ns[k] / (ns[k] + nn_)
-        Hs[k] += (x * math.sqrt(2.0 / (ns[k] + nn_))).t() @ (x * math.sqrt(2.0 / (ns[k] + nn_)))
-        ns[k] += nn_
-
-    hs = [lin.register_forward_hook(hook) for _, _, lin in mlp_lins(student)]
-    with torch.no_grad():
-        for i in range(0, 16 * 2048, 2048):
-            student(train_ids[i:i + 2048].unsqueeze(0).to(dev))
-    for h in hs:
-        h.remove()
-
-    # SparseGPT-pair prune, then wrap each MLP linear in a QAT linear (forward = exact FP4 dequant)
     masks, qats = {}, []
-    for mlp, nm, lin in mlp_lins(student):
-        Wp = sparsegpt_pair24(lin.weight.data, Hs.pop(id(lin)))
-        qat = QATLinear(Wp.to(torch.bfloat16)).to(dev)
-        masks[qat] = (Wp != 0).to(dev)
-        setattr(mlp, nm, qat); qats.append(qat)
-    # student forward now runs through the FP4 fake-quant, so this == the kernel's one-shot PPL
-    print(f"PPL one-shot pair-2:4 FP4 (QAT-equivalent): {ppl(student):.3f}", flush=True)
+    if os.path.exists(ck):
+        w1 = torch.load(ck, map_location=dev, weights_only=True)  # list of phase-1 weights, targets order
+        for (mlp, nm, _), W in zip(targets, w1):
+            qat = QATLinear(W.to(torch.bfloat16)).to(dev)
+            masks[qat] = (W != 0).to(dev); setattr(mlp, nm, qat); qats.append(qat)
+        print(f"loaded phase-1 checkpoint {ck}", flush=True)
+    else:
+        # H calibration on the student MLP inputs, then SparseGPT-pair prune + freeze mask
+        Hs, ns = {}, {}
+
+        def hook(mod, inp, _o):
+            x = inp[0].detach().float().reshape(-1, inp[0].shape[-1]); k = id(mod); nn_ = x.shape[0]
+            if k not in Hs:
+                Hs[k] = torch.zeros(x.shape[1], x.shape[1], device=dev); ns[k] = 0
+            Hs[k] *= ns[k] / (ns[k] + nn_)
+            Hs[k] += (x * math.sqrt(2.0 / (ns[k] + nn_))).t() @ (x * math.sqrt(2.0 / (ns[k] + nn_)))
+            ns[k] += nn_
+
+        hs = [lin.register_forward_hook(hook) for _, _, lin in targets]
+        with torch.no_grad():
+            for i in range(0, 16 * 2048, 2048):
+                student(train_ids[i:i + 2048].unsqueeze(0).to(dev))
+        for h in hs:
+            h.remove()
+        for mlp, nm, lin in targets:
+            Wp = sparsegpt_pair24(lin.weight.data, Hs.pop(id(lin)))
+            qat = QATLinear(Wp.to(torch.bfloat16)).to(dev)
+            masks[qat] = (Wp != 0).to(dev); setattr(mlp, nm, qat); qats.append(qat)
+        # student forward runs through the FP4 fake-quant, so this == the kernel's one-shot PPL
+        print(f"PPL one-shot pair-2:4 FP4 (QAT-equivalent): {ppl(student):.3f}", flush=True)
 
     # KD recovery: only surviving MLP weights, re-mask each step. Phase 1 = fast bf16 masked
     # (recovers the sparsity, the big error); Phase 2 = QAT to adapt to weight+act FP4.
@@ -235,12 +263,7 @@ def run() -> None:
     params = []
     for q in qats:
         q.weight.requires_grad_(True); params.append(q.weight)
-    T, seq = 2.0, 1024
-    P1, P2, wu = 30000, 2000, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps (measured flat 500->9000)
-    total = P1 + P2
-    lr_max, lr_min = 2e-4, 1e-5
     opt = torch.optim.AdamW(params, lr=lr_max, betas=(0.9, 0.95), weight_decay=0.0)
-    starts = list(range(0, len(train_ids) - seq, seq))
 
     def kd_step(step):
         for g in opt.param_groups:                    # warmup + cosine decay
@@ -262,12 +285,15 @@ def run() -> None:
                 q.weight.data *= mk
         return loss.item()
 
-    student.train()
-    for step in range(P1):                            # phase 1: bf16 masked (fast)
-        loss = kd_step(step)
-        if (step + 1) % 1000 == 0:
-            print(f"  P1 {step + 1}/{P1} KD {loss:.4f} PPL(bf16) {ppl(student, windows=8):.3f}", flush=True)
-            student.train()
+    if not os.path.exists(ck):
+        student.train()
+        for step in range(P1):                        # phase 1: bf16 masked (fast)
+            loss = kd_step(step)
+            if (step + 1) % 1000 == 0:
+                print(f"  P1 {step + 1}/{P1} KD {loss:.4f} PPL(bf16) {ppl(student, windows=8):.3f}", flush=True)
+                student.train()
+        torch.save([q.weight.data.cpu() for q in qats], ck); vol.commit()  # persist phase-1 result
+        print(f"saved phase-1 checkpoint {ck}", flush=True)
     print(f"PPL after phase-1 bf16 recovery: {ppl(student):.3f}", flush=True)
 
     for q in qats:
