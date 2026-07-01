@@ -151,7 +151,11 @@ def run() -> None:
 
     print(f"loading {MODEL} ...", flush=True)
     tok = AutoTokenizer.from_pretrained(MODEL)
-    model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to(dev).eval()
+
+    def load():
+        return AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16).to(dev).eval()
+
+    model = load()
 
     def wikitext(split):
         p = hf_hub_download("Salesforce/wikitext", f"wikitext-2-raw-v1/{split}-00000-of-00001.parquet",
