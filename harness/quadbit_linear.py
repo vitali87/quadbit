@@ -66,11 +66,16 @@ def run() -> None:
     _e, _m = (_c >> 3) & 0xf, _c & 7
     UE4M3 = torch.where(_e == 0, _m.float() * 0.001953125,
                         (1.0 + _m.float() / 8.0) * torch.exp2((_e - 7).float()))
+    _MID = (UE4M3[:-1] + UE4M3[1:]) / 2  # 127 monotonic midpoints for nearest-ue4m3 encode
 
     def quant_fp4(v):
         """fp32 -> fp4 code (uint8), unit scale (round to nearest e2m1 grid)."""
         idx = torch.bucketize(v.abs(), BND).to(torch.uint8)  # 0..7 magnitude
         return idx | ((v < 0).to(torch.uint8) << 3)
+
+    def enc_ue4m3(s):
+        """positive scale -> nearest ue4m3 code (uint8, 0..127)."""
+        return torch.bucketize(s, _MID).to(torch.uint8)
 
     class QuadbitLinear:
         """Drop-in for nn.Linear(in, out, bias=False): packs W once, sparse-FP4 forward."""
@@ -79,29 +84,33 @@ def run() -> None:
             out_f, in_f = W.shape
             assert out_f % 256 == 0 and in_f % 256 == 0, "out%256, in%256"
             ks = in_f // 128
-            # W -> [out, ks, 16 groups, 4 pairs, 2 (lo/hi fp4)]
-            codes = quant_fp4(W).view(out_f, ks, 16, 4, 2)
-            pmag = FP4[codes.long()].abs().sum(-1)            # [out,ks,16,4] pair magnitude
-            top2 = pmag.topk(2, dim=-1).indices               # [out,ks,16,2]
-            i01, _ = top2.sort(dim=-1)                         # ascending: i0<i1
-            i0, i1 = i01[..., 0], i01[..., 1]                  # [out,ks,16]
-            # compressed A: slot0=pair i0, slot1=pair i1 ; byte = lo | hi<<4
-            kept = torch.stack([i0, i1], dim=-1)               # [out,ks,16,2]
-            kc = torch.gather(codes, 3, kept.unsqueeze(-1).expand(-1, -1, -1, -1, 2).long())
+            # W -> [out, ks, 16 groups, 4 pairs, 2 (lo/hi fp4)]; prune 2:4 by raw magnitude
+            Wg = W.view(out_f, ks, 16, 4, 2)
+            pmag = Wg.abs().sum(-1)                            # [out,ks,16,4] pair magnitude
+            top2 = pmag.topk(2, dim=-1).indices                # [out,ks,16,2]
+            i01, _ = top2.sort(dim=-1)                          # ascending: i0<i1
+            i0, i1 = i01[..., 0], i01[..., 1]                   # [out,ks,16]
+            kept = torch.stack([i0, i1], dim=-1)                # [out,ks,16,2]
+            keptW = torch.gather(Wg, 3, kept.unsqueeze(-1).expand(-1, -1, -1, -1, 2).long())
+            # real per-block ue4m3 scales: 4 scaleA blocks/step, 8 compressed bytes each
+            blk = keptW.reshape(out_f, ks, 4, 8, 2)             # (block, byte-in-block, lo/hi)
+            scode = enc_ue4m3(blk.abs().amax(dim=(3, 4)) / 6.0)  # [out,ks,4] ue4m3 codes
+            sdeq = UE4M3[scode.long()]                          # [out,ks,4]
+            kc = quant_fp4(blk / sdeq[..., None, None])         # [out,ks,4,8,2] fp4 codes
             Abytes = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).contiguous()
             # metadata: nib = i0|(i1<<2) ; u32 per half (g/8), nibble g%8 at shift (g%8)*4
             nib = (i0 | (i1 << 2)).view(out_f, ks, 2, 8).long()   # [out,ks,half,j]
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
-            meta = (nib << sh).sum(-1).to(torch.int32)            # [out,ks,2]
-            meta = meta.permute(1, 0, 2).contiguous()             # step-major [ks,out,2]
+            meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()  # [ks,out,2]
             self.out_f, self.in_f, self.ks = out_f, in_f, ks
             self.Ac = Abytes.to(torch.uint8)
             self.meta = meta
-            self.scaleA = torch.full((ks, out_f, 4), 0x38, dtype=torch.uint8, device=dev)
-            # dense dequant of the pruned weight (unit scale) for the reference
-            mask = torch.zeros(out_f, ks, 16, 4, device=dev)
-            mask.scatter_(3, kept.long(), 1.0)
-            self.W_deq = (FP4[codes.long()] * mask.unsqueeze(-1)).reshape(out_f, in_f)
+            self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()  # step-major [ks,out,4]
+            # dense dequant of the pruned+scaled weight for the reference
+            kd = (FP4[kc.long()] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
+            Wd = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
+            Wd.scatter_(3, kept.unsqueeze(-1).expand(-1, -1, -1, -1, 2).long(), kd)
+            self.W_deq = Wd.reshape(out_f, in_f)
 
         def pack_act(self, x):  # x: [batch, in] bf16 -> (Bbytes, scaleB), fused real ue4m3 scales
             batch = x.shape[0]
@@ -144,16 +153,21 @@ def run() -> None:
         return st.elapsed_time(en) / it
 
     torch.manual_seed(0)
-    print("# correctness", flush=True)
-    for (out_f, in_f, batch) in [(512, 512, 256), (8192, 8192, 512)]:
-        ql = QuadbitLinear(torch.randn(out_f, in_f, device=dev))
+    print("# correctness (maxrel vs packed ref = layout check; err vs true fp32 = quant accuracy)")
+    for (out_f, in_f, batch, wscale) in [(512, 512, 256, 1.0), (8192, 8192, 512, 1.0),
+                                         (4096, 4096, 256, 0.02)]:  # 0.02 = real-weight magnitude
+        W = torch.randn(out_f, in_f, device=dev) * wscale
         x = torch.randn(batch, in_f, device=dev)
+        ql = QuadbitLinear(W)
         Bb, sB = ql.pack_act(x)
         y = ql.run(Bb, sB, batch).t()
-        ref = ql.deq_act(Bb, sB) @ ql.W_deq.t()
+        ref = ql.deq_act(Bb, sB) @ ql.W_deq.t()               # self-consistent packed ref
         rel = ((y.float() - ref).abs() / (ref.abs() + 1.0)).max().item()
-        print(f"  out={out_f} in={in_f} batch={batch}: {'PASS' if rel < 6e-3 else 'FAIL'} "
-              f"(maxrel {rel:.4f})", flush=True)
+        true = x @ W.t()                                      # true fp32 dense (2:4 + FP4 error)
+        acc = ((y.float() - true).norm() / true.norm()).item()
+        print(f"  out={out_f} in={in_f} batch={batch} wscale={wscale}: "
+              f"{'PASS' if rel < 6e-3 else 'FAIL'} (maxrel {rel:.4f}, err-vs-fp32 {acc:.3f})",
+              flush=True)
 
     # speed vs torch bf16 across the prefill batch dimension (out=in=8192, the kernel's strong size)
     print("# speed @ out=in=8192 (full=quant+kernel, kern=kernel only, vs torch bf16 dense)", flush=True)
