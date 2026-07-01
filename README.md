@@ -2,7 +2,7 @@
 
 Hand-written 4-bit (FP4) tensor-core kernels for **consumer/pro Blackwell (SM120)**, the RTX PRO 6000 and RTX 5090, where NVIDIA's libraries leave FP4 gaps.
 
-On SM120 the FP4 tensor cores exist but the software mostly does not: cuBLAS and CUTLASS ship dense FP4 only, and **no sparse FP4 path exists at all**. quadbit hand-writes (raw PTX, `nvcc -arch=sm_120a`) both a dense FP4 GEMM that reaches the silicon ceiling and the **only 2:4-sparse FP4 GEMM on SM120**, then builds the full deployment stack around them: a weight packer, a fused activation quantizer, an `nn.Linear` drop-in, fused transformer-block glue kernels, and a one-shot plus QAT recovery pipeline that makes the sparse path usable on real models. Everything is measured on Modal cloud RTX PRO 6000.
+On SM120 the FP4 tensor cores exist but the usable software stack is thin. cuBLAS ships dense FP4 only; CUTLASS ships both dense and a sparse NVFP4 example for GeForce Blackwell ([example 80b](https://github.com/NVIDIA/cutlass/blob/main/examples/80_blackwell_geforce_sparse_gemm/80b_blackwell_geforce_nvfp4_nvfp4_sparse_gemm.cu), since CUTLASS 3.9.0), but the SM120 block-scaled path has documented correctness and autotuner problems in practice ([cutlass#3096](https://github.com/NVIDIA/cutlass/issues/3096)), and nothing wraps a sparse FP4 kernel in a real deployment stack. quadbit hand-writes (raw PTX, `nvcc -arch=sm_120a`) both a dense FP4 GEMM that reaches the silicon ceiling and a 2:4-sparse FP4 GEMM at the SM120 bandwidth roofline, then builds the full deployment stack around them: a weight packer, a fused activation quantizer, an `nn.Linear` drop-in, fused transformer-block glue kernels, and a one-shot plus QAT recovery pipeline that makes the sparse path usable on real models. Everything is measured on Modal cloud RTX PRO 6000. (A head-to-head throughput comparison of our sparse kernel against CUTLASS example 80b on the same card is not yet run; see [docs/paper_notes.md](docs/paper_notes.md).)
 
 There is no tcgen05 on SM120 (that is SM100 only), so the kernels use warp-level `mma.sync` and `mma.sp`. The mma, ldmatrix, scale, and metadata layouts were derived empirically by probe-and-verify (not from docs) and validated to `maxrel 0`.
 
@@ -17,7 +17,7 @@ Throughput vs cuBLAS bf16 (what production runs today) and vs real CUTLASS FP4, 
 | 16384| 405 TF/s | n/a | 1645 (4.06× bf16) | 1782 (4.39× bf16) |
 
 - **Dense FP4 matches or beats CUTLASS at every size** in an apples-to-apples clean measurement (both cudaEvent-timed, no torch dispatch): 758 / 1220 / 1510 TF/s at 2048 / 4096 / 8192 vs CUTLASS 634 / 1222 / 1497.
-- **Sparse FP4 is the unique, defensible win**: CUTLASS and cuBLAS have no sparse FP4 on SM120 at all. quadbit beats the best available vendor FP4 (CUTLASS dense) by **+24% at 4096** and **+47% at 8192**, a capability rather than a tuning delta.
+- **Sparse FP4** beats the CUTLASS *dense* FP4 baseline by **+24% at 4096** and **+47% at 8192** on the effective-FLOP metric NVIDIA itself uses for 2:4. This is not yet measured against CUTLASS's *sparse* NVFP4 SM120 example (80b); that head-to-head is the gating experiment and is still pending.
 
 Real Llama-3-8B GEMM shapes, best routed kernel per shape vs cuBLAS bf16:
 

@@ -7,11 +7,20 @@ leave FP4 gaps. Everything below is measured on Modal RTX PRO 6000 via `harness/
 
 ## Thesis
 
-On SM120, FP4 tensor cores exist but the software doesn't: cuBLAS/CUTLASS give dense FP4
-only, and **no sparse FP4 path exists at all**. We hand-write (raw PTX) both a dense FP4 GEMM
-that reaches the silicon ceiling and the **only 2:4-sparse FP4 GEMM on SM120**, then build the
-full deployment stack (packer, fused activation quantizer, `nn.Linear` drop-in) and a
-one-shot + QAT recovery pipeline that makes the sparse path usable on real models.
+On SM120, FP4 tensor cores exist but the usable software stack is thin. cuBLAS gives dense FP4
+only. **CORRECTION (prior-art sweep, 2026-07): CUTLASS DOES ship a sparse NVFP4 GEMM for SM120**
+(`examples/80_blackwell_geforce_sparse_gemm/80b_blackwell_geforce_nvfp4_nvfp4_sparse_gemm.cu`,
+`ArchTag = Sm120`, `OpClassBlockScaledSparseTensorOp`, same `mma...kind::mxf4nvf4.sp::ordered_metadata.block_scale`
+instruction we use, shipped in CUTLASS 3.9.0 on 2025-04-24). The earlier claim here of "no sparse FP4
+path exists at all" / "the only 2:4-sparse FP4 GEMM on SM120" is FALSE and must not appear in the paper.
+What is defensible: the SM120 block-scaled path has documented correctness/autotuner problems in practice
+(CUTLASS issue #3096: grouped GEMM garbage output, TMA warp-specialized tactics fail to init on SM120),
+and no one wraps a sparse FP4 kernel in a full deployment stack. We hand-write (raw PTX) both a dense FP4
+GEMM that matches/beats CUTLASS dense at the silicon ceiling and a 2:4-sparse FP4 GEMM at the SM120
+bandwidth roofline, then build the full deployment stack (packer, fused activation quantizer, `nn.Linear`
+drop-in) and a one-shot + QAT recovery pipeline that makes the sparse path usable on real models.
+**GATING EXPERIMENT (not yet run): head-to-head throughput of our sparse kernel vs CUTLASS 80b on the
+same RTX PRO 6000.** Until that is measured, no "faster than CUTLASS sparse" or "only" claim is allowed.
 
 ## Headline results (real, measured, RTX PRO 6000)
 
@@ -32,9 +41,11 @@ bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
   not a kernel deficit. Per-SM steady state @8192 we are MORE efficient than CUTLASS (86% vs 83% of
   the 1811 TF/s register-only mma peak). The 4096 tie is pure wave quantization (512 tiles / 188 SMs
   = 2.72 waves → ~10% tail); steady state there is otherwise our 86%.
-- Sparse FP4 is the **unique, defensible win**: CUTLASS/cuBLAS have **no sparse FP4 on SM120 at all**.
-  Ours beats the best available vendor FP4 (CUTLASS dense) by **+24% @4096 (1512 vs 1222)** and
-  **+47% @8192 (2207 vs 1497)** — a capability, not just a tuning delta.
+- Sparse FP4 beats the CUTLASS **dense** FP4 baseline by **+24% @4096 (1512 vs 1222)** and
+  **+47% @8192 (2207 vs 1497)** on the effective-FLOP metric NVIDIA uses for 2:4. NOTE: this is vs
+  CUTLASS *dense*, NOT vs CUTLASS's *sparse* NVFP4 SM120 example (80b), which exists (see Thesis) and
+  is NOT yet benchmarked here. The sparse-vs-sparse head-to-head is the gating experiment; do not call
+  this a "capability CUTLASS lacks" until 80b is measured on the same card.
 - Unit-scale headline (perf ceiling): sparse **2731k GFLOP/s**, dense **1515k**, both @8192.
 
 Real Llama-3-8B GEMM shapes (`harness/bench_llm_shapes.py`, hidden 4096 / FFN 14336, vs cuBLAS bf16;
@@ -100,17 +111,24 @@ Accuracy (real models, WikiText-2 PPL):
    2012k→**2731k (+36%)**, deployable 1486k→**2116k (+42%)**. Lesson: never declare a memory
    roofline from a probe whose own load pattern is the limit.
 
-3. **The only 2:4-sparse FP4 GEMM on SM120**, fully deployable: arbitrary per-group 2:4 metadata
-   + real per-block ue4m3 scales, both staged coalesced through a full/empty async pipeline
-   (no CTA-wide `__syncthreads`), shared-B 256×128 traffic-optimal tiling.
+3. **A fully-deployable 2:4-sparse FP4 GEMM on SM120** (NOT "the only" one — CUTLASS 80b exists, see
+   Thesis): arbitrary per-group 2:4 metadata + real per-block ue4m3 scales, both staged coalesced
+   through a full/empty async pipeline (no CTA-wide `__syncthreads`), shared-B 256×128 traffic-optimal
+   tiling. Defensible framing = "hand-written, roofline-saturating, and integrated into a packer +
+   fused-quantizer + recovery stack that CUTLASS's bare example is not," pending the 80b head-to-head.
 
-4. **PAIR-GRANULARITY finding (novel, paper-worthy).** Blackwell FP4 `mma.sp` metadata selects
-   at b16 = **fp4-pair** granularity: 2 of every 4 *pairs* kept, not 2 of every 4 *elements*.
-   Consequence: **every public 2:4 checkpoint (element-granular, built for fp16/Ampere sparse TC)
-   is incompatible.** Measured on real `neuralmagic/Sparse-Llama-3.1-8B-2of4`: it is exactly
-   element-2:4 (50% zeros), and our pair-granular selection keeps only **~87% of its nonzero
-   energy** → naive use gives **93.6 PPL** (vs 7.9 dense-FP4). This is the concrete "Blackwell FP4
-   gap": no tooling targets pair-granular 2:4 because consumer-Blackwell FP4-sparse is unserved.
+4. **Pair-granular 2:4 handling + its measured accuracy cost (NOT a novel hardware discovery).**
+   Blackwell FP4 `mma.sp` metadata selects at b16 = **fp4-pair** granularity: 2 of every 4 *pairs*
+   kept, not 2 of every 4 *elements*. **CORRECTION (prior-art sweep, 2026-07): this is NVIDIA's
+   documented hardware spec, not something we discovered.** NVIDIA's fifth-gen tensor cores use
+   pair-wise 4:8 NVFP4 sparsity (every 8 elements = 4 pairs, 2 pairs kept); this is described publicly
+   (e.g. SemiAnalysis, "NVIDIA Tensor Core Evolution"), which also already notes the pair constraint is
+   no more relaxed for ML than element-2:4. So drop "novel/paper-worthy" and "we derived it." What may
+   still be an original *data point* (no published number found): the measured consequence on a real
+   element-2:4 checkpoint. On `neuralmagic/Sparse-Llama-3.1-8B-2of4` (exactly element-2:4, 50% zeros),
+   pair-granular selection keeps only **~87% of its nonzero energy** → naive use gives **93.6 PPL**
+   (vs 7.9 dense-FP4). Frame this as "we quantify the accuracy cost of the documented pair constraint
+   on existing element-2:4 tooling," citing the hardware spec, not as a discovery.
 
 5. **Deployment stack + operator fusion.** `QuadbitLinear` (`nn.Linear` drop-in): torch packer
    reproducing the kernel's exact metadata/compress/scale layout (verified maxrel 0.0039) + a
@@ -143,7 +161,10 @@ Accuracy (real models, WikiText-2 PPL):
      accuracy cost (FP4/prune floors preserved). Every inter-GEMM memory round-trip in a transformer
      block is now a single fused pass.
 
-6. **Pair-granular recovery pipeline (one-shot + QAT), no NVIDIA equivalent.** SparseGPT retargeted
+6. **Pair-granular recovery pipeline (one-shot + QAT).** (Drop "no NVIDIA equivalent": NVIDIA's
+   NVFP4-QAD, arXiv 2601.20088, is the quant-recovery equivalent, and SpenseGPT / SQ-format / SharQ
+   are adjacent sparse+quant prior art that must be cited and distinguished. Defensible originality =
+   retargeting the *mask* to pair-granular 2:4 for the FP4 sparse path specifically.) SparseGPT retargeted
    to pair-granular masks (keep 2-of-4-pairs by `w²/[H⁻¹]²`, Hessian error compensation) →
    KD from the dense teacher (mask frozen) → QAT with straight-through fake-quant of BOTH weights
    (exact kernel dequant) and activations. Deepest WikiText-103 run (TinyLlama-1.1B, 30k bf16 + 2k QAT
@@ -316,8 +337,9 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   = 59.1 — the Hessian compensation (SparseGPT) is essential for the constrained pair mask.
 - **One-shot SparseGPT-pair** (independent per-layer) = 20.6–21.8 PPL: needs recovery fine-tuning.
 - **Sparse weight-stationary DECODE** (`sparse_sk_lib.cu`, orient C[out,tok]=W@Xᵀ so the 2:4 weight is
-  the compressed mma-A, M=out large; + split-K to fill SMs): WORKS (correct, novel — first 2:4 FP4
-  decode on SM120) but net MARGINAL. Wins only long-K ffn-down (128/4096/14336: 1.42×→**1.54×**, s=6);
+  the compressed mma-A, M=out large; + split-K to fill SMs): WORKS (correct) but net MARGINAL.
+  (Was "novel — first 2:4 FP4 decode on SM120"; drop the "first" claim, unverified against CUTLASS 80b
+  used in a decode orientation.) Wins only long-K ffn-down (128/4096/14336: 1.42×→**1.54×**, s=6);
   loses ffn-up (3.40× < dense 4.43×) and attn (0.80×). The half-weight-DRAM benefit is real but the
   thin [out,tok] output forces either split-K (f32 atomic + convert overhead eats the savings) or
   too-few blocks (s=1 = 56, underfill). Dense adaptive decode (direct-bf16 split-N) is already too
@@ -339,9 +361,12 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
 
 ## Paper narrative arc (draft)
 
-1. SM120 is the accessible Blackwell; FP4 hardware present, sparse FP4 software absent → the gap.
+1. SM120 is the accessible Blackwell; FP4 hardware present, but the usable sparse FP4 software is thin
+   and buggy in practice (CUTLASS 80b exists but the SM120 block-scaled path has documented
+   correctness/autotuner issues, #3096) and no deployment stack wraps it → the gap. (NOT "software absent.")
 2. Deriving the FP4 mma/ldmatrix/scale/metadata layouts from scratch on SM120 (no docs, probe-verify).
 3. Dense FP4 to the silicon ceiling; the false-roofline lesson → wide-TMA+swizzle → sparse +36/42%.
-4. The pair-granularity discovery and why the entire existing 2:4 ecosystem is incompatible.
+4. Handling the documented pair-wise NVFP4 sparsity end-to-end, and quantifying its accuracy cost on
+   existing element-2:4 checkpoints (cite the hardware spec; this is not a discovery).
 5. Deployment: packer + fused quantizer + drop-in; 3.7–5.2× over bf16.
 6. Making sparse usable: pair-granular SparseGPT + QAT recovery; the data-scale reality of 2:4.
