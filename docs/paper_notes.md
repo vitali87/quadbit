@@ -182,6 +182,13 @@ Accuracy (real models, WikiText-2 PPL):
 - **Recovery without weight update**: magnitude pair-2:4 = 93.6/16129 PPL, Wanda (importance-only)
   = 59.1 — the Hessian compensation (SparseGPT) is essential for the constrained pair mask.
 - **One-shot SparseGPT-pair** (independent per-layer) = 20.6–21.8 PPL: needs recovery fine-tuning.
+- **Sparse weight-stationary DECODE via the existing prefill sparse kernel** (orient C[out,tok]=W@Xᵀ
+  so the 2:4 weight is the compressed mma-A): REGRESSED for decode — ffn-up spDEC 3.36× vs the dense
+  decode kernel's 4.53×, attn 0.57×. The thin tok=128 N-dim + 256-row M-tiling gives only 16–56
+  blocks (underfill); the prefill sparse kernel isn't built for thin decode. It ties normal sparse for
+  PREFILL (4.2–5.0×, confirming the orientation is correct), so a decode sparse win needs a DEDICATED
+  mma.sp kernel with the split-N decode occupancy treatment — the dense decode kernel is the better
+  decode vehicle as-is.
 
 ## Reproducibility
 

@@ -132,13 +132,32 @@ def run() -> None:
                                                  sB.data_ptr(), mt.data_ptr(), Cs.data_ptr(), M, N, K))
             sp_str = f"{ms_sp*1e3:6.1f}us {ms_bf16/ms_sp:4.2f}x"
 
+        # SPARSE weight-stationary decode: orient C[out,tok]=W[out,in]@X[tok,in]^T so the 2:4
+        # weight is the compressed mma-A (M=out, large -> fills SMs), tok=128 is the thin N.
+        sp_dec = ""
+        if N % 256 == 0:
+            Mo, No = N, M  # out (large) x tok
+            ks = K // 128
+            Acw = torch.full((Mo, K // 4), 0x22, dtype=torch.uint8, device="cuda")
+            Bxw = torch.full((No, K // 2), 0x22, dtype=torch.uint8, device="cuda")
+            sAw = torch.full((ks, Mo, 4), 0x38, dtype=torch.uint8, device="cuda")
+            sBw = torch.full((ks, No, 4), 0x38, dtype=torch.uint8, device="cuda")
+            mtw = torch.full((ks, Mo, 2), 0x44444444, dtype=torch.int32, device="cuda")
+            Csw = torch.empty((Mo, No), dtype=torch.bfloat16, device="cuda")
+            try:
+                t = tms(lambda: sp.sparse_fp4_mm(Acw.data_ptr(), Bxw.data_ptr(), sAw.data_ptr(),
+                                                 sBw.data_ptr(), mtw.data_ptr(), Csw.data_ptr(), Mo, No, K))
+                sp_dec = f"  spDEC {ms_bf16/t:4.2f}x"
+            except Exception as ex:
+                sp_dec = f"  spDEC err {ex}"
+
         def cell(ms):
             return f"{ms_bf16/ms:5.2f}x"
         best_kind = {ms_de: "plain", best_sk: f"splitK{best_sp}", ms_dc: "decode",
                      ms_dcc: "dec-cache"}[best_dense]
         print(f"{label:>22} | {f'{M}/{N}/{K}':>16} | {ms_bf16*1e3:6.1f}us | "
               f"{cell(ms_de):>8} | {cell(best_sk):>8} | {cell(ms_dc):>8} | {cell(ms_dcc):>9} | "
-              f"{ms_bf16/best_dense:5.2f}x {best_kind:>9} | {sp_str:>15}", flush=True)
+              f"{ms_bf16/best_dense:5.2f}x {best_kind:>9} | {sp_str:>15}{sp_dec}", flush=True)
 
 
 @app.local_entrypoint()
