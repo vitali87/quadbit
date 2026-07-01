@@ -40,22 +40,29 @@ bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
 Real Llama-3-8B GEMM shapes (`harness/bench_llm_shapes.py`, hidden 4096 / FFN 14336, vs cuBLAS bf16;
 dense split-K = `cuda/dense_sk_lib.cu`, auto-tuned split factor):
 
-| shape | M/N/K | dense FP4 | dense FP4 split-K | 2:4 FP4 |
-|-------|-------|-----------|-------------------|---------|
-| prefill attn qkv/o | 4096³ | 3.02× | — | 4.06× |
-| prefill ffn up | 4096/14336/4096 | 3.31× | — | 4.36× |
-| prefill ffn down | 4096/4096/14336 | 3.61× | — | 5.03× |
-| decode ffn up | 128/14336/4096 | 2.88× | — | (M<256) |
-| decode ffn down | 128/4096/14336 | 0.50× | **1.40× (s=8)** | (M<256) |
-| decode attn qkv/o | 128/4096/4096 | 0.48× | 0.68× (s=4) | (M<256) |
+| shape | M/N/K | plain | split-K | decode-K | best dense | 2:4 FP4 |
+|-------|-------|-------|---------|----------|-----------|---------|
+| prefill attn qkv/o | 4096³ | 3.20× | 3.04× | 1.61× | **3.20×** | 4.14× |
+| prefill ffn up | 4096/14336/4096 | 3.38× | 3.36× | 1.52× | **3.38×** | 4.49× |
+| prefill ffn down | 4096/4096/14336 | 3.64× | 3.63× | 1.60× | **3.64×** | 5.09× |
+| decode ffn up | 128/14336/4096 | 2.88× | 2.89× | 2.60× | **2.89×** | (M<256) |
+| decode ffn down | 128/4096/14336 | 0.50× | **1.42×** | 0.81× | **1.42×** | (M<256) |
+| decode attn qkv/o | 128/4096/4096 | 0.49× | 0.71× | 0.73× | **0.73×** (tie kernel-only) | (M<256) |
 
 - **Prefill (bulk of training + long-context compute): 3.0–3.6× dense, 4.1–5.0× sparse over bf16.**
 - **Decode small-M underfills the SM array** (grid = N/256 × 1 = 16 blocks for N=4096, 16/188 SMs).
-  Split-K (`dense_fp4_mm_sk`, gridDim.z CTAs summing K-subranges into a tiny f32 workspace) refills
-  idle SMs — decode ffn-down flips 0.50×→**1.40×** (2.8× kernel-level). Unlike square GEMM, decode
-  output is tiny so the f32 reduction is negligible. The one remaining loss (attn qkv/o @4096²,
-  ~21µs) is launch/overhead-bound (neither side is memory-bound at 4096²); it needs a dedicated
-  GEMV kernel, not worth it for the cheapest decode op.
+  Two complementary, shape-routed fixes:
+  - **split-K** (`dense_sk_lib.cu`, gridDim.z CTAs summing K-subranges into a tiny f32 workspace):
+    wins **long-K** decode (ffn-down 128/4096/14336: 0.50×→**1.42×**, s=8). Decode output is tiny so
+    the f32 reduction that sank square split-K is negligible.
+  - **split-N decode kernel** (`dense_decode_lib.cu`, narrow 128×32 tile, one warpgroup, each warp an
+    8-col n-tile over all rows + full K, direct bf16, no reduction): wins **low-K** decode (attn qkv/o
+    128/4096/4096: kernel-only **20.5µs = tie with bf16**, up from plain 0.48×). Long-K loses here (A
+    re-read from L2 grows) → route to split-K instead.
+  - Routed best per shape: prefill all `plain`; decode ffn-up 2.9×, ffn-down 1.42× (split-K), attn-qkv
+    tie. Caveat: the end-to-end attn-qkv (0.73×) includes rebuilding BOTH TMA maps per call
+    (2× `cuTensorMapEncodeTiled` ≈ 7µs); real deployment builds the weight map once → ~1.0×. The
+    4096² attn op is inherently launch-bound (neither side memory-bound at that size).
 
 Accuracy (real models, WikiText-2 PPL):
 - **Dense FP4: +0.3 PPL, zero training, any model** (Sparse-Llama-3.1-8B 7.89→8.16; Qwen2.5-3B 7.60→7.91). Production-ready.

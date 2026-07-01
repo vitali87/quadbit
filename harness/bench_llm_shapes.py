@@ -41,17 +41,19 @@ def run() -> None:
     import torch
 
     outs = {}
-    for name, src in (("sp", "sparse_fp4_lib"), ("de", "dense_fp4_lib"), ("sk", "dense_sk_lib")):
+    for name, src in (("sp", "sparse_fp4_lib"), ("de", "dense_fp4_lib"), ("sk", "dense_sk_lib"),
+                      ("dc", "dense_decode_lib")):
         so = f"/root/{name}.so"
         c = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
                             "-o", so, f"/root/cuda/{src}.cu", "-lcuda"], capture_output=True, text=True)
         if c.returncode != 0:
             print(c.stderr, flush=True); return
         outs[name] = ctypes.CDLL(so)
-    sp, de, sk = outs["sp"], outs["de"], outs["sk"]
+    sp, de, sk, dc = outs["sp"], outs["de"], outs["sk"], outs["dc"]
     sp.sparse_fp4_mm.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
     de.dense_fp4_mm.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
     sk.dense_fp4_mm_sk.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 4
+    dc.dense_fp4_decode.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3
 
     print(f"{torch.cuda.get_device_name(0)}\n", flush=True)
 
@@ -66,8 +68,8 @@ def run() -> None:
         e.record(); torch.cuda.synchronize()
         return s.elapsed_time(e) / it
 
-    hdr = (f"{'shape':>22} | {'M/N/K':>16} | {'bf16':>9} | {'dense FP4':>16} | "
-           f"{'dense FP4 split-K':>22} | {'2:4 FP4':>16}")
+    hdr = (f"{'shape':>22} | {'M/N/K':>16} | {'bf16':>9} | {'plain':>13} | "
+           f"{'split-K':>16} | {'decode':>13} | {'BEST dense':>18} | {'2:4 FP4':>15}")
     print(hdr, flush=True)
     print("-" * len(hdr), flush=True)
 
@@ -97,6 +99,11 @@ def run() -> None:
             if t < best_sk:
                 best_sk, best_sp = t, spl
 
+        # decode kernel (split-N direct bf16): best for small-M low-K
+        ms_dc = tms(lambda: dc.dense_fp4_decode(Ad.data_ptr(), Bd.data_ptr(), Cd.data_ptr(), M, N, K))
+        # best FP4 dense strategy for this shape
+        best_dense = min(ms_de, best_sk, ms_dc)
+
         # sparse needs M % 256 (bm256 tiling); skip small-M decode rows
         sp_str = "  n/a (M<256)"
         if M % 256 == 0:
@@ -112,10 +119,11 @@ def run() -> None:
             sp_str = f"{ms_sp*1e3:6.1f}us {ms_bf16/ms_sp:4.2f}x"
 
         def cell(ms):
-            return f"{ms*1e3:6.1f}us {ms_bf16/ms:4.2f}x"
-        sk_cell = f"{best_sk*1e3:6.1f}us {ms_bf16/best_sk:4.2f}x s={best_sp}"
+            return f"{ms_bf16/ms:5.2f}x"
+        best_kind = {ms_de: "plain", best_sk: f"splitK{best_sp}", ms_dc: "decode"}[best_dense]
         print(f"{label:>22} | {f'{M}/{N}/{K}':>16} | {ms_bf16*1e3:6.1f}us | "
-              f"{cell(ms_de):>16} | {sk_cell:>22} | {sp_str:>16}", flush=True)
+              f"{cell(ms_de):>13} | {cell(best_sk):>16} | {cell(ms_dc):>13} | "
+              f"{ms_bf16/best_dense:5.2f}x {best_kind:>9} | {sp_str:>15}", flush=True)
 
 
 @app.local_entrypoint()
