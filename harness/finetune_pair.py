@@ -71,13 +71,14 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     def enc(s):
         return torch.bucketize(s, _MID)
 
-    def sparse_fp4_dequant(W):  # EXACT kernel dequant: pair-2:4 magnitude + FP4, returns float
+    def sparse_fp4_dequant(W):  # pair-2:4 magnitude + per-16 TWO-LEVEL NVFP4 (per-out-row global gA)
         out_f, in_f = W.shape; ks = in_f // 128
         Wg = W.view(out_f, ks, 16, 4, 2)
         i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
         keptW = torch.gather(Wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        gA = (keptW.abs().amax(dim=(1, 2, 3), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
         blk = keptW.reshape(out_f, ks, 4, 8, 2)
-        sdeq = UE4M3[enc(blk.abs().amax(dim=(3, 4)) / 6.0)]
+        sdeq = UE4M3[enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)] * gA
         kd = (FP4[q_fp4(blk / sdeq[..., None, None])] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
         Wd = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
         Wd.scatter_(3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kd)
@@ -97,12 +98,13 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
         code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
         return torch.where(s > 0, code, torch.zeros_like(code))
 
-    def act_fp4_dequant(x):  # DEPLOY-MATCHED NVFP4 act quant: bf16 pre-round + no-denormal ue4m3 +
-        lead = x.shape[:-1]; i = x.shape[-1]           # reciprocal-multiply, exactly like quant_act.
-        b = x.to(torch.bfloat16).float().reshape(-1, i // 32, 32)  # kernel reads activations as bf16
-        s = UE4M3[enc_ue4m3_t(b.abs().amax(-1) / 6.0)]
-        inv = (1.0 / s)[..., None]
-        return (FP4[q_fp4(b * inv)] * s[..., None]).reshape(*lead, i)
+    def act_fp4_dequant(x):  # per-16 TWO-LEVEL NVFP4 (matches modelopt/quant_act_nv2_k): per-row
+        lead = x.shape[:-1]; i = x.shape[-1]           # global gB=rowamax/2688 + per-16 local ue4m3
+        b = x.to(torch.bfloat16).float().reshape(-1, i)                 # kernel reads activations as bf16
+        gB = (b.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)  # 2688 = e4m3max 448 * e2m1max 6
+        bb = b.reshape(b.shape[0], i // 16, 16)
+        sdeq = UE4M3[enc_ue4m3_t((bb.abs().amax(-1) / 6.0) / gB)] * gB
+        return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
     class QATLinear(nn.Module):  # phase1: plain masked bf16 (fast); phase2 (qat=True): FP4 STE
         def __init__(self, weight):
@@ -230,13 +232,15 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     sh_tag = "_2sh" if both_shards else ""
     ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{sh_tag}_lr{lr_max:.0e}.pt"  # phase-1 cached on volume (lr in key)
 
-    masks, qats = {}, []
+    CKPT_EVERY = 2500  # periodic phase-1 save so an infra preemption mid-30k doesn't lose hours
+    masks, qats, start_step = {}, [], 0
     if os.path.exists(ck):
-        w1 = torch.load(ck, map_location=dev, weights_only=True)  # list of phase-1 weights, targets order
-        for (mlp, nm, _), W in zip(targets, w1):
+        ckd = torch.load(ck, map_location=dev, weights_only=True)  # {"step", "weights"} (targets order)
+        start_step = int(ckd["step"])
+        for (mlp, nm, _), W in zip(targets, ckd["weights"]):
             qat = QATLinear(W.to(torch.bfloat16)).to(dev)
             masks[qat] = (W != 0).to(dev); setattr(mlp, nm, qat); qats.append(qat)
-        print(f"loaded phase-1 checkpoint {ck}", flush=True)
+        print(f"resumed phase-1 checkpoint {ck} at step {start_step}", flush=True)
     else:
         # H calibration on the student MLP inputs, then SparseGPT-pair prune + freeze mask
         Hs, ns = {}, {}
@@ -291,14 +295,19 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
                 q.weight.data *= mk
         return loss.item()
 
-    if not os.path.exists(ck):
+    def save_ck(step):
+        torch.save({"step": step, "weights": [q.weight.data.cpu() for q in qats]}, ck); vol.commit()
+
+    if start_step < P1:
         student.train()
-        for step in range(P1):                        # phase 1: bf16 masked (fast)
+        for step in range(start_step, P1):            # phase 1: bf16 masked (fast), resumable
             loss = kd_step(step)
             if (step + 1) % 1000 == 0:
                 print(f"  P1 {step + 1}/{P1} KD {loss:.4f} PPL(bf16) {ppl(student, windows=8):.3f}", flush=True)
                 student.train()
-        torch.save([q.weight.data.cpu() for q in qats], ck); vol.commit()  # persist phase-1 result
+            if (step + 1) % CKPT_EVERY == 0:
+                save_ck(step + 1)                     # periodic: resume from here if preempted
+        save_ck(P1)                                   # phase-1 done marker
         print(f"saved phase-1 checkpoint {ck}", flush=True)
     print(f"PPL after phase-1 bf16 recovery: {ppl(student):.3f}", flush=True)
 
