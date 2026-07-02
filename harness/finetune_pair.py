@@ -25,7 +25,7 @@ image = (
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})  # cut fragmentation for the 8B QAT graph
     .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu128", pre=True)
-    .pip_install("transformers", "huggingface_hub", "safetensors", "sentencepiece", "pyarrow")
+    .pip_install("transformers", "huggingface_hub", "safetensors", "sentencepiece", "pyarrow", "bitsandbytes")
     .add_local_dir((ROOT / "cuda").as_posix(), "/root/cuda")
 )
 app = modal.App("quadbit-finetune", image=image)
@@ -278,7 +278,8 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     params = []
     for q in qats:
         q.weight.requires_grad_(True); params.append(q.weight)
-    opt = torch.optim.AdamW(params, lr=lr_max, betas=(0.9, 0.95), weight_decay=0.0)
+    import bitsandbytes as bnb  # 8-bit AdamW: optimizer states ~11GB vs bf16's ~23GB -> fits 8B in 96GB
+    opt = bnb.optim.AdamW8bit(params, lr=lr_max, betas=(0.9, 0.95), weight_decay=0.0)
 
     def kd_step(step):
         for g in opt.param_groups:                    # warmup + cosine decay
