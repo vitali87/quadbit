@@ -25,7 +25,7 @@ image = (
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})  # cut fragmentation for the 8B QAT graph
     .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu128", pre=True)
-    .pip_install("transformers", "huggingface_hub", "safetensors", "sentencepiece", "pyarrow", "bitsandbytes")
+    .pip_install("transformers", "huggingface_hub", "safetensors", "sentencepiece", "pyarrow", "bitsandbytes", "numpy")
     .add_local_dir((ROOT / "cuda").as_posix(), "/root/cuda")
 )
 app = modal.App("quadbit-finetune", image=image)
@@ -35,7 +35,9 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 @app.function(gpu="RTX-PRO-6000", timeout=86400, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])  # HF_TOKEN for gated Llama-3
 def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False,
-        lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.0) -> float:
+        lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.0, corpus: str = "") -> float:
+    # corpus: path to a diverse pre-packed corpus (C4 seq-1024 int32 shards from build_corpus) for
+    # the full-scale data-limited test; "" -> WikiText-103 (the narrow baseline). eval stays WT-2 test.
     # lr_max: phase-1 peak (2e-4 for TinyLlama, ~3e-5 for 8B). p2_lr: phase-2 WARM-RESTART peak
     # (its own warmup+cosine, NOT the decayed tail of phase-1's schedule). ce_alpha: hard-label CE weight.
     import ctypes
@@ -197,10 +199,17 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
         txt = "\n\n".join(pq.read_table(p).column("text").to_pylist())[:200_000_000]
         return tok(txt, return_tensors="pt").input_ids[0]
 
-    test_ids = wikitext("wikitext-2-raw-v1", "test-00000-of-00001.parquet")   # comparable eval
-    train_ids = wikitext("wikitext-103-raw-v1", "train-00000-of-00002.parquet")  # big, no overfit
-    if both_shards:  # real-data-scale probe: full wikitext-103 train (both shards)
-        train_ids = torch.cat([train_ids, wikitext("wikitext-103-raw-v1", "train-00001-of-00002.parquet")])
+    test_ids = wikitext("wikitext-2-raw-v1", "test-00000-of-00001.parquet")   # comparable eval (disjoint from C4)
+    if corpus:  # diverse pre-packed C4 corpus (decontaminated vs WT-2 test in build_corpus)
+        import glob
+        import numpy as np
+        shards = sorted(glob.glob(f"{corpus}/shard_*.npy"))
+        train_ids = torch.from_numpy(np.concatenate([np.load(s) for s in shards]).reshape(-1)).long()
+        print(f"corpus {corpus}: {len(shards)} shards", flush=True)
+    else:
+        train_ids = wikitext("wikitext-103-raw-v1", "train-00000-of-00002.parquet")  # narrow baseline
+        if both_shards:
+            train_ids = torch.cat([train_ids, wikitext("wikitext-103-raw-v1", "train-00001-of-00002.parquet")])
     print(f"train tokens: {len(train_ids)}", flush=True)
 
     def ppl(m, windows=16, seq=2048):
@@ -236,8 +245,8 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     lr_min = lr_max / 20.0
     starts = list(range(0, len(train_ids) - seq, seq))
     targets = list(mlp_lins(student))  # (mlp, name, lin) in deterministic order; checkpoint key basis
-    sh_tag = "_2sh" if both_shards else ""
-    ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{sh_tag}_lr{lr_max:.0e}.pt"  # phase-1 cached on volume (lr in key)
+    tag = ("_" + corpus.rstrip("/").split("/")[-1]) if corpus else ("_2sh" if both_shards else "")
+    ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{tag}_lr{lr_max:.0e}.pt"  # phase-1 cached on volume (corpus+lr in key)
 
     CKPT_EVERY = 2500  # periodic phase-1 save so an infra preemption mid-30k doesn't lose hours
     masks, qats, start_step = {}, [], 0
@@ -345,9 +354,9 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
 
 @app.local_entrypoint()
 def main(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False,
-         lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.0) -> None:
-    # spawn (not remote): compute survives local-client disconnect. See memory.
+         lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.0, corpus: str = "") -> None:
+    # spawn (not remote): compute survives local-client disconnect. See memory. Use `modal run --detach`.
     call = run.spawn(model=model, p1=p1, p2=p2, both_shards=both_shards, lr_max=lr_max,
-                     p2_lr=p2_lr, ce_alpha=ce_alpha)
+                     p2_lr=p2_lr, ce_alpha=ce_alpha, corpus=corpus)
     print(f"SPAWN_ID {call.object_id}", flush=True)
     print(f"RESULT {call.get():.3f}", flush=True)  # blocks; if this waiter dies, recover via SPAWN_ID
