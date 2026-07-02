@@ -76,7 +76,7 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
         Wg = W.view(out_f, ks, 16, 4, 2)
         i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
         keptW = torch.gather(Wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
-        gA = (keptW.abs().amax(dim=(1, 2, 3), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        gA = (keptW.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
         blk = keptW.reshape(out_f, ks, 4, 8, 2)
         sdeq = UE4M3[enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)] * gA
         kd = (FP4[q_fp4(blk / sdeq[..., None, None])] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
