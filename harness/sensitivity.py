@@ -19,7 +19,7 @@ image = (
     modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
     .env({"HF_HOME": "/cache"})
     .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu128", pre=True)
-    .pip_install("transformers", "huggingface_hub", "safetensors", "pyarrow")
+    .pip_install("transformers", "huggingface_hub", "safetensors", "pyarrow", "numpy")
 )
 app = modal.App("quadbit-sensitivity", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
@@ -101,12 +101,23 @@ def run(model: str = MODEL, all_linears: bool = False, side: str = "act") -> Non
         "Salesforce/wikitext", "wikitext-2-raw-v1/test-00000-of-00001.parquet",
         repo_type="dataset")).column("text").to_pylist())).input_ids
 
-    def ppl(windows, seq=2048):
+    def ppl(windows, seq=2048):  # HELD-OUT eval: WikiText-2 test (recipe scored here, ONCE)
         nll = n = 0
         for i in range(0, min(len(test_ids), windows * seq) - seq, seq):
             w = torch.tensor(test_ids[i:i + seq], device=dev).unsqueeze(0)
             with torch.no_grad():
                 nll += m(w, labels=w).loss.item() * (seq - 1); n += seq - 1
+        return math.exp(nll / n)
+
+    import numpy as np
+    c4 = torch.from_numpy(np.load("/cache/corpus_c4_llama3_smoke/shard_0000.npy")[:16]).long().to(dev)
+
+    def ppl_c4():  # SELECTION set: decontaminated C4, DISJOINT from the WT-2 test set (no selection-on-test)
+        nll = n = 0
+        for w in c4:
+            wv = w.unsqueeze(0)
+            with torch.no_grad():
+                nll += m(wv, labels=wv).loss.item() * (wv.shape[1] - 1); n += wv.shape[1] - 1
         return math.exp(nll / n)
 
     attr = "a16" if side == "act" else "w16"   # act side: bf16 activations; weight side: bf16 weights
@@ -122,17 +133,17 @@ def run(model: str = MODEL, all_linears: bool = False, side: str = "act") -> Non
     cost = base_lo - base_hi
     print(f"\nW4A4(all) {base_lo:.3f}   {hp}(all) {base_hi:.3f}   {side} cost = {cost:.3f}", flush=True)
 
-    base8 = ppl(8)                             # windows=8 baseline so per-layer recovery is honest (same eval)
+    base_c4 = ppl_c4()                          # rank layers on C4 (selection set), NOT on the WT-2 test set
     rec = []
     for i, mods in enumerate(per_layer):
         for q in mods:
             setattr(q, attr, True)
-        p = ppl(8)
+        p = ppl_c4()
         for q in mods:
             setattr(q, attr, False)
-        rec.append((base8 - p, i))             # true windows=8 recovery
+        rec.append((base_c4 - p, i))            # C4-selection recovery (disjoint from the final WT-2 eval)
     rec.sort(reverse=True)
-    print(f"top {side}-sensitive layers (recovery vs windows=8 baseline {base8:.3f}):", flush=True)
+    print(f"top {side}-sensitive layers (C4-selection recovery vs C4 baseline {base_c4:.3f}):", flush=True)
     for r, i in rec[:10]:
         print(f"  layer {i:2d}: {r:+.3f}", flush=True)
 
