@@ -16,11 +16,21 @@ path exists at all" / "the only 2:4-sparse FP4 GEMM on SM120" is FALSE and must 
 What is defensible: the SM120 block-scaled path has documented correctness/autotuner problems in practice
 (CUTLASS issue #3096: grouped GEMM garbage output, TMA warp-specialized tactics fail to init on SM120),
 and no one wraps a sparse FP4 kernel in a full deployment stack. We hand-write (raw PTX) both a dense FP4
-GEMM that matches/beats CUTLASS dense at the silicon ceiling and a 2:4-sparse FP4 GEMM at the SM120
-bandwidth roofline, then build the full deployment stack (packer, fused activation quantizer, `nn.Linear`
+GEMM that is competitive with CUTLASS dense (wins/ties on square, slightly behind on rectangular LLM
+shapes) and a 2:4-sparse FP4 GEMM at the SM120 bandwidth roofline that beats CUTLASS 80b on the shapes
+that ship, then build the full deployment stack (packer, fused activation quantizer, `nn.Linear`
 drop-in) and a one-shot + QAT recovery pipeline that makes the sparse path usable on real models.
-**GATING EXPERIMENT (not yet run): head-to-head throughput of our sparse kernel vs CUTLASS 80b on the
-same RTX PRO 6000.** Until that is measured, no "faster than CUTLASS sparse" or "only" claim is allowed.
+**The paper's spine is the sparse path**, which beats CUTLASS 80b on every rectangular LLM shape; dense is
+a competitive-but-slightly-behind drop-in (see headline).
+**GATING EXPERIMENT — NOW RUN** (`harness/cutlass_sparse.py`, correctness-gated on 80b's own reference
+check, which PASSES at every size, so #3096's block-scaled bug does not affect this example): head-to-head
+throughput of our sparse kernel vs CUTLASS 80b on the same RTX PRO 6000 gives **1.16× @4096, 1.14× @8192,
+0.96× @16384** (we lose at 16K: 1859 vs 1785 TF/s). Defensible claim: fastest sparse FP4 at the 4–8K tile
+sizes real LLM GEMMs use, NOT "at every size" and NOT "the only." Rectangular-shape sweep NOW RUN
+(`harness/cutlass_shapes.py`): on real Llama-3-8B shapes sparse **wins consistently** vs 80b (attn
+4096³ 1.18×, ffn-up 1.14×, ffn-down 1.17×, all 80b-verified), while dense **loses** to 79b
+(0.89×/0.93×/1.01×) — so the dense "beats at every size" claim was a square artifact; sparse is the
+consistent CUTLASS-beating result on shipping shapes.
 
 ## Headline results (real, measured, RTX PRO 6000)
 
@@ -34,18 +44,22 @@ bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
 | 8192 | 423 TF/s | 1497 | 1556 (3.68× bf16) | 2207 (5.22× bf16) |
 | 16384| 405 TF/s | — | 1645 (4.06× bf16) | 1782 (4.39× bf16) |
 
-- Dense FP4 vs CUTLASS, **apples-to-apples clean measurement** (both cudaEvent-timed over 20 iters,
-  no torch dispatch; ours = `matmul_fp4_pp_bf16` standalone): CUTLASS 634 / 1222 / 1497 @ 2048/4096/8192,
-  ours **758 (+20%) / 1220 (tie) / 1510 (+0.9%)**. We match or beat CUTLASS at every size; the only
-  apparent "loss" (bench_vs_bf16 showed 1136 @4096) was **torch dispatch overhead in that harness**,
-  not a kernel deficit. Per-SM steady state @8192 we are MORE efficient than CUTLASS (86% vs 83% of
-  the 1811 TF/s register-only mma peak). The 4096 tie is pure wave quantization (512 tiles / 188 SMs
-  = 2.72 waves → ~10% tail); steady state there is otherwise our 86%.
+- Dense FP4 vs CUTLASS, **square, apples-to-apples clean measurement** (both cudaEvent-timed over 20
+  iters, no torch dispatch; ours = `matmul_fp4_pp_bf16` standalone): CUTLASS 634 / 1222 / 1497 @
+  2048/4096/8192, ours **758 (+20%) / 1220 (tie) / 1510 (+0.9%)** — win/tie/win on square. BUT on the
+  **rectangular Llama-3-8B shapes that actually run, dense LOSES to CUTLASS 79b** (`harness/cutlass_shapes.py`,
+  79b-verified): attn 4096³ **0.89×**, ffn-up N=14336 **0.93×**, ffn-down K=14336 **1.01×**. The square
+  win does not generalize — CUTLASS's tile/schedule adapts to rectangular shapes better than our fixed
+  tiling. Honest dense claim: competitive, slightly behind CUTLASS on shipping shapes; still 3.0–3.7× over
+  bf16. (Per-SM square steady state @8192 we are 86% vs CUTLASS 83% of the 1811 TF/s mma peak; the 4096
+  tie is wave quantization, 512 tiles / 188 SMs = 2.72 waves.)
 - Sparse FP4 beats the CUTLASS **dense** FP4 baseline by **+24% @4096 (1512 vs 1222)** and
-  **+47% @8192 (2207 vs 1497)** on the effective-FLOP metric NVIDIA uses for 2:4. NOTE: this is vs
-  CUTLASS *dense*, NOT vs CUTLASS's *sparse* NVFP4 SM120 example (80b), which exists (see Thesis) and
-  is NOT yet benchmarked here. The sparse-vs-sparse head-to-head is the gating experiment; do not call
-  this a "capability CUTLASS lacks" until 80b is measured on the same card.
+  **+47% @8192 (2207 vs 1497)** on the effective-FLOP metric NVIDIA uses for 2:4. And vs CUTLASS's
+  **sparse** NVFP4 SM120 example (80b), the gating head-to-head (now run, see Thesis): square **1.16×
+  @4096, 1.14× @8192, 0.96× @16384** (win 4–8K, lose 16K), and on **rectangular Llama-3-8B shapes a
+  consistent win** — attn 4096³ **1.18×**, ffn-up **1.14×**, ffn-down **1.17×** (all 80b-verified).
+  Unlike dense, the sparse win DOES generalize to shipping shapes; this is the headline. Do not claim
+  "at every size" (16K square loses) or "the only," but sparse beats CUTLASS 80b on every real LLM shape.
 - Unit-scale headline (perf ceiling): sparse **2731k GFLOP/s**, dense **1515k**, both @8192.
 
 Real Llama-3-8B GEMM shapes (`harness/bench_llm_shapes.py`, hidden 4096 / FFN 14336, vs cuBLAS bf16;
@@ -91,7 +105,15 @@ ADAPTIVE config, the deployment path — see decode notes. **Every LLM shape now
     ~4.5×→~7×); attn-qkv @4096² is latency-bound (too small to saturate memory), a practical ceiling.
 
 Accuracy (real models, WikiText-2 PPL):
-- **Dense FP4: +0.3 PPL, zero training, any model** (Sparse-Llama-3.1-8B 7.89→8.16; Qwen2.5-3B 7.60→7.91). Production-ready.
+- **Dense FP4 is W4A4, +0.63 PPL, zero training, matched to the reference — the accuracy headline.**
+  The FP4 tensor core multiplies fp4×fp4, so the shipped kernel is W4A4 (weights AND activations
+  4-bit); there is no weight-only FP4 GEMM in hardware, so the often-quoted +0.3 is a **W4A16**
+  number that never ships. With our **per-16 two-level NVFP4 recipe** (amax, **no calibration**),
+  measured through `harness/recovery_worth.py`: **Llama-3.1-8B-Instruct 7.27→7.90 (+0.63)**;
+  Meta-Llama-3-8B base 6.20→6.91 (+0.71) — at/below the modelopt-calibrated reference (vLLM native
+  NVFP4 7.97, +0.71). An earlier "+2 PPL" was our **crude per-32 single-level** recipe, NOT W4A4's
+  real cost; the gap was block granularity + two-level activation scaling, not calibration. (W4A16
+  weight-only +0.3: Sparse-Llama-3.1-8B 7.89→8.16, Qwen2.5-3B 7.60→7.91 — real but not deployed.)
 - Sparse FP4 needs pair-granular 2:4 recovery (see below).
 
 ## Core technical contributions
@@ -114,8 +136,9 @@ Accuracy (real models, WikiText-2 PPL):
 3. **A fully-deployable 2:4-sparse FP4 GEMM on SM120** (NOT "the only" one — CUTLASS 80b exists, see
    Thesis): arbitrary per-group 2:4 metadata + real per-block ue4m3 scales, both staged coalesced
    through a full/empty async pipeline (no CTA-wide `__syncthreads`), shared-B 256×128 traffic-optimal
-   tiling. Defensible framing = "hand-written, roofline-saturating, and integrated into a packer +
-   fused-quantizer + recovery stack that CUTLASS's bare example is not," pending the 80b head-to-head.
+   tiling. Defensible framing = "hand-written, roofline-saturating, faster than CUTLASS 80b on every
+   rectangular LLM shape (1.14–1.18×, see headline), and integrated into a packer + fused-quantizer +
+   recovery stack that CUTLASS's bare example is not."
 
 4. **Pair-granular 2:4 handling + its measured accuracy cost (NOT a novel hardware discovery).**
    Blackwell FP4 `mma.sp` metadata selects at b16 = **fp4-pair** granularity: 2 of every 4 *pairs*
@@ -183,9 +206,20 @@ Accuracy (real models, WikiText-2 PPL):
    quantizer (scale codes verified identical). Result — the matched-STE fake-quant PPL (9.57) now
    tracks the through-kernel PPL (9.60) within **0.04**, versus the old ~0.9 gap, and the deployed
    number dropped 10.03→9.60. Training against exactly what ships is worth ~0.43 PPL. Phase-1 result
-   is checkpointed to the volume so phase-2 experiments skip the 30k-step rebuild. Recovery is
-   monotonic in data; NM used 13B tokens for element-2:4, so production parity is a data-scale
-   question, not a method gap.
+   is checkpointed to the volume so phase-2 experiments skip the 30k-step rebuild. **On a REAL 8B model the sparse accuracy case is currently negative and data-limited (2026-07-02).**
+   Meta-Llama-3-8B, good recipe (per-16 two-level weight+act NVFP4), 30k phase-1 + 2k QAT on full
+   WikiText-103 (88M tok): teacher 6.20; phase-1 bf16-masked 2:4 **8.57** (+2.37 — the sparsity cost,
+   *before* any FP4); phase-2 QAT FP4 **9.01** (+2.81, fair fake-quant). Dense-W4A4 zero-train on the
+   same model is **6.91 (+0.71)**, so **sparse-recovered loses to dense by ~2.1 PPL**. The TinyLlama
+   "sparse 9.60 beats dense 9.73" flip was an artifact of the old crude-dense (+2) number and is
+   retired; with corrected dense W4A4 (+0.63/+0.71) dense wins. CAVEAT: phase-1 **plateaued** on the
+   88M corpus (~30M tokens, ~400× under NM's 13B), so 9.01 is a data-starved lower bound, NOT a
+   verdict. Deploy gap: 9.01 is fake-quant on the good two-level recipe; the deployed sparse *kernel*
+   is single-level → through-kernel 12.55 (train/deploy mismatch), so realizing 9.01 needs an unbuilt
+   two-level sparse kernel. **NET: dense FP4 (+0.63, zero-training, matched to the modelopt reference)
+   is the accuracy result; sparse is a speed play (~1.33× over dense) with an OPEN, data-limited
+   recovery gap.** Resolution: full-scale diverse-corpus recovery, token-vs-PPL curve gating the tail
+   (target ~+0.5 of dense ≈ 7.4; stop if it flattens above ~7.5).
 
 ## Real open-weight models (July 2026), on this hardware
 
@@ -329,7 +363,7 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
   persistent/stream-K variants, all regressed): on SM120 FP4 the huge accumulator tile leaves no
   register headroom for a software scheduler, and the HW block scheduler already overlaps consecutive
   tiles for free — data-parallel is at the practical ceiling and beats explicit persistence here.
-  Clean-measured, DP already matches/beats CUTLASS at all three sizes (see headline).
+  Clean-measured, DP already matches/beats CUTLASS at all three square sizes (rectangular loses, see headline).
 - **Small-tile (single-WG 128×128)**: only +12% @2048, loses ≥4096 (shared-B B-traffic dominates);
   mid-shape is fixed-overhead-bound, not tile-bound.
 - **Thin-M split-K**: worse (atomicAdd contention); thin-M is latency/overhead-bound (~0.037ms floor).

@@ -79,8 +79,8 @@ def ppl() -> None:
     seq, windows = 2048, 16
     wins = [ids[i:i + seq] for i in range(0, min(len(ids), windows * seq) - seq, seq)]
 
-    llm = LLM(model=MODEL, enforce_eager=True, max_model_len=seq, kv_cache_dtype="auto",
-              gpu_memory_utilization=0.85)
+    llm = LLM(model=MODEL, enforce_eager=True, max_model_len=seq + 16, kv_cache_dtype="auto",
+              gpu_memory_utilization=0.85)  # +16: prompt (seq) + the mandatory >=1 output token
     outs = llm.generate([{"prompt_token_ids": w} for w in wins],
                         SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1))
     nll, n = 0.0, 0
