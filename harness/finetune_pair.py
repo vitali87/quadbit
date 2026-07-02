@@ -58,7 +58,9 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
         print(c.stderr, flush=True); return
     lib = ctypes.CDLL(so)
     lib.sparse_fp4_mm.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
 
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6],
@@ -103,11 +105,11 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
         code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
         return torch.where(s > 0, code, torch.zeros_like(code))
 
-    def act_fp4_dequant(x):  # per-16 TWO-LEVEL NVFP4 (matches modelopt/quant_act_nv2_k): per-row
-        lead = x.shape[:-1]; i = x.shape[-1]           # global gB=rowamax/2688 + per-16 local ue4m3
-        b = x.to(torch.bfloat16).float().reshape(-1, i)                 # kernel reads activations as bf16
+    def act_fp4_dequant(x):  # per-32 TWO-LEVEL NVFP4 MATCHED to the sparse mma (scale_vec::4X @ k128 =
+        lead = x.shape[:-1]; i = x.shape[-1]           # 4 scales/128-K on B -> per-32); global gB=rowamax/2688
+        b = x.to(torch.bfloat16).float().reshape(-1, i)                 # + per-32 local ue4m3. Train == deploy.
         gB = (b.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)  # 2688 = e4m3max 448 * e2m1max 6
-        bb = b.reshape(b.shape[0], i // 16, 16)
+        bb = b.reshape(b.shape[0], i // 32, 32)
         sdeq = UE4M3[enc_ue4m3_t((bb.abs().amax(-1) / 6.0) / gB)] * gB
         return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
@@ -126,8 +128,8 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
             xq = xf + (act_fp4_dequant(xf) - xf).detach()      # STE activation fake-quant
             return F.linear(xq, Wq).to(x.dtype)
 
-    class QuadbitLinear(nn.Module):
-        def __init__(self, W):
+    class QuadbitLinear(nn.Module):  # TWO-LEVEL: per-16-kept ue4m3 LOCAL + per-out-row fp32 global gA;
+        def __init__(self, W):        # activations per-32 two-level (gB per token). Matches sparse_fp4_dequant.
             super().__init__()
             out_f, in_f = W.shape
             ks = in_f // 128
@@ -135,9 +137,10 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
             Wg = W.float().to(dev).view(out_f, ks, 16, 4, 2)
             i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
             keptW = torch.gather(Wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+            gA = (keptW.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
             blk = keptW.reshape(out_f, ks, 4, 8, 2)
-            scode = enc(blk.abs().amax(dim=(3, 4)) / 6.0)
-            sdeq = UE4M3[scode]
+            scode = enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)   # LOCAL codes relative to gA
+            sdeq = UE4M3[scode] * gA                                       # full scale for coding the fp4
             kc = q_fp4(blk / sdeq[..., None, None])
             Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
@@ -146,6 +149,7 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
             self.register_buffer("Ac", Ac.contiguous())
             self.register_buffer("meta", meta)
             self.register_buffer("scaleA", scode.to(torch.uint8).permute(1, 0, 2).contiguous())
+            self.register_buffer("gA", gA.reshape(out_f).float().contiguous())
 
         def forward(self, x):
             lead = x.shape[:-1]
@@ -156,11 +160,12 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
             x2 = x2.contiguous(); tp = t + pad
             Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
             sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
-            lib.quantize_act_nvfp4(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), tp, self.in_f)
+            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
             C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-            lib.sparse_fp4_mm(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                              sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                              self.out_f, tp, self.in_f)
+            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
             return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     def sparsegpt_pair24(W, H, blocksize=128, percdamp=0.01):

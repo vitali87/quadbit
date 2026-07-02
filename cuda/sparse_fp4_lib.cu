@@ -29,7 +29,9 @@
 __global__ void __launch_bounds__(256)
 matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
           const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
-          __nv_bfloat16 *C, int M, int N, int Klog) {
+          __nv_bfloat16 *C, int M, int N, int Klog,
+          const float *gA, const float *gB) {   // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
+                                                 // nullptr -> single-level (mma-applied local scales only)
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -166,8 +168,10 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
         for (int n = 0; n < 8; n++) {
             int idx = mt * 8 + n;
             int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + b_col[n] + (lane & 3) * 2;
-            *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0], acc[idx][1]);
-            *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2], acc[idx][3]);
+            float ga0 = gA ? gA[gr] : 1.f, ga1 = gA ? gA[gr + 8] : 1.f;   // two-level global rescale:
+            float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;   // mma applied locals, globals here
+            *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0] * ga0 * gb0, acc[idx][1] * ga0 * gb1);
+            *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2] * ga1 * gb0, acc[idx][3] * ga1 * gb1);
         }
 }
 
@@ -237,6 +241,46 @@ extern "C" void quantize_act_nvfp4(const void *x, void *Bbytes, void *scaleB, in
     int total = batch * (in_f / 32), tpb = 256;
     quant_act<<<(total + tpb - 1) / tpb, tpb>>>((const int4 *)x, (uint32_t *)Bbytes,
                                                 (uint8_t *)scaleB, batch, in_f);
+}
+
+// TWO-LEVEL activation quantizer: per-token fp32 global gB[n]=rowamax/2688, per-32 ue4m3 LOCAL
+// relative to gB (the sparse mma's scale_vec::4X gives 4 scales/128-K on B -> per-32). One CTA/row.
+// scaleB[step][batch][4] LOCAL codes; the two-level kernel's epilogue applies gB[n].
+__global__ void quant_act_2lvl_k(const __nv_bfloat16 *x, uint32_t *Bwords, uint8_t *scaleB, float *gB, int in_f) {
+    int n = blockIdx.x;
+    const __nv_bfloat16 *xr = x + (long)n * in_f;
+    float la = 0.f;
+    for (int i = threadIdx.x; i < in_f; i += blockDim.x) la = fmaxf(la, fabsf(__bfloat162float(xr[i])));
+    for (int o = 16; o > 0; o >>= 1) la = fmaxf(la, __shfl_down_sync(0xffffffffu, la, o));
+    __shared__ float red[32];
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = la;
+    __syncthreads();
+    if (threadIdx.x == 0) { float t = 0.f; int nw = blockDim.x >> 5; for (int i = 0; i < nw; i++) t = fmaxf(t, red[i]); red[0] = t; }
+    __syncthreads();
+    float rowamax = red[0];
+    float g = rowamax > 0.f ? rowamax / 2688.f : 1.f;      // 2688 = e4m3max(448) * e2m1max(6)
+    if (threadIdx.x == 0) gB[n] = g;
+    int b32 = in_f / 32;
+    for (int blk = threadIdx.x; blk < b32; blk += blockDim.x) {
+        int step = blk / 4, kb = blk % 4;
+        float v[32], amax = 0.f;
+#pragma unroll
+        for (int i = 0; i < 32; i++) { v[i] = __bfloat162float(xr[blk * 32 + i]); amax = fmaxf(amax, fabsf(v[i])); }
+        uint8_t code = enc_ue4m3((amax / 6.f) / g);        // local relative to global -> e4m3 sweet spot
+        scaleB[((long)step * gridDim.x + n) * 4 + kb] = code;
+        float inv = 1.f / (dec_ue4m3(code) * g);
+        uint32_t w[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i = 0; i < 16; i++) {
+            uint32_t byte = q_fp4(v[2 * i] * inv) | (q_fp4(v[2 * i + 1] * inv) << 4);
+            w[i >> 2] |= byte << ((i & 3) * 8);
+        }
+        *reinterpret_cast<uint4 *>(Bwords + (long)n * (in_f / 8) + blk * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+    }
+}
+extern "C" void quantize_act_nvfp4_2lvl(const void *x, void *Bbytes, void *scaleB, void *gB, int batch, int in_f) {
+    quant_act_2lvl_k<<<batch, 256>>>((const __nv_bfloat16 *)x, (uint32_t *)Bbytes, (uint8_t *)scaleB,
+                                     (float *)gB, in_f);
 }
 
 // ---- Fused SwiGLU epilogue: silu(g)*u + NVFP4 quantize in ONE pass. g,u are the gate/up GEMM
@@ -407,6 +451,23 @@ extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
     cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
     dim3 grid(N / BN, M / (2 * BM)), block(256);
     matmul_sp<<<grid, block, SMEM>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
-                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
+                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog, nullptr, nullptr);
+    return (int)cudaDeviceSynchronize();
+}
+
+// TWO-LEVEL entry: same kernel, plus per-row(M=weight-row) gA and per-col(N=token) gB fp32 globals.
+// scaleA/scaleB now hold ue4m3 codes LOCAL to the globals; the epilogue applies gA[m]*gB[n].
+extern "C" int sparse_fp4_mm_2lvl(const void *A, const void *B, const void *scaleA,
+                                  const void *scaleB, const void *meta, void *C,
+                                  int M, int N, int Klog, const void *gA, const void *gB) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+    dim3 grid(N / BN, M / (2 * BM)), block(256);
+    matmul_sp<<<grid, block, SMEM>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog,
+                                     (const float *)gA, (const float *)gB);
     return (int)cudaDeviceSynchronize();
 }
