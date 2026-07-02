@@ -27,7 +27,7 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def run(model: str = MODEL, all_linears: bool = False) -> None:
+def run(model: str = MODEL, all_linears: bool = False, side: str = "act") -> None:  # side: "act" | "weight"
     import math
 
     import pyarrow.parquet as pq
@@ -70,15 +70,17 @@ def run(model: str = MODEL, all_linears: bool = False) -> None:
         sdeq = UE4M3[enc_ue4m3_t((bb.abs().amax(-1) / 6.0) / gB)] * gB
         return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
-    class QLin(nn.Module):  # W4 (nvfp4). a16=True -> bf16 activations (W4A16); else W4A4
+    class QLin(nn.Module):  # a16 -> bf16 acts (W4A16); w16 -> bf16 weight (W16A4). both flags independent
         def __init__(self, weight):
             super().__init__()
             self.register_buffer("Wq", w_nvfp4(weight.float()).to(torch.bfloat16))
-            self.a16 = False
+            self.register_buffer("Wb", weight.to(torch.bfloat16))  # bf16 weight for the weight-side sweep
+            self.a16 = self.w16 = False
 
         def forward(self, x):
+            W = self.Wb.float() if self.w16 else self.Wq.float()
             xq = x.float() if self.a16 else a_fp4(x.float())
-            return F.linear(xq, self.Wq.float()).to(x.dtype)
+            return F.linear(xq, W).to(x.dtype)
 
     tok = AutoTokenizer.from_pretrained(model)
     m = AutoModelForCausalLM.from_pretrained(model, dtype=torch.bfloat16).to(dev).eval()
@@ -107,44 +109,46 @@ def run(model: str = MODEL, all_linears: bool = False) -> None:
                 nll += m(w, labels=w).loss.item() * (seq - 1); n += seq - 1
         return math.exp(nll / n)
 
-    def set_all(a16):
+    attr = "a16" if side == "act" else "w16"   # act side: bf16 activations; weight side: bf16 weights
+    hp = "W4A16" if side == "act" else "W16A4"
+
+    def set_all(v):
         for mods in per_layer:
             for q in mods:
-                q.a16 = a16
+                setattr(q, attr, v)
 
-    set_all(False); base_a4 = ppl(16)
-    set_all(True); base_a16 = ppl(16); set_all(False)
-    print(f"\nW4A4 (all)  {base_a4:.3f}   W4A16 (all)  {base_a16:.3f}   activation cost = {base_a4 - base_a16:.3f}",
-          flush=True)
+    set_all(False); base_lo = ppl(16)          # W4A4 (all)
+    set_all(True); base_hi = ppl(16); set_all(False)   # all-high floor: act->W4A16, weight->W16A4
+    cost = base_lo - base_hi
+    print(f"\nW4A4(all) {base_lo:.3f}   {hp}(all) {base_hi:.3f}   {side} cost = {cost:.3f}", flush=True)
 
-    # per-layer: layer i activations -> A16, rest A4; recovery = base_a4 - ppl_i (windows=8 for the sweep)
+    base8 = ppl(8)                             # windows=8 baseline so per-layer recovery is honest (same eval)
     rec = []
     for i, mods in enumerate(per_layer):
         for q in mods:
-            q.a16 = True
+            setattr(q, attr, True)
         p = ppl(8)
         for q in mods:
-            q.a16 = False
-        rec.append((base_a4 - p, i))  # NOTE base_a4 here is windows=16; sweep is windows=8 -> use for RANKING only
+            setattr(q, attr, False)
+        rec.append((base8 - p, i))             # true windows=8 recovery
     rec.sort(reverse=True)
-    print("top act-sensitive layers (recovery, windows=8 ranking):", flush=True)
+    print(f"top {side}-sensitive layers (recovery vs windows=8 baseline {base8:.3f}):", flush=True)
     for r, i in rec[:10]:
         print(f"  layer {i:2d}: {r:+.3f}", flush=True)
 
-    # keep the top-K most sensitive layers at A16, rest A4; final numbers windows=16
     ranked = [i for _, i in rec]
     for k in (2, 4, 8):
         set_all(False)
         for i in ranked[:k]:
             for q in per_layer[i]:
-                q.a16 = True
+                setattr(q, attr, True)
         p = ppl(16)
         thr = 6.828  # teacher 6.198 + 0.63
-        print(f"top-{k} layers @A16, rest W4A4: {p:.3f}  (recovery {base_a4 - p:+.3f} of the "
-              f"{base_a4 - base_a16:.3f} act cost; {'BELOW' if p < thr else 'above'} the +0.63 line {thr})", flush=True)
-    print(f"RESULT base_a4={base_a4:.3f} base_a16={base_a16:.3f} top_layers={ranked[:8]}", flush=True)
+        print(f"top-{k} layers @{hp}, rest W4A4: {p:.3f}  (recovery {base_lo - p:+.3f} of {cost:.3f}; "
+              f"{'BELOW' if p < thr else 'above'} +0.63 line {thr})", flush=True)
+    print(f"RESULT side={side} base_lo={base_lo:.3f} base_hi={base_hi:.3f} top_layers={ranked[:8]}", flush=True)
 
 
 @app.local_entrypoint()
-def main(model: str = MODEL, all_linears: bool = False) -> None:
-    run.remote(model=model, all_linears=all_linears)
+def main(model: str = MODEL, all_linears: bool = False, side: str = "act") -> None:
+    run.remote(model=model, all_linears=all_linears, side=side)
