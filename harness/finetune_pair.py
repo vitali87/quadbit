@@ -22,7 +22,8 @@ MODEL = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"  # dense base; MLP
 image = (
     modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
     .env({"PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache"})
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
+          "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})  # cut fragmentation for the 8B QAT graph
     .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu128", pre=True)
     .pip_install("transformers", "huggingface_hub", "safetensors", "sentencepiece", "pyarrow")
     .add_local_dir((ROOT / "cuda").as_posix(), "/root/cuda")
@@ -222,6 +223,10 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     print(f"PPL dense fp16 teacher: {ppl(teacher):.3f}", flush=True)
 
     student = load()
+    # phase-2 QAT builds the full two-level fake-quant graph per MLP layer; without this the 8B
+    # activation graph + AdamW states OOM a 96GB card. Recompute activations in backward instead.
+    student.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    student.config.use_cache = False
 
     T, seq = 2.0, 1024
     P1, P2, wu = p1, p2, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps
