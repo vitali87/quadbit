@@ -121,7 +121,9 @@ def build(target_tokens: int, smoke: bool) -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "smoke") -> None:
-    if mode == "full":
-        build.remote(target_tokens=500_000_000, smoke=False)
+    if mode == "full":  # long job -> spawn + `modal run --detach` so it survives local disconnect
+        call = build.spawn(target_tokens=500_000_000, smoke=False)
+        print(f"SPAWN_ID {call.object_id}", flush=True)
+        call.get()
     else:
         build.remote(target_tokens=2_000_000, smoke=True)  # ~2M tokens, validates the pipeline end-to-end
