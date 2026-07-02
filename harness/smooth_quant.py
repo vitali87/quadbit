@@ -168,10 +168,16 @@ def run(model: str = MODEL, all_linears: bool = False) -> None:
         wmax = lin.weight.data.abs().amax(0).float().clamp_min(1e-5)  # per-input-channel weight max
         return (a.pow(alpha) / wmax.pow(1 - alpha)).clamp(1e-4, 1e4)
 
-    def measure(sparse, alpha, sel_aware):
+    # foldability: q/k/v (off input_layernorm) + gate/up (off post_attn_layernorm) -> 1/s folds into the
+    # RMSNorm gain = FREE at inference. o_proj (off attn out) + down_proj (off SiLU*up) have NO norm in
+    # front -> smoothing them needs a runtime per-channel act multiply (a real op), NOT free.
+    FOLDABLE = {"q_proj", "k_proj", "v_proj", "gate_proj", "up_proj"}
+
+    def measure(sparse, alpha, sel_aware, mode):  # mode: "foldable" (free) | "all" (needs runtime act-scale)
         for p, nm, lin in tgt:
             W = origs[(id(p), nm)]
-            s = smooth_s(lin, alpha) if alpha > 0 else torch.ones(W.shape[1], device=dev)
+            use = alpha > 0 and (mode == "all" or nm in FOLDABLE)
+            s = smooth_s(lin, alpha) if use else torch.ones(W.shape[1], device=dev)
             setattr(p, nm, SmoothFakeQuant(W, s, sparse, sel_aware).to(dev))
         r = ppl(m)
         for p, nm, _ in tgt:  # restore originals for the next config
@@ -180,18 +186,20 @@ def run(model: str = MODEL, all_linears: bool = False) -> None:
         return r
 
     teacher = ppl(m)
-    print(f"\nPPL teacher (bf16): {teacher:.3f}", flush=True)
-    print(f"{'config':<34}{'dense W4A4':>12}{'sparse W4A4':>13}", flush=True)
-    d0, s0 = measure(False, 0.0, False), measure(True, 0.0, False)
-    print(f"{'no smoothing':<34}{d0:>12.3f}{s0:>13.3f}", flush=True)
+    print(f"\nPPL teacher (bf16): {teacher:.3f}  (dense-W4A4 no-smooth baseline ~6.91)", flush=True)
+    print("FOLD = q/k/v/gate/up only (1/s folds into RMSNorm = FREE); ALL = +o_proj/down_proj "
+          "(needs a runtime per-channel act-scale, NOT free)", flush=True)
+    print(f"{'config':<24}{'dense FOLD':>11}{'dense ALL':>10}{'sparse FOLD':>12}{'sparse ALL':>11}", flush=True)
+    d0 = measure(False, 0.0, False, "all"); s0 = measure(True, 0.0, False, "all")  # alpha=0 -> fold==all
+    print(f"{'no smoothing':<24}{d0:>11.3f}{d0:>10.3f}{s0:>12.3f}{s0:>11.3f}", flush=True)
     for a in (0.5, 0.75, 0.9):
-        d, s = measure(False, a, False), measure(True, a, False)
-        print(f"{'smooth alpha=' + str(a):<34}{d:>12.3f}{s:>13.3f}", flush=True)
-    # selection-aware sparse at the best-looking alpha (0.75 default sweet spot)
-    ssa = measure(True, 0.75, True)
-    print(f"{'smooth a=0.75 + selection-aware':<34}{'':>12}{ssa:>13.3f}", flush=True)
+        df, da = measure(False, a, False, "foldable"), measure(False, a, False, "all")
+        sf, sa = measure(True, a, False, "foldable"), measure(True, a, False, "all")
+        print(f"{'smooth a=' + str(a):<24}{df:>11.3f}{da:>10.3f}{sf:>12.3f}{sa:>11.3f}", flush=True)
+    saf = measure(True, 0.75, True, "foldable"); saa = measure(True, 0.75, True, "all")  # sel-aware sparse
+    print(f"{'sel-aware a=0.75':<24}{'':>11}{'':>10}{saf:>12.3f}{saa:>11.3f}", flush=True)
     print(f"RESULT teacher={teacher:.3f} dense_nosmooth={d0:.3f} sparse_nosmooth={s0:.3f} "
-          f"sparse_sel_aware_a0.75={ssa:.3f}", flush=True)
+          f"(FREE=FOLD cols, RUNTIME-OP=ALL cols)", flush=True)
 
 
 @app.local_entrypoint()
