@@ -90,6 +90,33 @@ def ppl() -> None:
     print(f"RESULT vllm_nvfp4_ppl={math.exp(nll / n):.4f}  (model={MODEL}, bf16 KV, {len(wins)}x{seq})", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=30 * MINUTES,
+              volumes={"/root/.cache/huggingface": hf_cache, "/root/.cache/vllm": vllm_cache},
+              secrets=[modal.Secret.from_name("huggingface")])
+def bench() -> None:
+    # Throughput + memory for gap #3 (dense end-to-end): batched decode tok/s and the weights
+    # footprint of vLLM native NVFP4 on SM120. Fair-comparison caveat printed: vLLM pre-allocates a
+    # KV pool to gpu_memory_utilization, so "weights GiB" (its own load log) is the comparable
+    # memory number, not total reserved. Paired with quadbit's full-forward bench (real_model).
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    llm = LLM(model=MODEL, enforce_eager=True, max_model_len=4096, gpu_memory_utilization=0.9)
+    B, GEN = 64, 256
+    prompts = [f"Question {i}: explain in detail how a transformer language model works." for i in range(B)]
+    sp = SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True)
+    llm.generate(prompts[:8], sp)                     # warmup
+    torch.cuda.synchronize(); t = time.time()
+    outs = llm.generate(prompts, sp)
+    dt = time.time() - t
+    ntok = sum(len(o.outputs[0].token_ids) for o in outs)
+    print(f"RESULT vllm_nvfp4 bench: {ntok} tok / {dt:.2f}s = {ntok / dt:.0f} tok/s "
+          f"(batch {B}, gen {GEN}); peak_reserved {torch.cuda.max_memory_reserved() / 1e9:.1f}GB "
+          f"(incl KV pool). Weights GiB in the 'Model loading took' log line above.", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "smoke") -> None:
-    (ppl if mode == "ppl" else smoke).remote()
+    {"ppl": ppl, "bench": bench}.get(mode, smoke).remote()
