@@ -35,7 +35,7 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def run(model: str = MODEL) -> None:
+def run(model: str = MODEL, all_linears: bool = False) -> None:  # all_linears: +attn q/k/v/o (modelopt scope)
     import math
 
     import pyarrow.parquet as pq
@@ -129,17 +129,21 @@ def run(model: str = MODEL) -> None:
                 nll += m(w, labels=w).loss.item() * (seq - 1); n += seq - 1
         return math.exp(nll / n)
 
-    def mlp_targets(m):
+    def targets(m):
         for layer in m.model.layers:
-            for nm in ("gate_proj", "up_proj", "down_proj"):
-                lin = getattr(layer.mlp, nm)
-                if lin.weight.shape[0] % 256 == 0 and lin.weight.shape[1] % 256 == 0:
-                    yield layer.mlp, nm, lin
+            groups = [(layer.mlp, ("gate_proj", "up_proj", "down_proj"))]
+            if all_linears:  # match modelopt: quantize attn projections too (compute stays bf16)
+                groups.append((layer.self_attn, ("q_proj", "k_proj", "v_proj", "o_proj")))
+            for parent, names in groups:
+                for nm in names:
+                    lin = getattr(parent, nm)
+                    if lin.weight.shape[0] % 256 == 0 and lin.weight.shape[1] % 256 == 0:
+                        yield parent, nm, lin
 
     def swap(dequant, quant_act=True):
         m = load()
-        for mlp, nm, lin in list(mlp_targets(m)):
-            setattr(mlp, nm, FakeQuant(lin.weight.data, dequant, quant_act).to(dev))
+        for parent, nm, lin in list(targets(m)):
+            setattr(parent, nm, FakeQuant(lin.weight.data, dequant, quant_act).to(dev))
         return m
 
     teacher = ppl(load())
@@ -158,5 +162,5 @@ def run(model: str = MODEL) -> None:
 
 
 @app.local_entrypoint()
-def main(model: str = MODEL) -> None:
-    run.remote(model=model)
+def main(model: str = MODEL, all_linears: bool = False) -> None:
+    run.remote(model=model, all_linears=all_linears)

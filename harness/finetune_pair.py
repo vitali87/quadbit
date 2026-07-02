@@ -33,7 +33,8 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 @app.function(gpu="RTX-PRO-6000", timeout=86400, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])  # HF_TOKEN for gated Llama-3
-def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False) -> float:
+def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False,
+        lr_max: float = 2e-4) -> float:  # 2e-4 tuned for TinyLlama-1.1B; 8B needs ~3e-5 (higher diverges)
     import ctypes
     import math
     import os
@@ -223,11 +224,11 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     T, seq = 2.0, 1024
     P1, P2, wu = p1, p2, 500  # phase-1 full (still descending); phase-2 QAT converges by ~1k steps
     total = P1 + P2
-    lr_max, lr_min = 2e-4, 1e-5
+    lr_min = lr_max / 20.0
     starts = list(range(0, len(train_ids) - seq, seq))
     targets = list(mlp_lins(student))  # (mlp, name, lin) in deterministic order; checkpoint key basis
     sh_tag = "_2sh" if both_shards else ""
-    ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{sh_tag}.pt"  # phase-1 result cached on the volume
+    ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{sh_tag}_lr{lr_max:.0e}.pt"  # phase-1 cached on volume (lr in key)
 
     masks, qats = {}, []
     if os.path.exists(ck):
@@ -322,8 +323,9 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
 
 
 @app.local_entrypoint()
-def main(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False) -> None:
+def main(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False,
+         lr_max: float = 2e-4) -> None:
     # spawn (not remote): compute survives local-client disconnect. See memory.
-    call = run.spawn(model=model, p1=p1, p2=p2, both_shards=both_shards)
+    call = run.spawn(model=model, p1=p1, p2=p2, both_shards=both_shards, lr_max=lr_max)
     print(f"SPAWN_ID {call.object_id}", flush=True)
     print(f"RESULT {call.get():.3f}", flush=True)  # blocks; if this waiter dies, recover via SPAWN_ID
