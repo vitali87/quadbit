@@ -75,12 +75,13 @@ def run(model: str = MODEL, all_linears: bool = False) -> None:  # all_linears: 
         code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
         return torch.where(s > 0, code, torch.zeros_like(code))
 
-    def act_fp4_dequant(x):  # deploy-matched NVFP4 activation quant (same as finetune_pair)
+    def act_fp4_dequant(x):  # per-16 TWO-LEVEL NVFP4 (per-row global gB + per-16 local), matches modelopt
         lead = x.shape[:-1]; i = x.shape[-1]
-        b = x.to(torch.bfloat16).float().reshape(-1, i // 32, 32)
-        s = UE4M3[enc_ue4m3_t(b.abs().amax(-1) / 6.0)]
-        inv = (1.0 / s)[..., None]
-        return (FP4[q_fp4(b * inv)] * s[..., None]).reshape(*lead, i)
+        b = x.to(torch.bfloat16).float().reshape(-1, i)
+        gB = (b.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)  # 2688 = e4m3max 448 * e2m1max 6
+        bb = b.reshape(b.shape[0], i // 16, 16)
+        sdeq = UE4M3[enc_ue4m3_t((bb.abs().amax(-1) / 6.0) / gB)] * gB
+        return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
     def dense_fp4_dequant(W):  # TWO-LEVEL NVFP4 (deployed dense accuracy path): per-row fp32
         out_f, in_f = W.shape   # global gA=rowamax/2688 rescales per-16 ue4m3 local into e4m3 range.
