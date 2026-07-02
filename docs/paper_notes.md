@@ -209,16 +209,23 @@ Accuracy (real models, WikiText-2 PPL):
    is checkpointed to the volume so phase-2 experiments skip the 30k-step rebuild. **On a REAL 8B model the sparse accuracy case is currently negative and data-limited (2026-07-02).**
    Meta-Llama-3-8B, good recipe (per-16 two-level weight+act NVFP4), 30k phase-1 + 2k QAT on full
    WikiText-103 (88M tok): teacher 6.20; phase-1 bf16-masked 2:4 **8.57** (+2.37 — the sparsity cost,
-   *before* any FP4); phase-2 QAT FP4 **9.01** (+2.81, fair fake-quant). Dense-W4A4 zero-train on the
-   same model is **6.91 (+0.71)**, so **sparse-recovered loses to dense by ~2.1 PPL**. The TinyLlama
-   "sparse 9.60 beats dense 9.73" flip was an artifact of the old crude-dense (+2) number and is
-   retired; with corrected dense W4A4 (+0.63/+0.71) dense wins. CAVEAT: phase-1 **plateaued** on the
-   88M corpus (~30M tokens, ~400× under NM's 13B), so 9.01 is a data-starved lower bound, NOT a
-   verdict. Deploy gap: 9.01 is fake-quant on the good two-level recipe; the deployed sparse *kernel*
-   is single-level → through-kernel 12.55 (train/deploy mismatch), so realizing 9.01 needs an unbuilt
-   two-level sparse kernel. **NET: dense FP4 (+0.63, zero-training, matched to the modelopt reference)
-   is the accuracy result; sparse is a speed play (~1.33× over dense) with an OPEN, data-limited
-   recovery gap.** Resolution: full-scale diverse-corpus recovery, token-vs-PPL curve gating the tail
+   *before* any FP4); phase-2 QAT FP4, original under-trained schedule **9.01** (+2.81). RECIPE FIX
+   (2026-07-02): re-running phase-2 as a warm-restart (fresh LR + hard-label CE), same corpus, ZERO
+   new data, drops it to **8.30** (+2.10, 16-window held-out fake-quant; the in-loop 8-window metric
+   read 7.87 — do not quote it as the result). Dense-W4A4 zero-train on the same model is **6.91
+   (+0.71)**, so sparse now **loses to dense by ~1.4 PPL, down from ~2.1**. The 0.7-PPL move on recipe
+   ALONE confirms 9.01 was **under-trained, not a data wall** (recipe closed ~a third of the gap). The
+   TinyLlama "sparse 9.60 beats dense 9.73" flip was an artifact of the old crude-dense (+2) number and
+   is retired; with corrected dense W4A4 (+0.63/+0.71) dense wins. CAVEAT: phase-1 still **plateaued**
+   on the 88M corpus (~30M tokens, ~400× under NM's 13B), so 8.30 is a data-starved figure, NOT a
+   verdict. Deploy gap (now the DOMINANT sparse loss): 8.30 is fake-quant on the good two-level recipe;
+   the deployed sparse *kernel* is single-level → through-kernel **10.97** (down from 12.55 with the
+   recipe fix). That +2.67 fake-quant→kernel penalty exceeds the remaining recipe/data gap, so
+   realizing 8.30 in deployment needs an unbuilt two-level sparse kernel (recovery does NOT close it).
+   **NET: dense FP4 (+0.63, zero-training, matched to the modelopt reference) is the accuracy result;
+   sparse is a speed play (~1.33× over dense) with an OPEN, data-limited recovery gap that recipe
+   narrowed by a third.** Resolution IN FLIGHT (app ap-SdSv9zQ9): full-scale diverse-corpus recovery
+   (C4, ~500M decontaminated tokens), token-vs-PPL curve gating the tail (target ~7.4, ~0.9 below 8.30)
    (target ~+0.5 of dense ≈ 7.4; stop if it flattens above ~7.5).
 
 ## Real open-weight models (July 2026), on this hardware
