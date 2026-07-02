@@ -35,7 +35,9 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 @app.function(gpu="RTX-PRO-6000", timeout=86400, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])  # HF_TOKEN for gated Llama-3
 def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False,
-        lr_max: float = 2e-4) -> float:  # 2e-4 tuned for TinyLlama-1.1B; 8B needs ~3e-5 (higher diverges)
+        lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.0) -> float:
+    # lr_max: phase-1 peak (2e-4 for TinyLlama, ~3e-5 for 8B). p2_lr: phase-2 WARM-RESTART peak
+    # (its own warmup+cosine, NOT the decayed tail of phase-1's schedule). ce_alpha: hard-label CE weight.
     import ctypes
     import math
     import os
@@ -282,18 +284,22 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
     opt = bnb.optim.AdamW8bit(params, lr=lr_max, betas=(0.9, 0.95), weight_decay=0.0)
 
     def kd_step(step):
-        for g in opt.param_groups:                    # warmup + cosine decay
-            if step < wu:
-                g["lr"] = lr_max * (step + 1) / wu
-            else:
-                t = (step - wu) / max(1, total - wu)
-                g["lr"] = lr_min + 0.5 * (lr_max - lr_min) * (1 + math.cos(math.pi * t))
+        for g in opt.param_groups:
+            if step < P1:                             # phase-1: warmup + cosine over [0, P1]
+                g["lr"] = (lr_max * (step + 1) / wu if step < wu
+                           else lr_min + 0.5 * (lr_max - lr_min) * (1 + math.cos(math.pi * (step - wu) / max(1, P1 - wu))))
+            else:                                     # phase-2: WARM-RESTART warmup+cosine over [P1, total]
+                s = step - P1; p2wu = 100             # own schedule, NOT the decayed tail of phase-1's
+                g["lr"] = (p2_lr * (s + 1) / p2wu if s < p2wu
+                           else lr_min + 0.5 * (p2_lr - lr_min) * (1 + math.cos(math.pi * (s - p2wu) / max(1, P2 - p2wu))))
         i = starts[(step * 2654435761) % len(starts)]  # shuffled window pick
         w = train_ids[i:i + seq].unsqueeze(0).to(dev)
         with torch.no_grad():
             tl = teacher(w).logits.reshape(-1, teacher.config.vocab_size)
-        sl = student(w).logits.reshape(-1, teacher.config.vocab_size)
-        loss = F.kl_div(F.log_softmax(sl / T, -1), F.softmax(tl / T, -1), reduction="batchmean") * (T * T)
+        logits = student(w).logits
+        sl = logits.reshape(-1, teacher.config.vocab_size)
+        kl = F.kl_div(F.log_softmax(sl / T, -1), F.softmax(tl / T, -1), reduction="batchmean") * (T * T)
+        loss = kl if ce_alpha == 0.0 else (1 - ce_alpha) * kl + ce_alpha * F.cross_entropy(logits[0, :-1], w[0, 1:])
         opt.zero_grad(); loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step()
         with torch.no_grad():
@@ -339,8 +345,9 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
 
 @app.local_entrypoint()
 def main(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool = False,
-         lr_max: float = 2e-4) -> None:
+         lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.0) -> None:
     # spawn (not remote): compute survives local-client disconnect. See memory.
-    call = run.spawn(model=model, p1=p1, p2=p2, both_shards=both_shards, lr_max=lr_max)
+    call = run.spawn(model=model, p1=p1, p2=p2, both_shards=both_shards, lr_max=lr_max,
+                     p2_lr=p2_lr, ce_alpha=ce_alpha)
     print(f"SPAWN_ID {call.object_id}", flush=True)
     print(f"RESULT {call.get():.3f}", flush=True)  # blocks; if this waiter dies, recover via SPAWN_ID
