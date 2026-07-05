@@ -120,20 +120,30 @@ def bench() -> None:
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MINUTES,
               volumes={"/root/.cache/huggingface": hf_cache, "/root/.cache/vllm": vllm_cache},
               secrets=[modal.Secret.from_name("huggingface")])
-def serve(model: str = MODEL) -> None:
+def serve(model: str = MODEL, eager: bool = False) -> None:
     # Serving-table row: separates PREFILL from DECODE and sweeps concurrency 1/8/32/64, plus memory.
     # Same engine for the NVFP4 and bf16 rows (pass model) so the quant path is the only variable.
     # prefill tok/s: B prompts of S=2048 tokens, 1 output (prefill-dominated). decode tok/s @ B:
     # B short prompts, GEN=128 ignore_eos (generation-dominated) -> throughput at concurrency B.
+    # eager=False -> CUDA graphs captured (representative serving decode); eager=True -> no graphs.
+    # Memory via nvidia-smi (vLLM runs the model in an EngineCore SUBPROCESS -> in-process torch reads 0).
+    import subprocess
     import time
 
     import torch
     from vllm import LLM, SamplingParams
 
+    def gpu_mib():  # total device memory in use (single vLLM process) -> real footprint incl KV pool
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True).stdout.strip().splitlines()
+        return int(out[0])
+
     S, GEN = 2048, 128
-    llm = LLM(model=model, enforce_eager=True, max_model_len=S + GEN + 16,
+    llm = LLM(model=model, enforce_eager=eager, max_model_len=S + GEN + 16,
               kv_cache_dtype="auto", gpu_memory_utilization=0.9)
-    print(f"[{model}] {torch.cuda.get_device_name(0)}", flush=True)
+    mode = "eager" if eager else "cudagraph"
+    print(f"[{model}] {torch.cuda.get_device_name(0)} mode={mode}", flush=True)
+    mem_load = gpu_mib()
 
     long_ids = list(range(1, S + 1))                       # exact S-token prompt (prefill control)
     short = "Explain how a transformer works."             # short prompt (decode control)
@@ -145,6 +155,7 @@ def serve(model: str = MODEL) -> None:
         return outs, dt
 
     llm.generate([short], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
+    mem_warm = gpu_mib(); mem_peak = mem_warm
     print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
     for B in (1, 8, 32, 64):
         pf_sp = SamplingParams(temperature=0, max_tokens=1)
@@ -153,15 +164,22 @@ def serve(model: str = MODEL) -> None:
         dc_sp = SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True)
         outs, dc_dt = tps([short] * B, dc_sp)
         gen = sum(len(o.outputs[0].token_ids) for o in outs)
+        mem_peak = max(mem_peak, gpu_mib())
         print(f"{B:>4} | {prefill_tps:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
-    print(f"RESULT [{model}] peak_reserved {torch.cuda.max_memory_reserved() / 1e9:.1f}GB (incl KV pool); "
-          f"weights GiB in the 'Model loading took' log line above; KV dtype auto(bf16).", flush=True)
+    print(f"RESULT [{model}] mode={mode}: device MiB post-load {mem_load}, post-warmup {mem_warm}, "
+          f"peak {mem_peak} (nvidia-smi, single vLLM proc; total incl KV pool @ util 0.9). "
+          f"Model-weight GiB = 'Model loading took' log line. KV dtype auto(bf16).", flush=True)
 
 
 @app.local_entrypoint()
-def main(mode: str = "smoke", model: str = MODEL) -> None:
+def main(mode: str = "smoke", model: str = MODEL, eager: bool = False) -> None:
     # spawn (not remote): compute survives local-client disconnect in detached runs. See memory.
     fn = {"ppl": ppl, "bench": bench, "serve": serve}.get(mode, smoke)
-    call = fn.spawn(model) if mode in ("serve", "ppl") else fn.spawn()
+    if mode == "serve":
+        call = fn.spawn(model, eager)
+    elif mode == "ppl":
+        call = fn.spawn(model)
+    else:
+        call = fn.spawn()
     print(f"SPAWN_ID {call.object_id}", flush=True)
     call.get()
