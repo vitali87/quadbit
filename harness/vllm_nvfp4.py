@@ -60,7 +60,7 @@ def smoke() -> None:
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MINUTES,
               volumes={"/root/.cache/huggingface": hf_cache, "/root/.cache/vllm": vllm_cache},
               secrets=[modal.Secret.from_name("huggingface")])
-def ppl() -> None:
+def ppl(model: str = MODEL) -> None:
     # Reference PPL of the official NVFP4 checkpoint through vLLM's native W4A4 kernel, on the
     # EXACT same wikitext-2 windows quadbit's recovery_worth uses (16x2048, HF-tokenized). bf16 KV
     # (kv_cache_dtype=auto) so only the linear W4A4 quant differs from a bf16 run -- matches quadbit's
@@ -79,7 +79,7 @@ def ppl() -> None:
     seq, windows = 2048, 16
     wins = [ids[i:i + seq] for i in range(0, min(len(ids), windows * seq) - seq, seq)]
 
-    llm = LLM(model=MODEL, enforce_eager=True, max_model_len=seq + 16, kv_cache_dtype="auto",
+    llm = LLM(model=model, enforce_eager=True, max_model_len=seq + 16, kv_cache_dtype="auto",
               gpu_memory_utilization=0.85)  # +16: prompt (seq) + the mandatory >=1 output token
     outs = llm.generate([{"prompt_token_ids": w} for w in wins],
                         SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1))
@@ -87,7 +87,7 @@ def ppl() -> None:
     for w, o in zip(wins, outs):
         plp = o.prompt_logprobs  # plp[0] is None (no context for first token)
         nll += -sum(plp[j][w[j]].logprob for j in range(1, seq)); n += seq - 1
-    print(f"RESULT vllm_nvfp4_ppl={math.exp(nll / n):.4f}  (model={MODEL}, bf16 KV, {len(wins)}x{seq})", flush=True)
+    print(f"RESULT vllm_ppl={math.exp(nll / n):.4f}  (model={model}, bf16 KV, {len(wins)}x{seq})", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MINUTES,
@@ -117,6 +117,51 @@ def bench() -> None:
           f"(incl KV pool). Weights GiB in the 'Model loading took' log line above.", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=30 * MINUTES,
+              volumes={"/root/.cache/huggingface": hf_cache, "/root/.cache/vllm": vllm_cache},
+              secrets=[modal.Secret.from_name("huggingface")])
+def serve(model: str = MODEL) -> None:
+    # Serving-table row: separates PREFILL from DECODE and sweeps concurrency 1/8/32/64, plus memory.
+    # Same engine for the NVFP4 and bf16 rows (pass model) so the quant path is the only variable.
+    # prefill tok/s: B prompts of S=2048 tokens, 1 output (prefill-dominated). decode tok/s @ B:
+    # B short prompts, GEN=128 ignore_eos (generation-dominated) -> throughput at concurrency B.
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    S, GEN = 2048, 128
+    llm = LLM(model=model, enforce_eager=True, max_model_len=S + GEN + 16,
+              kv_cache_dtype="auto", gpu_memory_utilization=0.9)
+    print(f"[{model}] {torch.cuda.get_device_name(0)}", flush=True)
+
+    long_ids = list(range(1, S + 1))                       # exact S-token prompt (prefill control)
+    short = "Explain how a transformer works."             # short prompt (decode control)
+
+    def tps(prompts, sp):
+        torch.cuda.synchronize(); t = time.perf_counter()
+        outs = llm.generate(prompts, sp, use_tqdm=False)
+        dt = time.perf_counter() - t
+        return outs, dt
+
+    llm.generate([short], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
+    print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
+    for B in (1, 8, 32, 64):
+        pf_sp = SamplingParams(temperature=0, max_tokens=1)
+        _, pf_dt = tps([{"prompt_token_ids": long_ids} for _ in range(B)], pf_sp)
+        prefill_tps = B * S / pf_dt
+        dc_sp = SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True)
+        outs, dc_dt = tps([short] * B, dc_sp)
+        gen = sum(len(o.outputs[0].token_ids) for o in outs)
+        print(f"{B:>4} | {prefill_tps:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
+    print(f"RESULT [{model}] peak_reserved {torch.cuda.max_memory_reserved() / 1e9:.1f}GB (incl KV pool); "
+          f"weights GiB in the 'Model loading took' log line above; KV dtype auto(bf16).", flush=True)
+
+
 @app.local_entrypoint()
-def main(mode: str = "smoke") -> None:
-    {"ppl": ppl, "bench": bench}.get(mode, smoke).remote()
+def main(mode: str = "smoke", model: str = MODEL) -> None:
+    # spawn (not remote): compute survives local-client disconnect in detached runs. See memory.
+    fn = {"ppl": ppl, "bench": bench, "serve": serve}.get(mode, smoke)
+    call = fn.spawn(model) if mode in ("serve", "ppl") else fn.spawn()
+    print(f"SPAWN_ID {call.object_id}", flush=True)
+    call.get()

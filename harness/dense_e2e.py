@@ -159,4 +159,7 @@ def run() -> None:
 
 @app.local_entrypoint()
 def main() -> None:
-    run.remote()
+    # spawn (not remote): compute survives local-client disconnect in detached runs. See memory.
+    call = run.spawn()
+    print(f"SPAWN_ID {call.object_id}", flush=True)
+    call.get()
