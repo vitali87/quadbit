@@ -125,13 +125,19 @@ weights 3.93 GiB (block linears only; embed/lm_head/attn stay bf16, not counted)
 **7.90** (matches vLLM native NVFP4 7.97 within 0.07), full-model prefill **7987 tok/s** (B=8, S=2048, eager
 + HF bf16 attention). NOT a serving-stack number; do not share a tok/s column with Table A.
 
-**Honest read on speed:** dense is competitive but slightly behind CUTLASS on the shapes that
-ship (loses on all three rectangular LLM shapes) — it beats bf16, not CUTLASS. Sparse is the
-consistent CUTLASS-beating result: it wins on every rectangular LLM shape and at 4–8K square,
-losing only at 16K square. Its *marginal* value over our own dense FP4 is ~1.33× at the roofline,
-weighed against the accuracy cost + recovery pipeline. Sparse is the CUTLASS-beating **speed**
-result; whether it is worth the recovery pipeline over dense (at +0.63) is an **open accuracy
-question** — on a real 8B model sparse loses by ~1.56 PPL (deployable 8.47 through-kernel vs dense 6.91; deploy gap closed, data lever negative, see gap #5).
+**Honest read on speed:** dense FP4 LOSES the SM120 race. FlashInfer `b12x`/`cutlass` beat
+quadbit dense 1.35–2.2× (leaderboard row above), so the old "competitive with CUTLASS 79b" framing
+is retired: 79b is no longer the baseline that matters, and quadbit dense is now an accuracy/reference
+path (zero-calibration W4A4 at +0.63), not a speed-leading one. Sparse is the project spine and the
+only place quadbit leads: two-level sparse beats CUTLASS 80b (the only other sparse kernel) every
+shape 1.01–1.12×, and in wall-clock beats even the best FlashInfer DENSE on every prefill shape
+1.07–1.38× — a Pareto point no shipping library provides. Its *marginal* value over our own dense is
+~1.33× at the roofline. Whether that speed is worth the recovery pipeline over dense is the **open
+accuracy question**: all-sparse 8B loses by ~1.56 PPL (deployable 8.47 through-kernel vs dense 6.91;
+deploy gap closed, data lever negative, see gap #5). The make-or-break next result is HYBRID
+placement — keep accuracy-critical matrices dense, push insensitive ones sparse
+(`harness/sensitivity_sparse.py`, sweep in flight) — to capture a meaningful fraction of the sparse
+speedup while retaining most dense accuracy.
 
 ---
 
