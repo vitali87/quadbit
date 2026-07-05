@@ -34,8 +34,10 @@ generalize, so the sparse path is the project's spine. Third, on accuracy the de
 kernel is W4A4 (weights and activations both 4-bit, because the tensor core multiplies
 fp4 by fp4), and with a per-16 two-level NVFP4 recipe using no calibration data it costs
 +0.63 PPL on Llama-3.1-8B-Instruct, at or below the modelopt-calibrated reference. Sparse
-recovery on a real 8B model is currently data-limited and does not yet beat dense; we report
-it honestly as an open question with a token-versus-PPL gate, not a solved result.
+recovery on a real 8B model now deploys at its trained accuracy, because we close the
+fake-quant-to-kernel deploy gap with a two-level sparse kernel that still beats CUTLASS 80b, but
+it still loses to dense by about 1.56 PPL and diverse-corpus data did not close that gap; sparse
+is an honest speed-only Pareto point, not an accuracy win.
 
 ---
 
@@ -269,7 +271,7 @@ locals) is what fixes it, since MXFP4's power-of-two scale has no such bias.
 
 ---
 
-## 8. Sparse recovery: an open, data-limited question
+## 8. Sparse recovery and the two-level deploy fix
 
 Blackwell FP4 2:4 is pair-granular: the `mma.sp` metadata selects at fp4-pair granularity (2
 of every 4 pairs kept, not 2 of every 4 elements). This is NVIDIA's documented hardware spec,
@@ -285,25 +287,41 @@ dequant) and activations. On TinyLlama-1.1B this recovers to 9.60 PPL through th
 FP4 kernel (dense teacher 7.53), and closing the STE-versus-kernel gap (matching the QAT
 activation fake-quant to the deployed quantizer bit-for-bit) was worth about 0.43 PPL.
 
-On a real 8B model the sparse accuracy case is currently negative and data-limited, but a
-recipe fix has already moved it. Meta-Llama-3-8B with the good two-level recipe and the original
-under-trained schedule (30k phase-1 plus 2k QAT on the 88M-token WikiText-103 corpus, about 30M
-tokens seen) reached 9.01 PPL (+2.81). Re-running phase-2 as a warm-restart (longer QAT with a
-fresh LR schedule and hard-label CE), same corpus and zero new data, drops it to 8.30 PPL
-(+2.10) fake-quant. Dense W4A4 zero-training on the same model is 6.91 (+0.71), so sparse now
-loses by about 1.4 PPL, down from 2.1. That the number moved 0.7 PPL on recipe alone confirms
-the diagnosis: 9.01 was under-trained, not a data wall. The recipe lever and the data lever are
-separate, and phase-1 still plateaued on that corpus at roughly 400x less data than NeuralMagic
-used for element-2:4, so 8.30 remains a data-starved figure, not a verdict.
+**The deploy gap and its fix.** Recovery trains against a two-level fake-quant: a per-row and
+per-column fp32 global rescaling the per-16 `ue4m3` local scale, the same move that took dense
+NVFP4 from 0.38 to 0.097 block-reconstruction error. The originally deployed sparse kernel
+applied only the local scale, so its outputs diverged from what QAT trained against. We measured
+that deploy gap directly, running three matmuls of one recovered Meta-Llama-3-8B checkpoint
+through each path: the single-level kernel deploys at 11.89 PPL, the two-level kernel at 8.95,
+against a fake-quant target of 8.96. The single-level path flips 22% of top-1 next-token
+predictions relative to the target; the two-level path reproduces it (mean NLL delta 0.002, 92%
+top-1 agreement). We built the missing piece, a per-row and per-column fp32 global rescale in
+the sparse mma epilogue ported from the working dense two-level path. Through the two-level
+sparse kernel the recovered checkpoint tracks its fake-quant within 0.02 PPL: the deploy gap is
+closed. The rescale costs 2 to 10% of throughput (worst on wide-N shapes) and the two-level
+sparse kernel still beats CUTLASS 80b on every shape (1.01 to 1.13x, all correctness-verified).
+
+**The accuracy number, honestly deployable.** The deployed sparse mma constrains activations to
+per-32 granularity on the B operand, so the honest recipe matches the QAT activation fake-quant
+to per-32 rather than the per-16 the fake-quant ceiling used. With that match, Meta-Llama-3-8B
+recovers to 8.47 PPL through the two-level kernel, equal to its fake-quant (deploy gap closed
+end to end). Dense W4A4 zero-training on the same model is 6.91, so deployable sparse loses to
+dense by about 1.56 PPL. Extending phase-2 QAT from 2k to 5k steps did not help (it regressed to
+8.96, mild overtraining against the WikiText-2 test), so 2k is the recovery sweet spot on this
+corpus.
+
+**The data lever did not pay.** To test whether the residual gap was data-limited, we ran a
+full-scale diverse-corpus recovery (decontaminated C4, phase-1 to about 196M tokens). Phase-1
+flattened at 10.82 PPL on the WikiText-2 test, far above the in-distribution WikiText-103
+phase-1 (8.57), because C4 is out of distribution for that narrow test. Diverse-corpus scale did
+not improve the WikiText-2 number, so the recovery is in-distribution-bound on this metric, not
+simply data-starved. This is a negative result for the diverse-data hypothesis.
 
 The honest position: dense FP4 (+0.63, zero-training) is the accuracy result. Sparse is a speed
-play (about 1.33x over our own dense) with an open, data-limited recovery gap that recipe alone
-narrowed by a third. We are resolving the rest with a full-scale diverse-corpus (C4, ~500M
-decontaminated tokens) recovery run, now in flight, whose token-versus-PPL curve is a hard
-go/no-go: target about +0.5 of dense (roughly 7.4 PPL, about 0.9 below the current 8.30), and at
-the 5 to 10x token mark, track toward 7.4 and we run the tail, or flatten above 7.5 and we stop
-and state plainly that sparse is speed-only, an honest Pareto point for throughput-bound serving
-rather than a defeat.
+play (about 1.33x over our own dense) that now deploys at its trained accuracy, since the
+two-level kernel closes the deploy gap, but it still loses to dense by about 1.56 PPL on
+recovery and diverse data did not close that gap on the WikiText-2 metric. Sparse is an honest
+Pareto point for throughput-bound serving, not an accuracy win.
 
 ---
 
@@ -338,12 +356,13 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   shapes. A full multi-layer forward producing correct logits and PPL at serving batch sizes,
   against vLLM-Marlin and SGLang-FP4 on the same card, is not yet built. This is the single most
   valuable missing measurement.
-- **Sparse recovery is unresolved** and currently negative on a real 8B model (Section 8).
-- **A deploy gap on the sparse accuracy number, now the dominant sparse loss.** The 8.30 is
-  fake-quant on the two-level recipe, but the deployed sparse kernel is single-level
-  (through-kernel 10.97, down from 12.55 with the recipe fix). That +2.67 fake-quant-to-kernel
-  penalty is now larger than the remaining recipe/data gap, so realizing 8.30 in deployment needs
-  a two-level sparse kernel that is not yet built; the recovery run does not close it.
+- **Sparse recovery loses to dense on accuracy** (Section 8). The deployable sparse-recovered 8B
+  is 8.47 PPL through the two-level kernel, about 1.56 above dense W4A4 (6.91), and diverse-corpus
+  data (C4) did not close it on the WikiText-2 test. Sparse is speed-only on accuracy grounds.
+- **The deploy gap is now closed.** The two-level sparse kernel (per-row and per-column fp32
+  global rescale in the epilogue) makes the deployed accuracy equal the trained fake-quant
+  (8.47 == 8.47; the old single-level kernel would deploy the same checkpoint at 11.89). The fix
+  costs 2 to 10% of throughput and still beats CUTLASS 80b.
 - **Dense loses to CUTLASS on rectangular shapes.** We win square, but the shapes that ship
   favor CUTLASS's adaptive tiling.
 
@@ -356,9 +375,11 @@ yet provide. We hand-wrote both, took the dense kernel to the compute ceiling an
 kernel to the bandwidth roofline, and wrapped them in a packer, quantizer, drop-in, and fused
 block. The sparse kernel beats CUTLASS 80b on the shapes that ship and is the project's spine;
 dense is a competitive zero-training drop-in whose real accuracy cost, correctly measured as
-W4A4, is +0.63 PPL with no calibration. Whether sparsity earns its recovery pipeline over dense
-is an open, data-limited question we are resolving with a curve-gated full-scale run, and we
-report it as open rather than claiming a win we have not earned.
+W4A4, is +0.63 PPL with no calibration. Sparsity does not earn its recovery pipeline over dense
+on accuracy: the deployable sparse-recovered 8B is 8.47 PPL, about 1.56 above dense W4A4, and
+diverse-corpus data did not close that gap on our metric. We closed the sparse deploy gap with a
+two-level kernel so the deployed accuracy equals the trained accuracy, and we report sparse as an
+honest speed-only Pareto point rather than an accuracy win.
 
 ---
 

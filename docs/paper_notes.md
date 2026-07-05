@@ -216,17 +216,27 @@ Accuracy (real models, WikiText-2 PPL):
    (+0.71)**, so sparse now **loses to dense by ~1.4 PPL, down from ~2.1**. The 0.7-PPL move on recipe
    ALONE confirms 9.01 was **under-trained, not a data wall** (recipe closed ~a third of the gap). The
    TinyLlama "sparse 9.60 beats dense 9.73" flip was an artifact of the old crude-dense (+2) number and
-   is retired; with corrected dense W4A4 (+0.63/+0.71) dense wins. CAVEAT: phase-1 still **plateaued**
-   on the 88M corpus (~30M tokens, ~400× under NM's 13B), so 8.30 is a data-starved figure, NOT a
-   verdict. Deploy gap (now the DOMINANT sparse loss): 8.30 is fake-quant on the good two-level recipe;
-   the deployed sparse *kernel* is single-level → through-kernel **10.97** (down from 12.55 with the
-   recipe fix). That +2.67 fake-quant→kernel penalty exceeds the remaining recipe/data gap, so
-   realizing 8.30 in deployment needs an unbuilt two-level sparse kernel (recovery does NOT close it).
+   is retired; with corrected dense W4A4 (+0.63/+0.71) dense wins.
+   **DEPLOY GAP CLOSED (2026-07-05): the two-level sparse kernel is built.** The 8.30 was a per-16
+   fake-quant ceiling the sparse mma cannot deploy (its B-side activation scale is per-32). Matching
+   the QAT activation STE to per-32 and running through the NEW two-level sparse kernel (per-row and
+   per-col fp32 global rescale in the epilogue, ported from the dense two-level path), Meta-Llama-3-8B
+   recovers to **8.47 through-kernel == 8.47 fake-quant** (2k QAT, warm-restart; deploy gap ~0, was
+   +2.67 with the single-level kernel). Same-checkpoint A/B (`harness/ab_sparse_semantics.py`, 5k
+   recovered ckpt): single-level kernel **11.89**, two-level kernel **8.95**, fake-quant target **8.96**
+   (ΔNLL 2lvl −0.002 / 1lvl +0.282; top-1 agree 2lvl **91.7%** / 1lvl **78.3%**). The rescale costs
+   **2–10%** throughput (worst on wide-N) and two-level still beats CUTLASS 80b on every shape
+   (**1.01–1.13×**, all correctness-PASS; `harness/cutlass_sparse.py`). Extending phase-2 2k→5k did NOT
+   help (regressed to 8.96, mild overtraining vs WT-2 test) — 2k is the sweet spot on this corpus.
+   **DATA LEVER = NEGATIVE (2026-07-05):** the full-scale C4 diverse-corpus recovery (app
+   ap-SdSv9zQ9, phase-1 to ~196M tokens) flattened at **10.82 on WT-2 test** (vs in-distribution
+   WikiText-103 phase-1 8.57) because C4 is OOD for that narrow test; the run timed out at 192k/300k,
+   never approaching the ~7.4 target. Diverse-corpus scale did not improve the WT-2 number — the
+   recovery is in-distribution-bound on this metric, not simply data-starved.
    **NET: dense FP4 (+0.63, zero-training, matched to the modelopt reference) is the accuracy result;
-   sparse is a speed play (~1.33× over dense) with an OPEN, data-limited recovery gap that recipe
-   narrowed by a third.** Resolution IN FLIGHT (app ap-SdSv9zQ9): full-scale diverse-corpus recovery
-   (C4, ~500M decontaminated tokens), token-vs-PPL curve gating the tail (target ~7.4, ~0.9 below 8.30)
-   (target ~+0.5 of dense ≈ 7.4; stop if it flattens above ~7.5).
+   sparse is a speed play (~1.33× over dense) that now DEPLOYS at its trained accuracy (deploy gap
+   closed) but loses to dense by ~1.56 PPL on recovery, and diverse data did not close it. Sparse is an
+   honest speed-only Pareto point, not an accuracy win.**
 
 ## Real open-weight models (July 2026), on this hardware
 

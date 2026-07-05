@@ -37,18 +37,17 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 - **Sparse's real ceiling is ~1.33× over our own dense FP4, not 2×** (memory-bound: 2012k vs
   dense 1510k @8192; the hardware 2× is a datacenter-bandwidth feature we can't reach on SM120).
   At only 1.33×, the accuracy cost must be small to justify a recovery pipeline over dense at
-  +0.63. On a **real 8B model it currently isn't, but a recipe fix moved it:** sparse-recovered-8B
-  (Meta-Llama-3-8B) went from **9.01 (+2.81)** under the original under-trained schedule to **8.30
-  (+2.10)** with a warm-restart phase-2 (fresh LR + hard-label CE), **same corpus, zero new data**.
-  It still loses to dense-W4A4 (6.91) by **~1.4 PPL, down from ~2.1**. The 0.7-PPL move on recipe
-  alone confirms 9.01 was **under-trained, not a data wall** (recipe closed ~a third of the gap).
-  Still **data-starved** — recovery saw ~30M tokens and phase-1 **plateaued** on the 88M-token
-  corpus, ~**400× under** NeuralMagic's 13B — so 8.30 is a figure, **not a settled verdict**. Sparse
-  is a **speed play with an open, data-limited recovery gap** that recipe narrowed by a third, not a
-  demonstrated accuracy win. (Deploy caveat, now the dominant sparse loss: 8.30 is fake-quant on the
-  good recipe; the current sparse *kernel* is single-level, so through-kernel is **10.97** (down from
-  12.55) — the +2.67 fake-quant→kernel penalty exceeds the remaining gap, and realizing 8.30 in
-  deployment needs an unbuilt two-level sparse kernel that recovery does not close.)
+  +0.63. On a **real 8B model it isn't:** sparse-recovered-8B (Meta-Llama-3-8B) deploys at **8.47
+  through the two-level kernel**, about **1.56 PPL above dense-W4A4 (6.91)**. Recipe moved it (9.01
+  under-trained → 8.30 per-16 fake-quant via warm-restart phase-2, zero new data), but the honest
+  deployable per-32 matched number is 8.47 and **the data lever did not pay: the full-scale C4
+  diverse-corpus run flattened at 10.82 on the WT-2 test (C4 is OOD for that narrow metric), never
+  approaching the ~7.4 target.** Sparse is a **speed-only Pareto point**, not a demonstrated accuracy
+  win. **Deploy gap CLOSED (2026-07-05): the two-level sparse kernel is built** (per-row and per-col
+  fp32 global rescale in the epilogue), so through-kernel **== fake-quant (8.47 == 8.47)**; the old
+  single-level kernel would deploy the same checkpoint at **11.89** (same-checkpoint A/B: top-1 agree
+  2lvl 91.7% / 1lvl 78.3%). The fix costs **2–10%** throughput and still beats CUTLASS 80b on every
+  shape (1.01–1.13×). Extending phase-2 2k→5k did not help (8.96, mild overtraining).
 - **Deployment/fusion stack: real and useful, undervalidated end-to-end.** The fused block
   kernels and `nn.Linear` drop-in are genuine engineering. But "2–5× over bf16" is measured on
   isolated blocks/shapes, not a full model forward with correct outputs at scale.
@@ -96,7 +95,7 @@ consistent CUTLASS-beating result: it wins on every rectangular LLM shape and at
 losing only at 16K square. Its *marginal* value over our own dense FP4 is ~1.33× at the roofline,
 weighed against the accuracy cost + recovery pipeline. Sparse is the CUTLASS-beating **speed**
 result; whether it is worth the recovery pipeline over dense (at +0.63) is an **open accuracy
-question** — on a real 8B model sparse currently loses by ~1.4 PPL (8.30 vs 6.91, recipe-fixed from a 2.1 gap; data-starved, see gap #5).
+question** — on a real 8B model sparse loses by ~1.56 PPL (deployable 8.47 through-kernel vs dense 6.91; deploy gap closed, data lever negative, see gap #5).
 
 ---
 
@@ -108,8 +107,9 @@ question** — on a real 8B model sparse currently loses by ~1.4 PPL (8.30 vs 6.
 | Dense FP4 crude per-32 single-level = +2 PPL | `[measured, superseded]` | half-finished recipe, NOT W4A4's real cost; fixed by two-level per-16 |
 | Dense FP4 **W4A16** (weight-only) +0.3 PPL | `[measured, not deployed]` | no weight-only FP4 GEMM in hardware; do not headline |
 | Two-level NVFP4 block rel 0.097; MXFP4 0.13 on Qwen3-8B, no training | `[measured]` | block-level reconstruction, not task accuracy |
-| **Sparse-recovered-8B (Meta-Llama-3-8B) = 8.30 (+2.10) fake-quant, recipe-fixed from 9.01; LOSES to dense-W4A4 6.91 by ~1.4** | `[measured, data-starved]` | warm-restart phase-2, zero new data closed 9.01→8.30 (under-trained, not data wall); ~30M tokens, phase-1 **plateaued** — C4 full-scale run in flight (ap-SdSv9zQ9) |
-| Sparse-recovered-8B through single-level KERNEL = **10.97** (down from 12.55) | `[measured]` | +2.67 fake-quant→kernel penalty is now the dominant sparse loss; needs unbuilt two-level sparse kernel, recovery does not close it |
+| **Sparse-recovered-8B (Meta-Llama-3-8B) deployable = 8.47 through two-level kernel == fake-quant; LOSES to dense-W4A4 6.91 by ~1.56** | `[measured]` | per-32 matched STE, 2k warm-restart phase-2; honest deployable number (per-16 8.30 fake-quant ceiling is not deployable through the per-32 sparse mma) |
+| Sparse deploy gap CLOSED: two-level kernel through-kernel **8.47 == 8.47** fake-quant; single-level kernel would deploy **11.89** | `[measured]` | `harness/ab_sparse_semantics.py` same-checkpoint A/B (ΔNLL 2lvl −0.002/1lvl +0.282; top-1 2lvl 91.7%/1lvl 78.3%); rescale costs 2–10%, still beats CUTLASS 80b 1.01–1.13× |
+| Sparse data lever = NEGATIVE: C4 diverse-corpus phase-1 flattened at **10.82** on WT-2 | `[measured]` | OOD for WT-2 (in-distribution WikiText-103 phase-1 = 8.57); ap-SdSv9zQ9 timed out 192k/300k, never neared 7.4 target — recovery is in-distribution-bound, not data-starved |
 | Sparse pair-granular recovery: TinyLlama 7.53 → 9.60 through kernel | `[measured, toy]` | small model/data; does NOT generalize to the 8B result above |
 | Recovery "monotonic in data → parity is a data-scale question" | `[asserted, untested]` | 8B phase-1 **plateaued** at this budget; needs a diverse-corpus full-scale run to confirm or refute |
 | element-2:4 checkpoints incompatible w/ pair-granular hw (93.6 PPL naive) | `[measured data point]` | the *hardware constraint* is documented (NVIDIA 4:8 in-pairs); only the measured number is ours |
@@ -146,20 +146,20 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    into one defensible number.
 4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
    "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
-5. **The sparse value proposition is OPEN, on a real 8B model currently negative, but a recipe fix
-   moved it.** The TinyLlama "sparse-recovered 9.60 beats dense-zero-train 9.73" flip was an artifact
-   of the crude +2 dense number — with the corrected dense W4A4 (+0.63/+0.71) that flip is dead. On
-   Meta-Llama-3-8B: dense-zero-train W4A4 = **6.91 (+0.71)**; sparse-recovered went **9.01 → 8.30
-   (+2.10)** via a warm-restart phase-2, **zero new data** — so sparse **loses by ~1.4 PPL, down from
-   ~2.1**. The 0.7-PPL recipe-only move confirms 9.01 was **under-trained, not a data wall**. Still
-   data-starved (~30M tokens, phase-1 plateaued on the 88M corpus, ~400× under NM's 13B), so 8.30 is
-   not a verdict, and the payoff is **NOT yet demonstrated**. Resolving it (gap #4) is a full-scale
-   diverse-corpus recovery run, **now in flight (C4, ~500M decontaminated tokens, app ap-SdSv9zQ9)**,
-   with a **token-vs-PPL curve gating the tail**: target ~+0.5 of dense (~7.4, ~0.9 below 8.30);
-   go/no-go at the 5–10× mark — track toward 7.4 → run the tail; flatten above ~7.5 → sparse is
-   speed-only and we say so plainly (an honest Pareto point for throughput-bound serving, not a defeat).
-   Separately, the deployed single-level kernel (through-kernel 10.97) is now the dominant sparse loss
-   and needs an unbuilt two-level sparse kernel that recovery does not touch.
+5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The
+   TinyLlama "sparse-recovered 9.60 beats dense-zero-train 9.73" flip was an artifact of the crude +2
+   dense number — with the corrected dense W4A4 (+0.63/+0.71) that flip is dead. On Meta-Llama-3-8B:
+   dense-zero-train W4A4 = **6.91 (+0.71)**; deployable sparse-recovered = **8.47 through the two-level
+   kernel** (per-32 matched STE, 2k warm-restart phase-2), so sparse **loses by ~1.56 PPL**. Two
+   sub-results closed this: **(a) deploy gap CLOSED** — the two-level sparse kernel (per-row/col fp32
+   global rescale in the epilogue) makes through-kernel == fake-quant (8.47 == 8.47); the old
+   single-level kernel would deploy the same checkpoint at **11.89** (same-checkpoint A/B: top-1 agree
+   2lvl 91.7% / 1lvl 78.3%; rescale costs 2–10%, still beats CUTLASS 80b 1.01–1.13×). **(b) data lever
+   NEGATIVE** — the full-scale C4 diverse-corpus run (app ap-SdSv9zQ9) flattened at **10.82 on WT-2**
+   (OOD; in-distribution WikiText-103 phase-1 = 8.57), timed out at 192k/300k, never neared the 7.4
+   target. Recovery is in-distribution-bound on WT-2, not simply data-starved; extending phase-2 2k→5k
+   also did not help (8.96, overtraining). Dense at +0.63 stays the accuracy headline; sparse is an
+   honest speed-only Pareto point.
 6. **Stale docs.** `docs/kernels.md` describes the abandoned CubeCL/Rust track (505k ceiling,
    "CUTLASS 3× faster", `src/bin/`, `run_rust.py`) and contradicts the raw-PTX results in
    `paper_notes.md`. Either delete it or mark it clearly as historical. It will confuse anyone.
@@ -182,15 +182,15 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    test toward the vLLM baseline; the full end-to-end table is still unbuilt.)
 4. ~~**Quantify sparse-net-of-recovery on TinyLlama.**~~ **SUPERSEDED** — the TinyLlama flip was a
    crude-dense artifact; on real 8B (`recovery_worth.py` + `finetune_pair.py`) dense-W4A4 6.91
-   beats sparse-recovered (8.30, recipe-fixed) by ~1.4. The question moved to gap #5 (real 8B, data-starved).
-5. **Resolve sparse via full-scale diverse-corpus recovery, curve-gated.** (a) ~~confirm 9.01 is the
-   recipe's real plateau~~ **DONE** — warm-restart phase-2 dropped 9.01→8.30 with zero new data, so
-   the method has proven headroom (recipe slack, not a data wall); (b) ~~build the diverse-corpus
-   pipeline ONCE~~ **DONE** — C4, ~500M decontaminated tokens staged (`harness/build_corpus.py`);
-   (c) **run full-scale — IN FLIGHT (app ap-SdSv9zQ9)** with the **token-vs-PPL curve as a hard
-   go/no-go**: target ~7.4 (+0.5 of dense, ~0.9 below 8.30); at 5–10× tokens, tracking toward 7.4 →
-   run the tail, flattening above ~7.5 → stop, sparse is speed-only, write it plainly. Dense at +0.63
-   stays the accuracy headline regardless of the slope.
+   beats deployable sparse-recovered (8.47 through-kernel) by ~1.56. Resolved as gap #5.
+5. ~~**Resolve sparse via full-scale diverse-corpus recovery, curve-gated.**~~ **DONE — sparse is
+   speed-only.** (a) recipe headroom confirmed (9.01→8.30 warm-restart, zero new data); (b) diverse
+   corpus staged (`harness/build_corpus.py`); (c) full-scale C4 run (ap-SdSv9zQ9) flattened at **10.82
+   on WT-2** (OOD), never neared 7.4 → **data lever negative**; (d) **two-level sparse kernel built**
+   (`harness/verify_sparse_2lvl.py`, `ab_sparse_semantics.py`, `cutlass_sparse.py`) → **deploy gap
+   closed** (through-kernel 8.47 == fake-quant, vs single-level 11.89), costs 2–10%, still beats
+   CUTLASS 80b. Deployable sparse = 8.47, loses to dense by ~1.56. Dense at +0.63 is the accuracy
+   headline; sparse is the speed spine (CUTLASS-beating, ~1.33× over our dense).
 
 Whatever the experiments show, update `paper_notes.md` and delete/relabel `kernels.md`. The
 positioning must follow the measurements, not the other way around.
