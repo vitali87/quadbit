@@ -347,6 +347,10 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 2000, both_shards: bool =
             student.train()
     print(f"PPL after phase-2 QAT recovery (FP4): {ppl(student):.3f}", flush=True)
 
+    rck = f"/cache/recovered_{model.split('/')[-1]}_P{P1}_p2{P2}{tag}_lr{lr_max:.0e}.pt"  # for A/B semantics eval
+    torch.save({"weights": [q.weight.data.cpu() for q in qats]}, rck); vol.commit()
+    print(f"saved recovered phase-2 weights {rck}", flush=True)
+
     # final: build the actual sparse-FP4 KERNEL modules from the fine-tuned weights
     for layer in student.model.layers:
         for nm in ("gate_proj", "up_proj", "down_proj"):

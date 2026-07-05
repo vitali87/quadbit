@@ -22,7 +22,9 @@ EX_DIR = "80_blackwell_geforce_sparse_gemm"
 EXAMPLE = "80b_blackwell_geforce_nvfp4_nvfp4_sparse_gemm"
 BUILD = "/cache/cutlass/build80"
 EXE = f"{BUILD}/examples/{EX_DIR}/{EXAMPLE}"
-SIZES = [4096, 8192, 16384]
+# (M,N,K): cubes + Llama-8B MLP shapes (gate/up N=14336, down K=14336) to check the
+# two-level epilogue's per-row/col fp32 rescale against the single-level speed claim.
+SHAPES = [(4096, 4096, 4096), (4096, 14336, 4096), (4096, 4096, 14336), (8192, 8192, 8192)]
 
 # 12.8.1: the toolchain where OUR sparse_fp4_lib assembles (12.9.1 ptxas rejects the
 # block-scaled sparse mma on sm_120). The cached 80b cubin (built under 12.9.1) runs fine
@@ -82,6 +84,7 @@ def run() -> None:
         print(c.stderr, flush=True); return
     sp = ctypes.CDLL(so)
     sp.sparse_fp4_mm.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
+    sp.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
 
     def tms(fn, it=30):
         for _ in range(5):
@@ -94,22 +97,21 @@ def run() -> None:
         e.record(); torch.cuda.synchronize()
         return s.elapsed_time(e) / it
 
-    print(f"\n{'M=N=K':>7} | {'CUTLASS 80b sparse':>26} | {'quadbit sparse (ours)':>26} | {'speedup':>8}", flush=True)
-    print("-" * 78, flush=True)
-    for sz in SIZES:
-        M = N = K = sz
+    print(f"\n{'M,N,K':>16} | {'CUTLASS 80b sparse':>22} | {'ours 1-level':>18} | {'ours 2-level':>18} | "
+          f"{'2lvl/1lvl':>9} | {'vs CUTLASS':>10}", flush=True)
+    print("-" * 108, flush=True)
+    for M, N, K in SHAPES:
         flop = 2.0 * M * N * K  # effective-FLOP (dense-equivalent), same as our bench
 
         # CUTLASS 80b: run WITH its built-in reference verification (the #3096 gate -- SM120
         # block-scaled path has documented correctness failures; a TFLOP/s from a kernel that
         # emits garbage is void). Capture the Passed/Failed disposition, then parse runtime.
-        r = subprocess.run([EXE, f"--m={sz}", f"--n={sz}", f"--k={sz}", "--iterations=100"],
+        r = subprocess.run([EXE, f"--m={M}", f"--n={N}", f"--k={K}", "--iterations=100"],
                            capture_output=True, text=True)
         cut = r.stdout + r.stderr
         disp = ("PASS" if re.search(r"Disposition:\s*Passed", cut)
                 else "FAIL" if re.search(r"Disposition:\s*Failed", cut) else "NO-VERIFY")
         mm = re.search(r"([0-9.]+)\s*ms", cut)
-        gf = re.search(r"([0-9.]+)\s*GFLOP", cut)
         cut_ms = float(mm.group(1)) if mm else float("nan")
         cut_tf = flop / (cut_ms / 1e3) / 1e12 if mm else float("nan")
         if disp != "PASS":  # void the perf number; correctness is the gate
@@ -123,15 +125,19 @@ def run() -> None:
         sB = torch.full((ks, N, 4), 0x38, dtype=torch.uint8, device="cuda")
         mt = torch.full((ks, M, 2), 0x44444444, dtype=torch.int32, device="cuda")
         Cs = torch.empty((M, N), dtype=torch.bfloat16, device="cuda")
+        gA = torch.ones(M, dtype=torch.float32, device="cuda")  # per-row/col globals for 2-level epilogue
+        gB = torch.ones(N, dtype=torch.float32, device="cuda")
         our_ms = tms(lambda: sp.sparse_fp4_mm(Ac.data_ptr(), Bs.data_ptr(), sA.data_ptr(),
                                               sB.data_ptr(), mt.data_ptr(), Cs.data_ptr(), M, N, K))
+        two_ms = tms(lambda: sp.sparse_fp4_mm_2lvl(Ac.data_ptr(), Bs.data_ptr(), sA.data_ptr(),
+                                                   sB.data_ptr(), mt.data_ptr(), Cs.data_ptr(), M, N, K,
+                                                   gA.data_ptr(), gB.data_ptr()))
         our_tf = flop / (our_ms / 1e3) / 1e12
-        sp_ratio = our_tf / cut_tf if cut_tf == cut_tf else float("nan")
-        print(f"{sz:>7} | [{disp:^8}] {cut_ms:7.3f}ms {cut_tf:7.0f}TF/s | {our_ms:7.3f}ms {our_tf:7.0f}TF/s | "
-              f"{sp_ratio:6.2f}x", flush=True)
-        if gf:
-            print(f"        (CUTLASS self-reported: {gf.group(1)} GFLOP/s -- for FLOP-convention cross-check)",
-                  flush=True)
+        two_tf = flop / (two_ms / 1e3) / 1e12
+        epi = two_tf / our_tf if our_tf else float("nan")            # 2-level cost vs 1-level (≈1.0 = free)
+        vs_cut = two_tf / cut_tf if cut_tf == cut_tf else float("nan")
+        print(f"{M},{N},{K:>5} | [{disp:^8}] {cut_tf:7.0f}TF/s | {our_ms:6.3f}ms {our_tf:5.0f}TF | "
+              f"{two_ms:6.3f}ms {two_tf:5.0f}TF | {epi:8.3f}x | {vs_cut:9.2f}x", flush=True)
 
 
 @app.local_entrypoint()
