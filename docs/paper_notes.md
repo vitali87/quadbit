@@ -282,6 +282,21 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
     Qwen3-8B, NO training, through the kernel: **per-linear 0.165→0.134, full block 0.13→0.097** — below
     the ~0.10 target. Speed 1.2–2.3× over bf16 (STAGES=2 + per-16 scales); NVFP4 = the accuracy path
     (0.097), MXFP4 = the speed path (2.15× @ 0.13). The ue4m3 dense mma accuracy follow-up is DONE.
+  - **ASYNC SCALE PREFETCH — dense two-level NVFP4 kernel sped up 1.08–1.22×, maxrel 0**
+    (`cuda/dense_nvfp4_fast_lib.cu`, one-time same-card A/B vs the prior synchronous kernel, 2026-07-06).
+    The deployed kernel loaded each step's per-16 scales SYNCHRONOUSLY between the tile TMA
+    try_wait and the mma — a ~500-cycle global-load latency fully EXPOSED every step (STAGES=2 hides the
+    tile TMA but not the scales). Fix: double-buffer the scales and prefetch step s+1 via `cp.async` (16B
+    chunks, commit_group / `wait_group 1`) during step s's mma, so the scale latency overlaps compute.
+    Same math (maxrel **0.00000** vs the old kernel at every shape), STAGES=2 and DBN=128 unchanged, +4KB
+    smem (72KB total, under the 99KB cap). A/B same-card TF/s (deployed → async): sq2048 390→424 (1.09×),
+    sq4096 763→824 (1.08×), sq8192 865→1055 (1.22×), attn-4096³ 762→826, ffn-up N=14336 813→922 (1.13×),
+    ffn-down K=14336 905→984 (1.09×). Biggest win at 8192 (more k-steps → more exposed scale loads to
+    hide). This narrows the real-scale-vs-unit-scale gap (the ~1510 unit-scale ceiling was scale-free);
+    it does NOT touch the 1136/1510 headline (those are the MXFP4-fast / unit-scale pp kernels, a
+    different path). Folded into `dense_nvfp4_fast_lib.cu` (same public names → all callers inherit it).
+    End-to-end full-model prefill moved 7815→7987 tok/s (+2.2%: the GEMM is a small fraction of the eager
+    forward, so the kernel win dilutes; the prefill bottleneck is eager bf16 attention). PPL unchanged 7.899.
 
 ## End-to-end serving comparison (RTX PRO 6000, Llama-3.1-8B-Instruct family)
 
@@ -308,7 +323,7 @@ fraction, so total device reservation is ~86–89 GiB regardless of quant (not t
 
 **Table B — quadbit dense FP4 prototype (full-forward, PREFILL-ONLY, no decode engine):** quantized-linear
 weights **3.93 GiB** (block linears only; embeddings/lm_head/attention stay bf16, not counted → not a
-full-model on-device footprint), through-kernel WT-2 PPL **7.899**, full-model prefill **7815 tok/s**
+full-model on-device footprint), through-kernel WT-2 PPL **7.899**, full-model prefill **7987 tok/s**
 (B=8, S=2048, eager + HF bf16 attention + fused act-quantizer + per-linear kernel call). NOT a serving
 number — no paged attention, no continuous batching, no CUDA graphs, no decode scheduler; it trails
 serving prefill ~10× because of the eager bf16-attention forward, not the GEMM. What it proves: the

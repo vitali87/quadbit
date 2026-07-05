@@ -166,6 +166,18 @@ via an f32 global reduction). All three regressed. The root cause is register pr
 consecutive tiles for free. On SM120 FP4, the huge accumulator tile leaves no register headroom
 for a software scheduler, so data-parallel is at the practical ceiling.
 
+**The deployed W4A4 kernel is block-scaled, and its scale loads were an exposed stall.** The
+758/1220/1510 figures are the unit-scale kernel (compile-time-zero scales). The kernel that
+actually ships for accuracy is the two-level NVFP4 variant (Section 7), which must stream per-16
+`ue4m3` scales from global memory each K-step; on SM120 those scales are 8-byte-pitch, so they
+cannot ride the tile TMA (which requires 16-byte strides) and were loaded synchronously between
+the tile `try_wait` and the mma, exposing ~500 cycles of latency every step. Double-buffering the
+scales and prefetching one step ahead with `cp.async` (while STAGES=2 and the 128-wide tile stay
+fixed) overlaps that load with the previous step's mma and lifts the deployed kernel 1.08 to 1.22x
+(square 8192 865 to 1055 TF/s, biggest where the k-step count is largest), at relative error 0
+against the synchronous version. This narrows the block-scaled-vs-unit-scale gap without changing
+the mma; it is orthogonal to the 758/1220/1510 unit-scale ceiling above.
+
 ---
 
 ## 5. Sparse FP4 to the bandwidth roofline
@@ -354,7 +366,7 @@ vLLM wins high-batch prefill (116831 vs 109002 at B=64).
 
 | build | quant | quantized-linear weights | through-kernel WT-2 PPL | full-model prefill tok/s |
 |-------|-------|--------------------------|-------------------------|--------------------------|
-| quadbit dense two-level | W4A4 (per-16 ue4m3 + fp32 global) | 3.93 GiB* | 7.899 | 7815 (B=8, S=2048) |
+| quadbit dense two-level | W4A4 (per-16 ue4m3 + fp32 global) | 3.93 GiB* | 7.899 | 7987 (B=8, S=2048) |
 
 *3.93 GiB counts only the transformer-block linears swapped to the FP4 kernel; embeddings,
 lm_head, and attention stay bf16 and are not counted, so this is not a full-model on-device

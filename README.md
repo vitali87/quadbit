@@ -48,7 +48,7 @@ Real serving engines on the same card, same model family, same protocol (CUDA gr
 | vLLM | NVFP4 | 5.66 GiB | 7.974 | 116831 | 8465 |
 | SGLang | NVFP4 | ~5.6 GiB | 7.97 | 109002 | 10145 |
 
-Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration. quadbit is a kernel + `nn.Linear` drop-in, not a serving engine (no paged attention / continuous batching / decode scheduler), so its full-model prefill (7815 tok/s, eager, bf16 attention) is a prototype number, not a serving-throughput row. A real engine integration is the open step. See [docs/paper.md §9](docs/paper.md).
+Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration. quadbit is a kernel + `nn.Linear` drop-in, not a serving engine (no paged attention / continuous batching / decode scheduler), so its full-model prefill (7987 tok/s, eager, bf16 attention) is a prototype number, not a serving-throughput row. A real engine integration is the open step. See [docs/paper.md §9](docs/paper.md).
 
 ## The stack
 

@@ -86,6 +86,7 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 | Dense FP4 vs CUTLASS 79b **square** (win 2048, tie 4096, win 8192) | `[measured]` | `harness/cutlass_fp4.py` |
 | Dense FP4 vs CUTLASS 79b **rectangular LLM shapes** (loses: 0.89× attn, 0.93× ffn-up, 1.01× ffn-down) | `[measured]` | `harness/cutlass_shapes.py`; 79b-verified — square win was an artifact |
 | Dense FP4 3.0–3.7× over cuBLAS bf16 (prefill shapes) | `[measured]` | `bench_vs_bf16.py`, `bench_llm_shapes.py` |
+| **Deployed two-level NVFP4 kernel: async scale prefetch = 1.08–1.22× (maxrel 0)** | `[measured]` | scales double-buffered + `cp.async` 1-ahead hides the ~500cyc scale load; sq8192 865→1055; folded into `dense_nvfp4_fast_lib.cu` |
 | Sparse FP4 2012k unit / 1409k deployable @8192 (at bandwidth roofline) | `[measured]` | `matmul_sp_bm256v2*`, mem-only probes |
 | **Sparse FP4 vs CUTLASS sparse 80b, square** (win 1.16× @4096, 1.14× @8192; lose 0.96× @16384) | **`[measured]` — GATING RESOLVED** | `harness/cutlass_sparse.py`; 80b ref-verify PASSES every size |
 | **Sparse FP4 vs CUTLASS 80b, rectangular LLM shapes** (win 1.18× attn, 1.14× ffn-up, 1.17× ffn-down) | **`[measured]`** | `harness/cutlass_shapes.py`; 80b-verified — the consistent, shipping-shape win |
@@ -106,7 +107,7 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 
 **Table B — quadbit dense FP4 prototype (full-forward, PREFILL-ONLY, no decode engine):** quantized-linear
 weights 3.93 GiB (block linears only; embed/lm_head/attn stay bf16, not counted), through-kernel WT-2 PPL
-**7.90** (matches vLLM native NVFP4 7.97 within 0.07), full-model prefill **7815 tok/s** (B=8, S=2048, eager
+**7.90** (matches vLLM native NVFP4 7.97 within 0.07), full-model prefill **7987 tok/s** (B=8, S=2048, eager
 + HF bf16 attention). NOT a serving-stack number; do not share a tok/s column with Table A.
 
 **Honest read on speed:** dense is competitive but slightly behind CUTLASS on the shapes that

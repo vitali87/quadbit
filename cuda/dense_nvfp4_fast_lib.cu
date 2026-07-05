@@ -1,7 +1,10 @@
 // DEPLOYABLE NVFP4 dense FP4 (e2m1 + per-16 ue4m3 scales, scale_vec::4X), PyTorch-callable.
-// Same fast pingpong tiling + coalesced smem-staged scales as the MXFP4 kernel, but per-16 NVFP4
-// scales (ue4m3) for higher accuracy (~0.10 vs MXFP4 0.165). STAGES=2 (per-16 scales are 2x the
-// bytes -> don't fit STAGES=3 smem). SFA[step][M][8]/SFB[step][N][8] ue4m3 (8 per-16 blocks/128-step).
+// Same fast pingpong tiling as the MXFP4 kernel, but per-16 NVFP4 scales (ue4m3) for higher
+// accuracy (~0.10 vs MXFP4 0.165). STAGES=2 (per-16 scales are 2x the bytes -> don't fit STAGES=3
+// smem). SFA[step][M][8]/SFB[step][N][8] ue4m3 (8 per-16 blocks/128-step). Scales are DOUBLE-
+// BUFFERED and prefetched one step ahead via cp.async so the ~500-cycle scale global load overlaps
+// the previous step's mma instead of stalling between the tile TMA wait and the mma (1.08-1.22x
+// over the old synchronous in-loop load, maxrel 0 -- identical math; biggest win at 8192).
 #include <cstdio>
 #include <cstdint>
 #include <cuda.h>
@@ -15,7 +18,7 @@
 #define DBSZ (DBN * DBKH)
 #define DWG (DSTAGES * DASZ + DSTAGES * DBSZ)
 #define SCB 1024                     // one step's scales per WG: 128 rows/cols x 8 per-16 blocks (bytes)
-#define DSMEM (2 * DWG + 2 * DSTAGES * 8 + 16 + 2 * 2 * SCB + 128)
+#define DSMEM (2 * DWG + 2 * DSTAGES * 8 + 16 + 2 * 2 * DSTAGES * SCB + 128)  // scales DSTAGES-buffered
 
 __global__ void __launch_bounds__(256)
 dmatmul_nvf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
@@ -28,8 +31,8 @@ dmatmul_nvf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CU
     uint8_t *a_s = smem + wg * DWG;
     uint8_t *b_s = a_s + DSTAGES * DASZ;
     uint64_t *full = (uint64_t *)(smem + 2 * DWG + wg * DSTAGES * 8);
-    uint8_t *sca = smem + 2 * DWG + 2 * DSTAGES * 8 + 16 + wg * (2 * SCB);
-    uint8_t *scb = sca + SCB;
+    // scales double-buffered: scbuf holds [A: DSTAGES x SCB][B: DSTAGES x SCB] per WG
+    uint8_t *scbuf = smem + 2 * DWG + 2 * DSTAGES * 8 + 16 + wg * (2 * DSTAGES * SCB);
     int sync_id = wg + 1;
     int block_row = blockIdx.y * DBM, block_col = blockIdx.x * (2 * DBN) + wg * DBN;
     int ksteps = Kfp4 / DBK;
@@ -67,18 +70,34 @@ dmatmul_nvf(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CU
 #pragma unroll
         for (int s = 0; s < DSTAGES; s++)
             if (s < ksteps) issue(s, s);
+    // prefetch scales one step ahead via cp.async (all 128 threads): t<64 -> A 16B chunk, else B.
+    auto pf_sc = [&](int st, int kstep) {
+        uint8_t *dA = scbuf + st * SCB, *dB = scbuf + DSTAGES * SCB + st * SCB;
+        if (wtid < 64) {
+            const uint8_t *src = SFA + (size_t)kstep * M * 8 + block_row * 8 + wtid * 16;
+            asm volatile("cp.async.cg.shared.global [%0],[%1],16;" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(dA + wtid * 16)), "l"(src));
+        } else {
+            int c = wtid - 64;
+            const uint8_t *src = SFB + (size_t)kstep * N * 8 + block_col * 8 + c * 16;
+            asm volatile("cp.async.cg.shared.global [%0],[%1],16;" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(dB + c * 16)), "l"(src));
+        }
+        asm volatile("cp.async.commit_group;");
+    };
+    if (ksteps > 0) pf_sc(0, 0);   // scale[0] group in flight
     for (int step = 0; step < ksteps; step++) {
         int s = step % DSTAGES;
         uint32_t par = (step / DSTAGES) & 1;
         asm volatile("{\n\t.reg .pred p;\nWA:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WA;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
-        {   // stage step's per-16 scales (step-major -> contiguous 1024B; coalesced uint32 loads)
-            const uint32_t *srcA = (const uint32_t *)(SFA + (size_t)step * M * 8 + block_row * 8);
-            const uint32_t *srcB = (const uint32_t *)(SFB + (size_t)step * N * 8 + block_col * 8);
-            uint32_t *dstA = (uint32_t *)sca, *dstB = (uint32_t *)scb;
-            dstA[wtid] = srcA[wtid]; dstA[wtid + 128] = srcA[wtid + 128];   // 256 uint32 = 1024B
-            dstB[wtid] = srcB[wtid]; dstB[wtid + 128] = srcB[wtid + 128];
-        }
+        // prefetch NEXT step's scales into the alternate buffer (overlaps this step's mma), then
+        // wait for THIS step's scales: wait_group(1) keeps the just-issued prefetch in flight.
+        int has_pf = step + 1 < ksteps;
+        if (has_pf) pf_sc((step + 1) % DSTAGES, step + 1);
+        if (has_pf) asm volatile("cp.async.wait_group 1;");
+        else asm volatile("cp.async.wait_group 0;");
         asm volatile("bar.sync %0, 128;" ::"r"(sync_id));
+        uint8_t *sca = scbuf + s * SCB, *scb = scbuf + DSTAGES * SCB + s * SCB;
         int aoff = s * DASZ, boff = s * DBSZ;
 #pragma unroll
         for (int ks = 0; ks < DBK / 64; ks++) {
