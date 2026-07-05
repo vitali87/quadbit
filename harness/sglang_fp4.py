@@ -17,10 +17,10 @@ import modal
 MODEL = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
 MINUTES = 60
 
-# SGLang for Blackwell/SM120: recent sglang + flashinfer built with sm_120 support. cuda 12.8 devel
-# base to match the driver/toolchain the rest of the project uses.
+# SGLang for Blackwell/SM120: needs CUDA >= 12.9 (SM 12.x device-capability probe + flashinfer JIT
+# fail on 12.8 with "SM 12.x requires CUDA >= 12.9"). 12.9.0 base, same as the working vLLM image.
 sgl_image = (
-    modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
+    modal.Image.from_registry("nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12")
     .entrypoint([])
     .pip_install("sglang[all]", "flashinfer-python", "huggingface_hub", "pyarrow")
     .env({"HF_XET_HIGH_PERFORMANCE": "1"})
@@ -61,21 +61,31 @@ def run(mode: str = "smoke", backend: str = "auto") -> None:
         engine.shutdown(); return
 
     # bench: prefill (S=2048, 1 token) + decode (short prompt, GEN=128) at B=1/8/32/64, matching vLLM
+    import subprocess
+
+    def gpu_mib():
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True).stdout.strip().splitlines()
+        return int(out[0])
+
     S, GEN = 2048, 128
     long_ids = list(range(1, S + 1))
     short = "Explain how a transformer works."
     engine.generate(short, {"temperature": 0.0, "max_new_tokens": 8})  # warmup
+    mem_warm = gpu_mib(); mem_peak = mem_warm
 
     print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
     for B in (1, 8, 32, 64):
         t = time.perf_counter()
-        engine.generate({"input_ids": [long_ids] * B}, {"temperature": 0.0, "max_new_tokens": 1})
+        engine.generate(input_ids=[long_ids] * B, sampling_params={"temperature": 0.0, "max_new_tokens": 1})
         pf = B * S / (time.perf_counter() - t)
         t = time.perf_counter()
-        engine.generate([short] * B, {"temperature": 0.0, "max_new_tokens": GEN, "ignore_eos": True})
+        engine.generate([short] * B, sampling_params={"temperature": 0.0, "max_new_tokens": GEN, "ignore_eos": True})
         dc = B * GEN / (time.perf_counter() - t)
+        mem_peak = max(mem_peak, gpu_mib())
         print(f"{B:>4} | {pf:>14.0f} | {dc:>13.0f}", flush=True)
-    print(f"RESULT sglang_fp4 backend={backend}: see per-B table; selected backend in init logs.", flush=True)
+    print(f"RESULT sglang_fp4 backend={backend}: device MiB post-warmup {mem_warm}, peak {mem_peak} "
+          f"(nvidia-smi; total incl KV pool @ mem_fraction 0.85). selected backend in init logs.", flush=True)
     engine.shutdown()
 
 
