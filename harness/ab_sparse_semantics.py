@@ -250,7 +250,8 @@ def run(model: str = MODEL, rck: str = RCK) -> None:
         d = logits - ref_logits
         rmse = d.pow(2).mean().sqrt().item()
         maxabs = d.abs().max().item()
-        cos = F.cosine_similarity(logits.reshape(-1), ref_logits.reshape(-1), dim=0).item()
+        a, b = logits.reshape(-1), ref_logits.reshape(-1)
+        cos = (a @ b / (a.norm() * b.norm())).item()
         top1 = (logits.argmax(-1) == ref_logits.argmax(-1)).float().mean().item()
         print(f"{mode:<5}  {ppl:8.4f}  {mean_nll:8.5f}  {mean_nll - ref_nll:+12.5f}   {rmse:10.5f}   "
               f"{maxabs:11.5f}   {cos:8.5f}   {top1:9.4f}", flush=True)
