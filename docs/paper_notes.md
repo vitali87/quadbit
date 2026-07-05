@@ -20,8 +20,14 @@ GEMM that is competitive with CUTLASS dense (wins/ties on square, slightly behin
 shapes) and a 2:4-sparse FP4 GEMM at the SM120 bandwidth roofline that beats CUTLASS 80b on the shapes
 that ship, then build the full deployment stack (packer, fused activation quantizer, `nn.Linear`
 drop-in) and a one-shot + QAT recovery pipeline that makes the sparse path usable on real models.
-**The paper's spine is the sparse path**, which beats CUTLASS 80b on every rectangular LLM shape; dense is
-a competitive-but-slightly-behind drop-in (see headline).
+**The paper's spine is the sparse path.** UPDATE (2026-07-06, leaderboard `harness/leaderboard_fp4.py`):
+the dense baseline moved. FlashInfer `mm_fp4` now ships a CUDA-13 `b12x` NVFP4 kernel + a `cutlass` path,
+and they beat quadbit's deployed two-level dense by **1.35–2.2×** — dense is NO LONGER competitive-leading,
+it LOSES the SM120 dense race. What makes the sparse spine the headline is now sharper: quadbit is the only
+*deployed* 2:4-sparse FP4 GEMM (FlashInfer/SGLang/vLLM ship none; CUTLASS 80b is an unwrapped example), and
+its two-level sparse kernel beats even the *best FlashInfer dense* in wall-clock on every prefill shape
+(**1.07–1.38×**). That is the Pareto point no library provides. Dense survives only as a zero-training W4A4
+accuracy drop-in (+0.63 PPL).
 **GATING EXPERIMENT — NOW RUN** (`harness/cutlass_sparse.py`, correctness-gated on 80b's own reference
 check, which PASSES at every size, so #3096's block-scaled bug does not affect this example): head-to-head
 throughput of our sparse kernel vs CUTLASS 80b on the same RTX PRO 6000 gives **1.16× @4096, 1.14× @8192,
@@ -38,11 +44,38 @@ Throughput vs cuBLAS bf16 (what production runs) and vs real CUTLASS FP4, M=N=K.
 bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
 (example 79b nvfp4×nvfp4→f32, `-DCUTLASS_NVCC_ARCHS=120a`, verification Passed). Same RTX PRO 6000:
 
+**These are SPEED-PATH CEILING numbers** (MXFP4-fast dense, unit-scale sparse) — the fastest variants,
+NOT the accuracy-deployed two-level kernels. The deployed two-level numbers (which carry the accuracy
+recipe and are what the leaderboard/head-to-head measure) are lower: dense sq8192 **1045** (not 1556),
+sparse sq8192 **1973** (not 2207). Report both; do not conflate the ceiling with the deployed kernel.
+
 | size | cuBLAS bf16 | CUTLASS FP4 | dense FP4 (ours) | 2:4-sparse FP4 (ours) |
 |------|-------------|-------------|------------------|------------------------|
 | 4096 | 372 TF/s | 1222 | 1136 (3.06× bf16) | 1512 (4.07× bf16) |
 | 8192 | 423 TF/s | 1497 | 1556 (3.68× bf16) | 2207 (5.22× bf16) |
 | 16384| 405 TF/s | — | 1645 (4.06× bf16) | 1782 (4.39× bf16) |
+
+**SM120 FP4 backend leaderboard (2026-07-06, `harness/leaderboard_fp4.py`, DEPLOYED two-level kernels,
+all correctness-gated on fp32 ref cos>0.97; every backend hits cos 0.991 with identical cos/maxrel/mae =
+same math, cross-validated).** quadbit dense vs FlashInfer `mm_fp4` best-backend, effective TF/s:
+
+| shape | quadbit dense | FlashInfer best (backend) | FI / quadbit |
+|-------|--------------|---------------------------|--------------|
+| square 8192 | 1045 | 1433 (cutlass) | 1.37× |
+| prefill attn 4096³ | 838 | 1283 (b12x) | 1.53× |
+| prefill ffn-up N=14336 | 936 | 1374 (auto) | 1.47× |
+| prefill ffn-down K=14336 | 1017 | 1408 (b12x) | 1.38× |
+| serving ffn-down M=65536 | 639 | 1416 (cutlass) | 2.22× |
+
+Dense LOSES 1.35–2.2×. Structural findings: FlashInfer `cudnn` fails EVERY shape (`No execution plans
+support the graph`; shipped cuDNN 9.10 < 9.14 SM120 FP4 needs); `b12x` collapses ~2.2× at M≥65536 (only
+`cutlass` holds ~1400); `trtllm`/`cute-dsl` refuse SM120. Toolchain split: `b12x` needs CUDA 13, quadbit's
+`sm_120a` block-scale mma (`kind::mxf4nvf4`/`block_scale`/`scale_vec::4X`) is rejected by ptxas 13 and only
+assembles under CUDA ≤12.8 — cannot coexist. **PARETO (the headline): quadbit two-level SPARSE beats the
+best FlashInfer DENSE in wall-clock on every prefill shape** — attn 0.100 vs 0.107 ms (1.07×), ffn-up 0.301
+vs 0.350 (1.16×), ffn-down 0.265 vs 0.342 (1.29×), sq8192 0.557 vs 0.767 (1.38×). And fresh two-level vs
+CUTLASS 80b (`cutlass_sparse.py`): win every shape — attn 1.08×, ffn-up 1.01×, ffn-down 1.12×, sq8192 1.09×
+(1973 vs 1807).
 
 - Dense FP4 vs CUTLASS, **square, apples-to-apples clean measurement** (both cudaEvent-timed over 20
   iters, no torch dispatch; ours = `matmul_fp4_pp_bf16` standalone): CUTLASS 634 / 1222 / 1497 @
@@ -50,8 +83,10 @@ bf16/dense/sparse: `harness/bench_vs_bf16.py`; CUTLASS: `harness/cutlass_fp4.py`
   **rectangular Llama-3-8B shapes that actually run, dense LOSES to CUTLASS 79b** (`harness/cutlass_shapes.py`,
   79b-verified): attn 4096³ **0.89×**, ffn-up N=14336 **0.93×**, ffn-down K=14336 **1.01×**. The square
   win does not generalize — CUTLASS's tile/schedule adapts to rectangular shapes better than our fixed
-  tiling. Honest dense claim: competitive, slightly behind CUTLASS on shipping shapes; still 3.0–3.7× over
-  bf16. (Per-SM square steady state @8192 we are 86% vs CUTLASS 83% of the 1811 TF/s mma peak; the 4096
+  tiling. vs 79b specifically: competitive, slightly behind on shipping shapes; still 3.0–3.7× over
+  bf16. But 79b is NOT the baseline that matters anymore — the leaderboard above shows FlashInfer
+  beating dense outright (1.35–2.2×), so this bullet is a scoped 79b sub-result, not the dense verdict.
+  (Per-SM square steady state @8192 we are 86% vs CUTLASS 83% of the 1811 TF/s mma peak; the 4096
   tie is wave quantization, 512 tiles / 188 SMs = 2.72 waves.)
 - Sparse FP4 beats the CUTLASS **dense** FP4 baseline by **+24% @4096 (1512 vs 1222)** and
   **+47% @8192 (2207 vs 1497)** on the effective-FLOP metric NVIDIA uses for 2:4. And vs CUTLASS's
@@ -133,12 +168,15 @@ Accuracy (real models, WikiText-2 PPL):
    2012k→**2731k (+36%)**, deployable 1486k→**2116k (+42%)**. Lesson: never declare a memory
    roofline from a probe whose own load pattern is the limit.
 
-3. **A fully-deployable 2:4-sparse FP4 GEMM on SM120** (NOT "the only" one — CUTLASS 80b exists, see
-   Thesis): arbitrary per-group 2:4 metadata + real per-block ue4m3 scales, both staged coalesced
-   through a full/empty async pipeline (no CTA-wide `__syncthreads`), shared-B 256×128 traffic-optimal
-   tiling. Defensible framing = "hand-written, roofline-saturating, faster than CUTLASS 80b on every
-   rectangular LLM shape (1.14–1.18×, see headline), and integrated into a packer + fused-quantizer +
-   recovery stack that CUTLASS's bare example is not."
+3. **The only DEPLOYED 2:4-sparse FP4 GEMM on SM120** (CUTLASS 80b exists as an unwrapped example;
+   FlashInfer/SGLang/vLLM ship no sparse FP4 at all — verified 2026-07): arbitrary per-group 2:4
+   metadata + real per-block ue4m3 scales, both staged coalesced through a full/empty async pipeline
+   (no CTA-wide `__syncthreads`), shared-B 256×128 traffic-optimal tiling. Defensible framing (now the
+   PARETO headline) = "hand-written, roofline-saturating, the only sparse FP4 GEMM wrapped in a real
+   packer + fused-quantizer + recovery stack; beats CUTLASS 80b on every shape (1.01–1.12×) AND beats
+   the best available *dense* FP4 kernel (FlashInfer `b12x`/`cutlass`) in wall-clock on every prefill
+   shape (1.07–1.38×), a Pareto corner no library provides." This is what stands after dense lost the
+   race to FlashInfer.
 
 4. **Pair-granular 2:4 handling + its measured accuracy cost (NOT a novel hardware discovery).**
    Blackwell FP4 `mma.sp` metadata selects at b16 = **fp4-pair** granularity: 2 of every 4 *pairs*
@@ -226,7 +264,7 @@ Accuracy (real models, WikiText-2 PPL):
    recovered ckpt): single-level kernel **11.89**, two-level kernel **8.95**, fake-quant target **8.96**
    (ΔNLL 2lvl −0.002 / 1lvl +0.282; top-1 agree 2lvl **91.7%** / 1lvl **78.3%**). The rescale costs
    **2–10%** throughput (worst on wide-N) and two-level still beats CUTLASS 80b on every shape
-   (**1.01–1.13×**, all correctness-PASS; `harness/cutlass_sparse.py`). Extending phase-2 2k→5k did NOT
+   (**1.01–1.12×**, all correctness-PASS; `harness/cutlass_sparse.py`). Extending phase-2 2k→5k did NOT
    help (regressed to 8.96, mild overtraining vs WT-2 test) — 2k is the sweet spot on this corpus.
    **DATA LEVER = NEGATIVE (2026-07-05):** the full-scale C4 diverse-corpus recovery (app
    ap-SdSv9zQ9, phase-1 to ~196M tokens) flattened at **10.82 on WT-2 test** (vs in-distribution
@@ -452,7 +490,9 @@ into a serving stack for a true tok/s head-to-head is the open engineering step.
   (deployable sparse 2116k), `cuda/matmul_fp4_pp_bf16.cu` (dense 1503k), `cuda/dense_fp4_lib.cu`,
   `cuda/sparse_fp4_lib.cu` (PyTorch-callable + fused quantizer).
 - Probes: `mma_peak`, `tma_bw`, `smemq`, `sp_*_probe`, `verify_*`, `pack_verify`, `pack_accuracy`.
-- Harnesses: `bench_vs_bf16.py` (throughput), `cutlass_fp4.py` (real CUTLASS FP4 baseline +
+- Harnesses: `leaderboard_fp4.py` (SM120 FP4 backend leaderboard: quadbit vs FlashInfer `mm_fp4`
+  all backends, correctness-gated), `cutlass_sparse.py` (sparse vs CUTLASS 80b),
+  `bench_vs_bf16.py` (throughput), `cutlass_fp4.py` (real CUTLASS FP4 baseline +
   SASS dissect), `quadbit_linear.py` (drop-in), `accuracy_hf.py` /
   `accuracy_sparse.py` (weight-recon), `perplexity_sparse.py` (end-to-end PPL),
   `sparsegpt_pair.py` (one-shot), `finetune_pair.py` (recovery).
@@ -460,12 +500,15 @@ into a serving stack for a true tok/s head-to-head is the open engineering step.
 
 ## Paper narrative arc (draft)
 
-1. SM120 is the accessible Blackwell; FP4 hardware present, but the usable sparse FP4 software is thin
-   and buggy in practice (CUTLASS 80b exists but the SM120 block-scaled path has documented
-   correctness/autotuner issues, #3096) and no deployment stack wraps it → the gap. (NOT "software absent.")
+1. SM120 is the accessible Blackwell; FP4 hardware present, dense software now strong (FlashInfer
+   `b12x`/`cutlass`), but **no library ships a sparse FP4 GEMM** and the block-scaled path has documented
+   issues (#3096) → the gap is sparse + deployment, not dense. (NOT "software absent.")
 2. Deriving the FP4 mma/ldmatrix/scale/metadata layouts from scratch on SM120 (no docs, probe-verify).
 3. Dense FP4 to the silicon ceiling; the false-roofline lesson → wide-TMA+swizzle → sparse +36/42%.
-4. Handling the documented pair-wise NVFP4 sparsity end-to-end, and quantifying its accuracy cost on
+4. The backend leaderboard: honest loss on dense (FlashInfer `b12x`/`cutlass` beat us 1.35–2.2×), and
+   the reveal that sparse is the only deployed FP4 sparse path and beats the best dense in wall-clock →
+   the Pareto point that is the paper's systems result.
+5. Handling the documented pair-wise NVFP4 sparsity end-to-end, and quantifying its accuracy cost on
    existing element-2:4 checkpoints (cite the hardware spec; this is not a discovery).
-5. Deployment: packer + fused quantizer + drop-in; 3.7–5.2× over bf16.
-6. Making sparse usable: pair-granular SparseGPT + QAT recovery; the data-scale reality of 2:4.
+6. Deployment: packer + fused quantizer + drop-in; 3.7–5.2× over bf16.
+7. Making sparse usable: pair-granular SparseGPT + QAT recovery; the data-scale reality of 2:4.

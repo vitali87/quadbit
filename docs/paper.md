@@ -25,19 +25,25 @@ probe-and-verify (validated to relative error 0). We then build the deployment s
 them: a weight packer, a fused NVFP4 activation quantizer, an `nn.Linear` drop-in, fused
 transformer-block glue kernels, and a pair-granular one-shot-plus-QAT recovery pipeline.
 
-Three results stand out. First, on the square sizes commonly benchmarked our dense kernel
-wins or ties CUTLASS 79b (758/1220/1510 TF/s at 2048/4096/8192 vs 634/1222/1497), but on the
-rectangular Llama-3-8B shapes that actually run it loses (0.89 to 1.01x); the square win does
-not generalize. Second, our sparse kernel beats CUTLASS 80b on every rectangular LLM shape
-(1.14 to 1.18x) and at 4K to 8K square, losing only at 16K square; the sparse win does
-generalize, so the sparse path is the project's spine. Third, on accuracy the deployed dense
-kernel is W4A4 (weights and activations both 4-bit, because the tensor core multiplies
-fp4 by fp4), and with a per-16 two-level NVFP4 recipe using no calibration data it costs
-+0.63 PPL on Llama-3.1-8B-Instruct, at or below the modelopt-calibrated reference. Sparse
-recovery on a real 8B model now deploys at its trained accuracy, because we close the
-fake-quant-to-kernel deploy gap with a two-level sparse kernel that still beats CUTLASS 80b, but
-it still loses to dense by about 1.56 PPL and diverse-corpus data did not close that gap; sparse
-is an honest speed-only Pareto point, not an accuracy win.
+Since we began, the SM120 dense-FP4 baseline moved: FlashInfer's `mm_fp4` now ships a
+CUDA-13 `b12x` NVFP4 path plus a `cutlass` path, and on a full backend leaderboard (same card,
+same shapes, same fp32-reference correctness gate) they beat our hand-written two-level dense
+kernel by 1.35 to 2.2x. We report that honestly: quadbit does not win the dense FP4 race on
+SM120. The result that stands is a Pareto point no shipping library provides. First, quadbit is
+the only *deployed* 2:4-sparse FP4 GEMM on SM120: FlashInfer, SGLang, and vLLM ship no sparse
+FP4 path, and CUTLASS's sparse 80b is an unwrapped example with documented block-scaled
+problems. Second, our sparse kernel beats CUTLASS 80b on every shape (1.01 to 1.12x) and, more
+importantly, beats the *best available dense* FP4 kernel (FlashInfer `b12x`/`cutlass`) in
+wall-clock on every Llama-3-8B prefill shape (1.07 to 1.38x): if a weight can be 2:4-pruned, the
+fastest way to run its FP4 GEMM on SM120 is quadbit sparse. Third, on accuracy the deployed dense
+kernel is W4A4 (weights and activations both 4-bit, because the tensor core multiplies fp4 by
+fp4), and with a per-16 two-level NVFP4 recipe using no calibration data it costs +0.63 PPL on
+Llama-3.1-8B-Instruct, at or below the modelopt-calibrated reference; sparse recovery deploys at
+its trained accuracy through a two-level sparse kernel but stays about 1.56 PPL behind dense, so
+sparse is a speed-only Pareto point, not an accuracy win. Two SM120 stack facts fell out of the
+leaderboard and matter for anyone deploying: FlashInfer's `cudnn` FP4 backend fails on every
+shape (the shipped cuDNN is below the 9.14 that SM120 FP4 needs), and its fast `b12x` path
+collapses about 2.2x at large serving batch (tokens >= 65536), where only its `cutlass` path holds.
 
 ---
 
@@ -155,8 +161,9 @@ iterations, no torch dispatch), our dense kernel reaches 758 / 1220 / 1510 TF/s 
 not generalize. On the rectangular Llama-3-8B GEMM shapes that actually run, we lose to 79b:
 attention 4096-cubed at 0.89x, ffn-up (N=14336) at 0.93x, ffn-down (K=14336) at 1.01x, all
 79b-verified. CUTLASS's tile and schedule adapt to rectangular shapes better than our fixed
-tiling. The honest dense story is therefore "competitive, slightly behind CUTLASS on shipping
-shapes," while still delivering 3.0 to 3.7x over cuBLAS bf16.
+tiling. Against 79b specifically the dense kernel is "competitive, slightly behind on shipping
+shapes" while delivering 3.0 to 3.7x over cuBLAS bf16, but 79b is no longer the baseline that
+matters: the leaderboard below shows FlashInfer beating us outright, so dense is not where we win.
 
 We built and measured three persistent/stream-K variants to try to beat data-parallel on the
 rectangular shapes (stream-K, a true CUTLASS-style persistent cross-tile pipeline, and split-K
@@ -178,6 +185,38 @@ fixed) overlaps that load with the previous step's mma and lifts the deployed ke
 against the synchronous version. This narrows the block-scaled-vs-unit-scale gap without changing
 the mma; it is orthogonal to the 758/1220/1510 unit-scale ceiling above.
 
+**The full SM120 FP4 backend leaderboard (and why we lose the dense race).** CUTLASS 79b is no
+longer the only competitor. FlashInfer's `mm_fp4` now exposes several NVFP4 GEMM backends, and on
+SM120 its `auto` prefers `b12x` (a CUDA-13-only SM120/121 kernel), then `cutlass`, then `cudnn`
+(`trtllm` and `cute-dsl` refuse SM120 outright). We benchmarked the deployed two-level quadbit
+kernel against every FlashInfer backend on one RTX PRO 6000, over a shape suite spanning square
+(2048 to 16384), Llama-3-8B prefill, decode small-M (1 to 128), and serving M = B*S, with an
+identical correctness gate: each backend quantizes the same bf16 operands with its own native
+quantizer and its output is scored against the fp32 reference (cosine > 0.97 to count; all
+NVFP4-on-random-Gaussian rows land at cos 0.991, and the *identical* cos/maxrel/mae across
+backends cross-validates that they compute the same math). Best-backend-per-shape, GEMM-only
+(effective TF/s = 2*M*N*K / wall):
+
+| shape | quadbit dense | FlashInfer best (backend) | FI / quadbit |
+|-------|--------------|---------------------------|--------------|
+| square 8192 | 1045 | 1433 (cutlass) | 1.37x |
+| prefill attn 4096-cubed | 838 | 1283 (b12x) | 1.53x |
+| prefill ffn-up (N=14336) | 936 | 1374 (auto) | 1.47x |
+| prefill ffn-down (K=14336) | 1017 | 1408 (b12x) | 1.38x |
+| serving ffn-down (M=65536) | 639 | 1416 (cutlass) | 2.22x |
+
+FlashInfer's `b12x`/`cutlass` NVFP4 kernels beat our hand-written two-level dense by 1.35 to
+2.2x. The honest dense story is no longer "competitive with CUTLASS 79b"; the SM120 dense-FP4
+baseline moved up and quadbit does not win it. Two structural findings from the same run: (1)
+FlashInfer's `cudnn` backend returns `No execution plans support the graph` on *every* shape,
+because the shipped cuDNN (9.10) is below the 9.14 that SM120 FP4 needs; (2) `b12x` collapses
+from ~1400 to ~640 TF/s once M >= 65536 (large serving batch), where only the `cutlass` backend
+holds ~1400, so on SM120 the fast dense backend is M-dependent. One toolchain fact frames the
+whole comparison: `b12x` requires CUDA 13, while quadbit's `sm_120a` block-scale mma
+(`kind::mxf4nvf4`/`block_scale`/`scale_vec::4X`) is *rejected* by ptxas 13 and only assembles
+under CUDA <= 12.8, so the two kernels cannot coexist in one container. Where quadbit wins is not
+dense; it is sparse (Section 5).
+
 ---
 
 ## 5. Sparse FP4 to the bandwidth roofline
@@ -195,12 +234,25 @@ smem rows cause `ldmatrix` bank conflicts. Swizzled TMA fixes that (A box 64B wi
 `SWIZZLE_128B` and XOR `((off >> 7) & 7) << 4`). Result: unit-scale sparse went from 2012k to
 2731k (+36%), and the deployable kernel from 1486k to 2116k (+42%).
 
-**Versus CUTLASS 80b.** Correctness-gated on 80b's own reference check (which passes at every
-size, so CUTLASS issue #3096's block-scaled bug does not affect this comparison). On square
-sizes we win at 4096 (1.16x) and 8192 (1.14x) and lose at 16384 (0.96x, 1859 vs 1785 TF/s). On
-the rectangular Llama-3-8B shapes where dense loses, sparse wins consistently: attention
-4096-cubed at 1.18x, ffn-up at 1.14x, ffn-down at 1.17x, all 80b-verified. Unlike dense, the
-sparse win generalizes to shipping shapes, which is why the sparse path is the project's spine.
+**Versus CUTLASS 80b, the only other sparse FP4 kernel.** No shipping library provides a sparse
+FP4 GEMM on SM120: FlashInfer, SGLang, and vLLM expose dense NVFP4 and MXFP4-MoE paths only, and
+CUTLASS's 80b is an unwrapped example. quadbit is therefore the only *deployed* 2:4-sparse FP4
+GEMM on the platform. Against 80b, correctness-gated on 80b's own reference check (which passes at
+every size, so CUTLASS issue #3096's block-scaled bug does not affect this comparison), the
+deployed two-level sparse kernel wins on every shape: square 8192 at 1.09x (1973 vs 1807 TF/s),
+attention 4096-cubed at 1.08x, ffn-up at 1.01x, ffn-down at 1.12x, all 80b-verified.
+
+**The Pareto point: sparse beats the best available *dense* FP4.** The reviewer-obvious result is
+cross-table. On the same card and shapes, quadbit's two-level sparse kernel beats not just its own
+dense and CUTLASS 80b, but the *fastest FlashInfer dense backend* in wall-clock on every Llama-3-8B
+prefill shape: attention 4096-cubed 0.100 vs 0.107 ms (1.07x), ffn-up 0.301 vs 0.350 ms (1.16x),
+ffn-down 0.265 vs 0.342 ms (1.29x), square 8192 0.557 vs 0.767 ms (1.38x). So if a weight can be
+2:4-pruned, the fastest way to run its FP4 GEMM on SM120 is quadbit sparse, faster than the best
+dense FP4 kernel anyone ships. That is the Pareto point no library currently provides. (Effective
+FLOP counts the pruned zeros; the honest comparator is wall-clock for a fixed GEMM problem, which
+is what these ratios are. The two sides were measured in separate containers, CUDA 12.8 for sparse
+and CUDA 13 for FlashInfer, forced by the mma/ptxas split noted in Section 4, on the same physical
+card at the same clocks.)
 
 **Ceiling honesty.** Sparse's real advantage over our own dense FP4 is roughly 1.33x at the
 roofline (2012k vs 1510k deployable at 8192), not the 2x the mma FLOP ratio suggests. The
@@ -208,13 +260,21 @@ hardware 2x is a datacenter-bandwidth feature we cannot reach on SM120. At 1.33x
 cost of sparsity has to be small to justify the recovery pipeline over dense, which is exactly
 the tension Section 8 confronts.
 
-**Throughput summary (M=N=K, vs cuBLAS bf16):**
+**Throughput summary (M=N=K, vs cuBLAS bf16), speed-path ceiling:**
 
 | size | cuBLAS bf16 | CUTLASS FP4 | dense FP4 (ours) | 2:4-sparse FP4 (ours) |
 |------|-------------|-------------|------------------|------------------------|
 | 4096 | 372 TF/s | 1222 | 1136 (3.06x bf16) | 1512 (4.07x bf16) |
 | 8192 | 423 TF/s | 1497 | 1556 (3.68x bf16) | 2207 (5.22x bf16) |
 | 16384| 405 TF/s | n/a | 1645 (4.06x bf16) | 1782 (4.39x bf16) |
+
+These are the **speed-path ceiling** numbers: MXFP4-fast dense (`ue8m0` per-32) and unit-scale
+sparse, the fastest variants, not the accuracy-deployed two-level kernels. The **deployed
+two-level** kernels that carry the accuracy recipe are slower and are the ones on the leaderboard
+in Section 4 (dense square-8192 1045, not 1556) and the sparse head-to-head above (sparse
+square-8192 1973, not 2207). Reporting both protocols matters: the two-level rescale that buys
+the accuracy result costs throughput, so the deployed sparse win over the best FlashInfer dense
+(1.07 to 1.38x) is measured on the *deployed* kernel, not this ceiling.
 
 ---
 
@@ -386,11 +446,19 @@ two-level recipe reaches the calibrated reference's accuracy. A real serving-eng
 
 ## 10. Related work
 
-**CUTLASS** ships dense (79b) and sparse (80b) NVFP4 GEMMs for SM120 since 3.9.0. These are our
-true baselines and we benchmark against both. The opening is not that a reference kernel is
-absent but that the SM120 block-scaled path has documented correctness and autotuner problems
-(CUTLASS issue #3096: grouped GEMM garbage output, TMA warp-specialized tactics failing to
-init) and that no library wraps a sparse FP4 kernel in a deployment stack.
+**FlashInfer `mm_fp4`** is now the strongest dense FP4 baseline on SM120, and it moved while we
+worked. Its `auto` selects `b12x` (a CUDA-13-only SM120/121 NVFP4 kernel) then `cutlass`, and on
+the leaderboard (Section 4) these beat our two-level dense by 1.35 to 2.2x. It is not a free win
+for the ecosystem: the `cudnn` backend fails on every SM120 shape (cuDNN below 9.14), `b12x`
+collapses ~2.2x at large serving batch, `trtllm`/`cute-dsl` refuse SM120, and prebuilt cubins
+historically shipped no sm_120 targets (issue #3294), so the fast path needs CUDA-13 JIT. We
+benchmark against every one of its backends rather than a single number.
+
+**CUTLASS** ships dense (79b) and sparse (80b) NVFP4 GEMMs for SM120 since 3.9.0. 80b is the only
+other sparse FP4 kernel in existence and is our sparse baseline; the SM120 block-scaled path has
+documented correctness and autotuner problems (issue #3096: grouped GEMM garbage output, TMA
+warp-specialized tactics failing to init), and, critically, no library wraps *any* sparse FP4
+kernel in a deployment stack, which is the gap the sparse path fills.
 
 **Deployed inference on SM120.** The Marlin W4A16 fallback (dequant FP4 to bf16 in-kernel,
 forfeiting the FP4 FLOPS) was reported around 50 tok/s on a 397B MoE, but for the dense
@@ -427,23 +495,31 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   global rescale in the epilogue) makes the deployed accuracy equal the trained fake-quant
   (8.47 == 8.47; the old single-level kernel would deploy the same checkpoint at 11.89). The fix
   costs 2 to 10% of throughput and still beats CUTLASS 80b.
-- **Dense loses to CUTLASS on rectangular shapes.** We win square, but the shapes that ship
-  favor CUTLASS's adaptive tiling.
+- **Dense loses the SM120 FP4 race to FlashInfer.** The leaderboard (Section 4) shows FlashInfer
+  `b12x`/`cutlass` beating our two-level dense by 1.35 to 2.2x. The dense kernel remains a useful
+  zero-training W4A4 drop-in on the accuracy axis, but it is not the fastest dense FP4 on the
+  platform. The win is sparse (the only deployed sparse FP4 GEMM, faster in wall-clock than even
+  the best FlashInfer dense on prefill shapes), not dense.
+- **The Pareto win carries an accuracy tax.** The sparse speed advantage only pays off where a
+  weight tolerates 2:4 pruning, and on 8B that costs ~1.56 PPL vs dense; the leaderboard result is
+  a speed Pareto point, not a free lunch.
 
 ---
 
 ## 12. Conclusion
 
-On SM120, FP4 is a real speedup but only through kernels and a stack that the ecosystem does not
-yet provide. We hand-wrote both, took the dense kernel to the compute ceiling and the sparse
-kernel to the bandwidth roofline, and wrapped them in a packer, quantizer, drop-in, and fused
-block. The sparse kernel beats CUTLASS 80b on the shapes that ship and is the project's spine;
-dense is a competitive zero-training drop-in whose real accuracy cost, correctly measured as
-W4A4, is +0.63 PPL with no calibration. Sparsity does not earn its recovery pipeline over dense
-on accuracy: the deployable sparse-recovered 8B is 8.47 PPL, about 1.56 above dense W4A4, and
-diverse-corpus data did not close that gap on our metric. We closed the sparse deploy gap with a
-two-level kernel so the deployed accuracy equals the trained accuracy, and we report sparse as an
-honest speed-only Pareto point rather than an accuracy win.
+On SM120, FP4 is a real speedup but the ecosystem's coverage is uneven, and it moved under us. On
+dense FP4 we no longer lead: FlashInfer's CUDA-13 `b12x`/`cutlass` kernels beat our hand-written
+two-level dense by 1.35 to 2.2x, and we report that plainly. What stands is a Pareto point no
+shipping library provides. quadbit is the only *deployed* 2:4-sparse FP4 GEMM on SM120, its sparse
+kernel beats CUTLASS 80b (the only other sparse kernel) on every shape, and in wall-clock it beats
+even the best available *dense* FP4 kernel (FlashInfer `b12x`/`cutlass`) on every Llama-3-8B prefill
+shape by 1.07 to 1.38x: if a weight can be 2:4-pruned, quadbit sparse is the fastest way to run its
+FP4 GEMM on the platform. The accuracy axis is honest too: the deployed dense W4A4 path costs +0.63
+PPL with no calibration, and sparse deploys at its trained accuracy through the two-level kernel but
+stays ~1.56 PPL behind dense, so the sparse advantage is speed, conditioned on prunability. The
+contribution is a hand-written kernel plus deployment stack that occupies a Pareto corner (sparse
+FP4, deployed, fastest-for-prunable) that CUTLASS, FlashInfer, SGLang, and vLLM leave empty.
 
 ---
 
