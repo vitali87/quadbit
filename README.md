@@ -38,6 +38,18 @@ Prefill (the bulk of training and long-context compute) runs **3.0 to 3.6× dens
 - **Fused FP4 transformer block** on real Qwen3-8B weights (fused RMSNorm, residual-add, and SwiGLU quantizers around the GEMMs), no training: **2.16 to 2.19× over bf16** end-to-end at block rel 0.13.
 - **Sparse FP4** needs recovery, because Blackwell FP4 2:4 is **pair-granular** (the mma selects 2 of every 4 fp4 pairs), unlike existing element-granular 2:4 checkpoints. The pipeline (pair-granular SparseGPT one-shot prune, then knowledge distillation from the dense teacher, then QAT with straight-through fake-quant of both weights and activations) recovers TinyLlama-1.1B to **9.60 PPL through the real sparse FP4 kernel** (dense teacher 7.53). On a **real 8B model, sparse recovery loses to dense on accuracy**: Meta-Llama-3-8B deploys at **8.47 PPL through the two-level sparse kernel** (per-32 matched QAT, 2k warm-restart phase-2), vs dense-W4A4 **6.91 (+0.71)**, so sparse is about **1.56 PPL behind**. Two results settled this. **The deploy gap is closed:** the two-level sparse kernel adds a per-row and per-column fp32 global rescale in the mma epilogue, so through-kernel PPL now **equals the trained fake-quant (8.47 == 8.47)**; the old single-level kernel would deploy the same checkpoint at **11.89** (a same-checkpoint A/B flips 22% of top-1 tokens single-level vs 8% two-level). The rescale costs **2–10%** of throughput and the two-level kernel still beats CUTLASS 80b on every shape (**1.01–1.13×**). **The data lever is negative:** a full-scale diverse-corpus recovery (decontaminated C4, ~196M tokens) flattened at **10.82 on the WikiText-2 test** because C4 is out of distribution for that narrow metric, never approaching the ~7.4 target. Sparse is a **speed play** (~1.33× over our dense) that now deploys at its trained accuracy but does not beat dense; dense FP4 (+0.63, zero-training) is the accuracy result and sparse is an honest speed-only Pareto point.
 
+## End-to-end serving (RTX PRO 6000, Llama-3.1-8B-Instruct)
+
+Real serving engines on the same card, same model family, same protocol (CUDA graphs on, distinct per-request prompts, S=2048 prefill / GEN=128 decode, WikiText-2 16×2048). Both vLLM and SGLang run **native NVFP4 W4A4** on SM120 for this checkpoint (vLLM `modelopt_fp4` cutlass; SGLang FlashInfer CUTLASS `fp4_gemm`, autotuned), not the Marlin W4A16 fallback.
+
+| engine | quant | weights | WT-2 PPL | prefill B=64 | decode B=64 |
+|--------|-------|---------|----------|--------------|-------------|
+| vLLM | bf16 | 15.0 GiB | 7.267 | 46880 | 4947 |
+| vLLM | NVFP4 | 5.66 GiB | 7.974 | 116831 | 8465 |
+| SGLang | NVFP4 | ~5.6 GiB | 7.97 | 109002 | 10145 |
+
+Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration. quadbit is a kernel + `nn.Linear` drop-in, not a serving engine (no paged attention / continuous batching / decode scheduler), so its full-model prefill (7815 tok/s, eager, bf16 attention) is a prototype number, not a serving-throughput row. A real engine integration is the open step. See [docs/paper.md §9](docs/paper.md).
+
 ## The stack
 
 - `cuda/matmul_sp_*.cu`, `cuda/sparse_fp4_lib.cu`: the 2:4-sparse FP4 GEMM (wide-swizzle TMA path) plus fused NVFP4 activation quantizer and the fused RMSNorm / residual-add / SwiGLU block-glue kernels.

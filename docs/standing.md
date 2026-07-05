@@ -66,10 +66,13 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
   slow tactics; needs `compute_120f` (CUDA 13) not `compute_120a`. `[external]` This is the
   genuine opening: a *working, fast, deployment-integrated* SM120 sparse/dense FP4 path is
   scarce even though a reference kernel exists.
-- **vLLM on SM120 largely falls back to Marlin W4A16** (dequant FP4→bf16 in-kernel, forfeits FP4
-  FLOPS, ~50 tok/s on a 397B MoE). SGLang gets native FP4: ~1.47× over bf16 at batch 1, ~2.23×
-  at batch 128. `[external]` So the *deployed reality* on our card is 1.5–2.2× where it works,
-  and often a bf16-dequant fallback. Our 3.0–3.7× dense is above this.
+- **vLLM AND SGLang both run NATIVE NVFP4 W4A4 on SM120 for the dense Llama-3.1-8B checkpoint**
+  (`[measured]`, `harness/vllm_nvfp4.py` + `harness/sglang_fp4.py`, RTX PRO 6000, distinct-prompt,
+  CUDA-graphs-on): vLLM binds `modelopt_fp4` cutlass, SGLang `auto` selects FlashInfer CUTLASS
+  `fp4_gemm` (autotuned) — **not** Marlin. Native NVFP4 is ~1.7× bf16 prefill and ~1.7× decode at
+  B=64 (vLLM 116831 vs 46880 prefill, 8465 vs 4947 decode). SGLang wins decode every batch
+  (10145 vs 8465 @B64). The Marlin W4A16 ~50 tok/s fallback figure was a 397B MoE, not this dense
+  path. `[external]` See the serving table in `docs/paper.md` §9 and below.
 - **Datacenter context (B200, sm_100, NOT our card):** SGLang/FlashInfer/vLLM FP4 MoE reach
   ~1000–1260 TFLOPS, ~3.5× over bf16, using tcgen05/UMMA we don't have. `[external]` Do not
   compare our SM120 numbers to these; different silicon.
@@ -88,6 +91,23 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 | **Sparse FP4 vs CUTLASS 80b, rectangular LLM shapes** (win 1.18× attn, 1.14× ffn-up, 1.17× ffn-down) | **`[measured]`** | `harness/cutlass_shapes.py`; 80b-verified — the consistent, shipping-shape win |
 | Decode small-M beats bf16 | `[measured, marginal]` | 1.27× attn-qkv, 4.53× ffn-up; real-scale decode ties bf16 in the small-N corner (router falls back to bf16) |
 | Sparse decode is a win | `[measured, negative]` | `sparse_sk_lib.cu` marginal; reverted |
+| **End-to-end serving baselines measured** (vLLM bf16 / vLLM NVFP4 / SGLang NVFP4, distinct-prompt, CUDA-graphs) | `[measured]` | `harness/vllm_nvfp4.py`, `harness/sglang_fp4.py`; serving table below + `docs/paper.md` §9 |
+| quadbit *inside* a serving engine (paged attn, continuous batching, decode) | `[not built]` | prefill-only prototype (`harness/dense_e2e.py`) trails serving prefill ~10× — eager bf16 attention, not the GEMM |
+
+### Serving table (RTX PRO 6000, Llama-3.1-8B-Instruct family, CUDA graphs on, distinct prompts, S=2048 prefill / GEN=128 decode)
+
+**Table A — real serving engines:**
+
+| engine | quant | weights | WT-2 PPL | prefill B=1/8/32/64 | decode B=1/8/32/64 |
+|--------|-------|---------|----------|---------------------|--------------------|
+| vLLM 0.21 | bf16 | 15.0 GiB | 7.267 | 10209/26436/31559/46880 | 88/690/2599/4947 |
+| vLLM 0.21 | NVFP4 cutlass | 5.66 GiB | 7.974 | 13530/63056/78028/116831 | 131/1049/4259/8465 |
+| SGLang 0.5 | NVFP4 FlashInfer-CUTLASS `fp4_gemm` | ~5.6 GiB | 7.97 (ckpt) | 16829/59769/73414/109002 | 186/1491/5424/10145 |
+
+**Table B — quadbit dense FP4 prototype (full-forward, PREFILL-ONLY, no decode engine):** quantized-linear
+weights 3.93 GiB (block linears only; embed/lm_head/attn stay bf16, not counted), through-kernel WT-2 PPL
+**7.90** (matches vLLM native NVFP4 7.97 within 0.07), full-model prefill **7815 tok/s** (B=8, S=2048, eager
++ HF bf16 attention). NOT a serving-stack number; do not share a tok/s column with Table A.
 
 **Honest read on speed:** dense is competitive but slightly behind CUTLASS on the shapes that
 ship (loses on all three rectangular LLM shapes) — it beats bf16, not CUTLASS. Sparse is the
@@ -126,9 +146,11 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
   eager bf16 on isolated blocks; numerically at the FP4/prune floor. Real, valuable.
 - `QuadbitLinear` drop-in + packer (maxrel 0.0039 vs kernel): `[measured]`.
 - Full fused decoder block on real Qwen3-8B: `[measured]` 2.16–2.19× dense, block rel 0.13.
-- **Not shown:** a full model forward (many layers) producing correct logits/PPL end-to-end at
-  serving batch sizes, vs a real serving baseline (vLLM Marlin fallback or SGLang FP4). All
-  end-to-end numbers are single-block or single-shape. `[unmeasured]`
+- **Full model forward + serving baselines: `[measured]`** (serving table above, `docs/paper.md`
+  §9). quadbit full-forward through-kernel PPL 7.90 matches native NVFP4 (7.97); serving engines
+  (vLLM bf16/NVFP4, SGLang NVFP4) measured on the same card/protocol. **Still not shown:** quadbit
+  *inside* a serving stack (paged attn, continuous batching, decode scheduler) — the prefill-only
+  prototype trails serving prefill ~10× due to eager bf16 attention, not the GEMM. `[not built]`
 
 ---
 
@@ -141,9 +163,11 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    (`harness/cutlass_shapes.py`, committed): rectangular Llama-3 shapes reveal dense **loses** to
    79b (0.89–1.01×) while sparse **wins** vs 80b (1.14–1.18×). The square dense win was an artifact;
    sparse is the consistent win.
-3. **A real end-to-end model run** (correct PPL through the full quadbit stack on a real model
-   at batch), vs vLLM-Marlin and SGLang-FP4 on the same card. Ties speed + accuracy + usability
-   into one defensible number.
+3. ~~**A real end-to-end model run**~~ **DONE for accuracy + baselines** (serving table above):
+   quadbit full-forward through-kernel PPL 7.90 == native NVFP4 7.97; vLLM/SGLang NVFP4 measured
+   on the same card. **Remaining:** quadbit inside a real serving engine for a true tok/s
+   head-to-head (paged attn + continuous batching + decode). The kernel is proven; the serving
+   integration is the open engineering step.
 4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
    "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
 5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The
@@ -176,10 +200,11 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    resolved. Next natural step is #2 (rectangular shapes) to see if the win holds off-square.
 2. ~~**Run `harness/cutlass_shapes.py`** beyond square.~~ **DONE** (committed): dense loses to 79b
    on rectangular shapes, sparse wins vs 80b. → Gap #2 resolved; reframed the project spine to sparse.
-3. **End-to-end: one real model, full forward, correct PPL, at batch**, quadbit vs vLLM-Marlin
-   vs SGLang-FP4 on the same RTX PRO 6000. One table: tok/s, PPL, memory. → Gap #3, and it's the
-   number that actually earns recognition. (`harness/vllm_nvfp4.py` is a first SM120-NVFP4 smoke
-   test toward the vLLM baseline; the full end-to-end table is still unbuilt.)
+3. ~~**End-to-end: one real model, full forward, correct PPL, at batch**~~ **DONE — serving
+   table built** (`harness/vllm_nvfp4.py`, `harness/sglang_fp4.py`, `harness/dense_e2e.py`; table
+   above + `paper.md` §9). Both vLLM and SGLang run NATIVE NVFP4 (not Marlin) on this card; quadbit
+   through-kernel PPL 7.90 matches native NVFP4 7.97. → Gap #3 resolved on accuracy + baselines.
+   **Only remaining piece:** quadbit inside a real serving engine for a true tok/s head-to-head.
 4. ~~**Quantify sparse-net-of-recovery on TinyLlama.**~~ **SUPERSEDED** — the TinyLlama flip was a
    crude-dense artifact; on real 8B (`recovery_worth.py` + `finetune_pair.py`) dense-W4A4 6.91
    beats deployable sparse-recovered (8.47 through-kernel) by ~1.56. Resolved as gap #5.

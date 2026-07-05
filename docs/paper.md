@@ -325,7 +325,54 @@ Pareto point for throughput-bound serving, not an accuracy win.
 
 ---
 
-## 9. Related work
+## 9. End-to-end serving comparison (RTX PRO 6000)
+
+We ran real serving engines on the same card and model family, same protocol, to place quadbit
+against what a practitioner would actually deploy. All rows: Llama-3.1-8B-Instruct family, CUDA
+graphs on (`enforce_eager=False`), distinct per-request prompts (identical prompts collapse under
+prefix caching and inflate prefill), prefill = B prompts of S=2048 with 1 output token, decode =
+B short prompts with GEN=128 (`ignore_eos`), WikiText-2 PPL on the same 16x2048 windows. Memory
+is the loader-reported weight footprint; both engines additionally pre-allocate a KV pool to
+their utilization fraction, so total device reservation is about 86 to 89 GiB regardless of quant.
+
+**Table A: real serving engines** (paged attention, continuous batching, decode scheduler).
+
+| engine | quant | weights | WT-2 PPL | prefill tok/s (B=1/8/32/64) | decode tok/s (B=1/8/32/64) |
+|--------|-------|---------|----------|-----------------------------|----------------------------|
+| vLLM 0.21 | bf16 | 15.0 GiB | 7.267 | 10209 / 26436 / 31559 / 46880 | 88 / 690 / 2599 / 4947 |
+| vLLM 0.21 | NVFP4 (modelopt, cutlass) | 5.66 GiB | 7.974 | 13530 / 63056 / 78028 / 116831 | 131 / 1049 / 4259 / 8465 |
+| SGLang 0.5 | NVFP4 (auto → FlashInfer CUTLASS `fp4_gemm`) | ~5.6 GiB | 7.97 (same ckpt) | 16829 / 59769 / 73414 / 109002 | 186 / 1491 / 5424 / 10145 |
+
+Native NVFP4 W4A4 is real on SM120 through both engines: vLLM binds the `modelopt_fp4` cutlass
+method (not a Marlin W4A16 fallback), and SGLang's `auto` backend selects the FlashInfer CUTLASS
+`fp4_gemm` path (autotuned at startup, visible in its log). Against bf16, NVFP4 is 1.7x prefill
+and 1.7x decode at B=64 (vLLM), for 2.6x smaller weights and +0.71 PPL. SGLang and vLLM NVFP4
+trade the lead: SGLang wins decode at every batch (10145 vs 8465 at B=64) and low-batch prefill,
+vLLM wins high-batch prefill (116831 vs 109002 at B=64).
+
+**Table B: quadbit dense FP4 prototype** (full-forward, PREFILL-ONLY, no decode engine).
+
+| build | quant | quantized-linear weights | through-kernel WT-2 PPL | full-model prefill tok/s |
+|-------|-------|--------------------------|-------------------------|--------------------------|
+| quadbit dense two-level | W4A4 (per-16 ue4m3 + fp32 global) | 3.93 GiB* | 7.899 | 7815 (B=8, S=2048) |
+
+*3.93 GiB counts only the transformer-block linears swapped to the FP4 kernel; embeddings,
+lm_head, and attention stay bf16 and are not counted, so this is not a full-model on-device
+footprint comparable to Table A's loader figures.
+
+Table B is deliberately not in Table A. quadbit ships a kernel plus an `nn.Linear` drop-in, not a
+serving stack: no paged attention, no continuous batching, no CUDA graphs, no decode scheduler,
+and attention runs in HuggingFace eager bf16. The prefill number is GEMM-plus-activation-quantizer
+bound over an eager Python forward, so it trails the serving engines' prefill by roughly an order
+of magnitude and must not be read as a serving-throughput result. What Table B does establish is
+that the deployed W4A4 path is accuracy-correct end to end: through-kernel PPL 7.90 matches vLLM's
+native NVFP4 7.97 to within 0.07 on the same windows, confirming quadbit's zero-calibration
+two-level recipe reaches the calibrated reference's accuracy. A real serving-engine integration
+(the number that would put quadbit in Table A) remains future work.
+
+---
+
+## 10. Related work
 
 **CUTLASS** ships dense (79b) and sparse (80b) NVFP4 GEMMs for SM120 since 3.9.0. These are our
 true baselines and we benchmark against both. The opening is not that a reference kernel is
@@ -333,10 +380,12 @@ absent but that the SM120 block-scaled path has documented correctness and autot
 (CUTLASS issue #3096: grouped GEMM garbage output, TMA warp-specialized tactics failing to
 init) and that no library wraps a sparse FP4 kernel in a deployment stack.
 
-**Deployed inference on SM120.** vLLM largely falls back to Marlin W4A16 (dequant FP4 to bf16
-in-kernel, forfeiting the FP4 FLOPS), reported around 50 tok/s on a 397B MoE. SGLang gets
-native FP4 at about 1.47x over bf16 at batch 1 and 2.23x at batch 128. Our 3.0 to 3.7x dense
-prefill is above this deployed reality.
+**Deployed inference on SM120.** The Marlin W4A16 fallback (dequant FP4 to bf16 in-kernel,
+forfeiting the FP4 FLOPS) was reported around 50 tok/s on a 397B MoE, but for the dense
+Llama-3.1-8B NVFP4 checkpoint we measure both vLLM 0.21 and SGLang 0.5 binding the *native* NVFP4
+W4A4 cutlass path on this card (Section 9: vLLM `modelopt_fp4`, SGLang FlashInfer CUTLASS
+`fp4_gemm`), not Marlin. Against those real engines our through-kernel W4A4 accuracy matches
+(PPL 7.90 vs 7.97); the remaining gap is serving-stack engineering, not the kernel.
 
 **Datacenter FP4 (B200, SM100, not our card).** SGLang/FlashInfer/vLLM FP4 MoE reach roughly
 1000 to 1260 TFLOPS using `tcgen05`/UMMA that SM120 does not have. We do not compare our SM120
@@ -350,12 +399,15 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 
 ---
 
-## 10. Limitations
+## 11. Limitations
 
-- **No full end-to-end serving number yet.** The 2 to 5.8x figures are isolated blocks and
-  shapes. A full multi-layer forward producing correct logits and PPL at serving batch sizes,
-  against vLLM-Marlin and SGLang-FP4 on the same card, is not yet built. This is the single most
-  valuable missing measurement.
+- **No quadbit serving-engine integration yet.** Section 9 now measures the serving baselines
+  (vLLM bf16, vLLM NVFP4, SGLang NVFP4) and quadbit's full-forward prefill against them, and
+  confirms quadbit's through-kernel accuracy (PPL 7.90) matches native NVFP4 (7.97). What is still
+  missing is quadbit *inside* a real serving stack (paged attention, continuous batching, decode
+  scheduler); the prefill-only prototype trails serving prefill by about an order of magnitude
+  because it runs an eager forward with bf16 attention, not because of the GEMM. This is the
+  single most valuable remaining engineering step.
 - **Sparse recovery loses to dense on accuracy** (Section 8). The deployable sparse-recovered 8B
   is 8.47 PPL through the two-level kernel, about 1.56 above dense W4A4 (6.91), and diverse-corpus
   data (C4) did not close it on the WikiText-2 test. Sparse is speed-only on accuracy grounds.
@@ -368,7 +420,7 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 
 ---
 
-## 11. Conclusion
+## 12. Conclusion
 
 On SM120, FP4 is a real speedup but only through kernels and a stack that the ecosystem does not
 yet provide. We hand-wrote both, took the dense kernel to the compute ceiling and the sparse

@@ -283,6 +283,39 @@ Verified against ACTUAL current model configs (not assumptions), `harness/real_m
     the ~0.10 target. Speed 1.2–2.3× over bf16 (STAGES=2 + per-16 scales); NVFP4 = the accuracy path
     (0.097), MXFP4 = the speed path (2.15× @ 0.13). The ue4m3 dense mma accuracy follow-up is DONE.
 
+## End-to-end serving comparison (RTX PRO 6000, Llama-3.1-8B-Instruct family)
+
+Real serving engines on the same card/protocol (CUDA graphs on, distinct per-request prompts — identical
+prompts collapse under prefix caching and inflate prefill; prefill = B×S=2048 with 1 out tok, decode =
+GEN=128 ignore_eos; WT-2 16×2048). `harness/vllm_nvfp4.py serve`, `harness/sglang_fp4.py --mode bench`,
+`harness/dense_e2e.py`. Weights = loader footprint; both engines also pre-allocate a KV pool to their util
+fraction, so total device reservation is ~86–89 GiB regardless of quant (not the weight number).
+
+**Table A — real serving engines:**
+
+| engine | quant | weights | WT-2 PPL | prefill B=1/8/32/64 | decode B=1/8/32/64 |
+|--------|-------|---------|----------|---------------------|--------------------|
+| vLLM 0.21 | bf16 | 15.0 GiB | 7.267 | 10209/26436/31559/46880 | 88/690/2599/4947 |
+| vLLM 0.21 | NVFP4 modelopt-cutlass | 5.66 GiB | 7.974 | 13530/63056/78028/116831 | 131/1049/4259/8465 |
+| SGLang 0.5 | NVFP4 FlashInfer-CUTLASS `fp4_gemm` | ~5.6 GiB | 7.97 (ckpt) | 16829/59769/73414/109002 | 186/1491/5424/10145 |
+
+- **Both engines run NATIVE NVFP4 W4A4, not Marlin**, on this card for the dense checkpoint: vLLM binds
+  `modelopt_fp4` cutlass; SGLang `auto` selects the FlashInfer CUTLASS `fp4_gemm` (autotuned at startup,
+  in-log). The ~50 tok/s Marlin fallback figure was a 397B MoE, not this path.
+- NVFP4 vs bf16 (vLLM, B=64): **~1.7× prefill** (116831 vs 46880), **~1.7× decode** (8465 vs 4947), for
+  **2.6× smaller weights** and +0.71 PPL. SGLang wins decode every batch (10145 vs 8465 @B64) and low-batch
+  prefill; vLLM wins high-batch prefill. NVFP4 KV is fp8_e4m3 (checkpoint config); bf16 row uses bf16 KV.
+
+**Table B — quadbit dense FP4 prototype (full-forward, PREFILL-ONLY, no decode engine):** quantized-linear
+weights **3.93 GiB** (block linears only; embeddings/lm_head/attention stay bf16, not counted → not a
+full-model on-device footprint), through-kernel WT-2 PPL **7.899**, full-model prefill **7815 tok/s**
+(B=8, S=2048, eager + HF bf16 attention + fused act-quantizer + per-linear kernel call). NOT a serving
+number — no paged attention, no continuous batching, no CUDA graphs, no decode scheduler; it trails
+serving prefill ~10× because of the eager bf16-attention forward, not the GEMM. What it proves: the
+deployed W4A4 path is accuracy-correct end to end — **7.90 matches native NVFP4 7.97 within 0.07 on the
+same windows**, so the zero-calibration two-level recipe reaches the calibrated reference. Getting quadbit
+into a serving stack for a true tok/s head-to-head is the open engineering step.
+
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
 - mma peaks (register-only, DCE-defeated): sparse `mma.sp` m16n8k128 = **3626k**, dense
