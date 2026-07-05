@@ -69,18 +69,25 @@ def run(mode: str = "smoke", backend: str = "auto") -> None:
         return int(out[0])
 
     S, GEN = 2048, 128
-    long_ids = list(range(1, S + 1))
-    short = "Explain how a transformer works."
-    engine.generate(short, {"temperature": 0.0, "max_new_tokens": 8})  # warmup
+    # DISTINCT prompts per request (identical prompts + RadixAttention prefix cache collapse prefill).
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
+
+    def distinct_short(i):
+        return f"Explain concept {i}: how does mechanism {i * 7 + 3} operate in practice, step by step?"
+
+    engine.generate(distinct_short(0), {"temperature": 0.0, "max_new_tokens": 8})  # warmup
     mem_warm = gpu_mib(); mem_peak = mem_warm
 
     print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
     for B in (1, 8, 32, 64):
         t = time.perf_counter()
-        engine.generate(input_ids=[long_ids] * B, sampling_params={"temperature": 0.0, "max_new_tokens": 1})
+        engine.generate(input_ids=[distinct_ids(i) for i in range(B)],
+                        sampling_params={"temperature": 0.0, "max_new_tokens": 1})
         pf = B * S / (time.perf_counter() - t)
         t = time.perf_counter()
-        engine.generate([short] * B, sampling_params={"temperature": 0.0, "max_new_tokens": GEN, "ignore_eos": True})
+        engine.generate([distinct_short(i) for i in range(B)],
+                        sampling_params={"temperature": 0.0, "max_new_tokens": GEN, "ignore_eos": True})
         dc = B * GEN / (time.perf_counter() - t)
         mem_peak = max(mem_peak, gpu_mib())
         print(f"{B:>4} | {pf:>14.0f} | {dc:>13.0f}", flush=True)

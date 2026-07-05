@@ -145,8 +145,13 @@ def serve(model: str = MODEL, eager: bool = False) -> None:
     print(f"[{model}] {torch.cuda.get_device_name(0)} mode={mode}", flush=True)
     mem_load = gpu_mib()
 
-    long_ids = list(range(1, S + 1))                       # exact S-token prompt (prefill control)
-    short = "Explain how a transformer works."             # short prompt (decode control)
+    # DISTINCT prompts per request: identical prompts + prefix caching collapse to one real prefill
+    # and inflate prefill tok/s. Distinct S-token id sequences (valid vocab range) measure real work.
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
+
+    def distinct_short(i):
+        return f"Explain concept {i}: how does mechanism {i * 7 + 3} operate in practice, step by step?"
 
     def tps(prompts, sp):
         torch.cuda.synchronize(); t = time.perf_counter()
@@ -154,15 +159,15 @@ def serve(model: str = MODEL, eager: bool = False) -> None:
         dt = time.perf_counter() - t
         return outs, dt
 
-    llm.generate([short], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
+    llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
     mem_warm = gpu_mib(); mem_peak = mem_warm
     print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
     for B in (1, 8, 32, 64):
         pf_sp = SamplingParams(temperature=0, max_tokens=1)
-        _, pf_dt = tps([{"prompt_token_ids": long_ids} for _ in range(B)], pf_sp)
+        _, pf_dt = tps([{"prompt_token_ids": distinct_ids(i)} for i in range(B)], pf_sp)
         prefill_tps = B * S / pf_dt
         dc_sp = SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True)
-        outs, dc_dt = tps([short] * B, dc_sp)
+        outs, dc_dt = tps([distinct_short(i) for i in range(B)], dc_sp)
         gen = sum(len(o.outputs[0].token_ids) for o in outs)
         mem_peak = max(mem_peak, gpu_mib())
         print(f"{B:>4} | {prefill_tps:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
