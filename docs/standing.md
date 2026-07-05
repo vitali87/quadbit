@@ -134,10 +134,12 @@ shape 1.01–1.12×, and in wall-clock beats even the best FlashInfer DENSE on e
 1.07–1.38× — a Pareto point no shipping library provides. Its *marginal* value over our own dense is
 ~1.33× at the roofline. Whether that speed is worth the recovery pipeline over dense is the **open
 accuracy question**: all-sparse 8B loses by ~1.56 PPL (deployable 8.47 through-kernel vs dense 6.91;
-deploy gap closed, data lever negative, see gap #5). The make-or-break next result is HYBRID
-placement — keep accuracy-critical matrices dense, push insensitive ones sparse
-(`harness/sensitivity_sparse.py`, sweep in flight) — to capture a meaningful fraction of the sparse
-speedup while retaining most dense accuracy.
+deploy gap closed, data lever negative, see gap #5). The TRAINING-FREE hybrid-placement answer is
+now measured and NEGATIVE (`harness/sensitivity_sparse.py`, gap #8): SparseGPT one-shot pair-2:4
+errors compound super-linearly, so a small PPL budget buys almost no sparse FLOPs (+0.05 PPL → 3%
+of MLP FLOPs sparse, ~1.008×; even the +0.50 budget only reaches 7%, ~1.018×), and the speed
+ceiling is 1.33× even at all-sparse. A useful hybrid would require per-mask QAT recovery, capped by
+that same 1.33× ceiling.
 
 ---
 
@@ -221,6 +223,18 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    the **deployed two-level** numbers on the leaderboard (dense sq8192 1045, sparse sq8192 1973).
    Both protocols are reported side by side with which kernel each measures; the leaderboard uses
    one consistent effective-FLOP 2·M·N·K / cudaEvent protocol across all backends.
+8. **Training-free HYBRID sparse placement = NEGATIVE (2026-07-06, `harness/sensitivity_sparse.py`).**
+   Ranked every matrix by SparseGPT one-shot pair-2:4 fake-quant ΔPPL on C4 (disjoint from WT-2 test),
+   sparsified least-damaging-first, scored the curve on held-out WT-2. Result: no useful free hybrid.
+   Per-matrix isolation ΔPPL is near-zero (−0.13 to +0.11) but errors **compound super-linearly**, so
+   the accuracy budget buys almost no sparse FLOPs. **MLP-only** (`--no-all-linears`, 96 matrices, dense
+   6.74 → all-sparse 38.37): +0.05 PPL → 3% FLOPs sparse (~1.008×), +0.50 PPL → 7% (~1.018×), half-sparse
+   = +6.44 PPL. **All-linears** (224 matrices, dense 6.91 → all-sparse 162.7): +0.05 → 4% (~1.009×); attn
+   sparsity is the bigger destroyer (162 vs 38 all-sparse). Structural signal: `down_proj` tolerates
+   sparsity best, `up_proj` worst. Combined with the hard **1.33× speed ceiling** at all-sparse, a useful
+   hybrid would need per-mask QAT recovery and even then is capped at 1.33×. The sparse Pareto headline
+   (deployed sparse beats FlashInfer dense on prunable weights, gap #0) stands; a *dense-model* hybrid
+   does not add a free Pareto point. Open: whether a QAT-recovered hybrid is worth the training cost.
 
 ---
 
@@ -254,6 +268,13 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    closed** (through-kernel 8.47 == fake-quant, vs single-level 11.89), costs 2–10%, still beats
    CUTLASS 80b. Deployable sparse = 8.47, loses to dense by ~1.56. Dense at +0.63 is the accuracy
    headline; sparse is the speed spine (CUTLASS-beating, ~1.33× over our dense).
+6. ~~**Hybrid sparse placement (sensitivity from the dense W4A4 checkpoint).**~~ **DONE — training-free
+   is NEGATIVE** (`harness/sensitivity_sparse.py`, gap #8): SparseGPT one-shot pair-2:4 errors compound
+   super-linearly, so +0.05 PPL buys ~3% of MLP FLOPs sparse (~1.008×) and +0.50 buys ~7% (~1.018×);
+   `down_proj` most sparse-tolerant, `up_proj` least; ceiling is 1.33× even at all-sparse. A *dense-model*
+   hybrid adds no free Pareto point. **Open decision:** whether to spend per-mask QAT recovery on a
+   hybrid, which is inherently capped at that 1.33× and would likely land a modest point (~1.1× for
+   ~+0.5–0.8 PPL). The sparse-beats-FlashInfer-dense Pareto (gap #0) remains the headline regardless.
 
 Whatever the experiments show, update `paper_notes.md` and delete/relabel `kernels.md`. The
 positioning must follow the measurements, not the other way around.

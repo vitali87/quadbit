@@ -395,6 +395,24 @@ two-level kernel closes the deploy gap, but it still loses to dense by about 1.5
 recovery and diverse data did not close that gap on the WikiText-2 metric. Sparse is an honest
 Pareto point for throughput-bound serving, not an accuracy win.
 
+**Can a hybrid recover most of the accuracy at some of the speed? Training-free, no.** We asked
+whether selectively sparsifying only the least-sensitive matrices (keeping the rest dense W4A4)
+buys a meaningful fraction of the sparse speedup while staying close to dense accuracy. We ranked
+every matrix by the PPL cost of making just it 2:4-sparse (SparseGPT one-shot pair-granular prune,
+Hessian-compensated, no training), scored on a C4 selection set disjoint from the WikiText-2 test,
+then sparsified least-damaging-first and traced the held-out curve (`harness/sensitivity_sparse.py`).
+The result is negative: each matrix in isolation is nearly free (per-matrix delta-PPL ranges only
+-0.13 to +0.11), but the errors compound super-linearly when stacked. On the deployment-relevant MLP
+linears (dense 6.74, all-sparse one-shot 38.37), staying within +0.05 PPL allows only 3% of MLP FLOPs
+to go sparse (an estimated 1.008x), and even a +0.50 PPL budget reaches just 7% (1.018x); including
+attention makes it worse (all-sparse 162.7, attention sparsity the larger destroyer). Structurally
+`down_proj` tolerates sparsity best and `up_proj` worst. Because even a fully sparse model is only
+1.33x over dense at the roofline, the hybrid upside is capped there regardless; a useful hybrid would
+require per-mask QAT recovery and would still be bounded by that 1.33x. The training-free free-lunch
+hybrid does not exist, and the sparse Pareto point that stands (Section 5: deployed sparse beats the
+best available dense FP4 on prunable weights) is not a dense-model hybrid but a whole-matrix
+prunability result.
+
 ---
 
 ## 9. End-to-end serving comparison (RTX PRO 6000)
@@ -533,6 +551,7 @@ FP4, deployed, fastest-for-prunable) that CUTLASS, FlashInfer, SGLang, and vLLM 
 - **Harnesses.** `bench_vs_bf16.py` (throughput), `cutlass_fp4.py` / `cutlass_sparse.py` /
   `cutlass_shapes.py` (CUTLASS baselines), `quadbit_linear.py` (drop-in), `recovery_worth.py`
   (dense W4A4 accuracy), `sparsegpt_pair.py` (one-shot), `finetune_pair.py` (recovery),
+  `sensitivity_sparse.py` (hybrid sparse-placement sweep, training-free negative result),
   `vllm_nvfp4.py` (vLLM SM120 NVFP4 smoke test).
 - **Full chronological build log.** Memory `quadbit-raw-ptx.md`.
 </content>

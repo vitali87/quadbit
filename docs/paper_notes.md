@@ -483,6 +483,16 @@ into a serving stack for a true tok/s head-to-head is the open engineering step.
   efficient to beat on ffn-up. Confirms sparse decode is a real capability but not a big lever; the
   half-weight win is capped by the reduction overhead the thin output forces. Prefill sparse remains
   the big sparse win (4–5×).
+- **Training-free HYBRID sparse placement** (`harness/sensitivity_sparse.py`, 2026-07-06): rank each
+  matrix by SparseGPT one-shot pair-2:4 fake-quant ΔPPL on C4 (disjoint from WT-2 test), sparsify
+  least-damaging-first, score on held-out WT-2. NEGATIVE. Per-matrix isolation ΔPPL is near-zero
+  (−0.13 to +0.11) but errors compound super-linearly. MLP-only: dense 6.74 → all-sparse 38.37;
+  +0.05 PPL budget = 3% FLOPs sparse (~1.008×), +0.50 = 7% (~1.018×), half-sparse = +6.44. All-linears:
+  dense 6.91 → all-sparse 162.7 (+0.05 → 4%); attention sparsity is the bigger destroyer. `down_proj`
+  most sparse-tolerant, `up_proj` least. Speed ceiling is 1.33× even at 100% sparse, so the hybrid
+  upside is capped there; a useful hybrid needs per-mask QAT and is still bounded by 1.33×. The
+  free-lunch dense-model hybrid does not exist; the sparse Pareto (deployed sparse beats FlashInfer
+  dense on prunable weights) is a whole-matrix prunability result, not a hybrid.
 
 ## Reproducibility
 
@@ -495,7 +505,8 @@ into a serving stack for a true tok/s head-to-head is the open engineering step.
   `bench_vs_bf16.py` (throughput), `cutlass_fp4.py` (real CUTLASS FP4 baseline +
   SASS dissect), `quadbit_linear.py` (drop-in), `accuracy_hf.py` /
   `accuracy_sparse.py` (weight-recon), `perplexity_sparse.py` (end-to-end PPL),
-  `sparsegpt_pair.py` (one-shot), `finetune_pair.py` (recovery).
+  `sparsegpt_pair.py` (one-shot), `finetune_pair.py` (recovery), `sensitivity_sparse.py`
+  (hybrid sparse-placement sweep, training-free negative).
 - Full chronological build log (breakthroughs + tedium): memory `quadbit-raw-ptx.md`.
 
 ## Paper narrative arc (draft)
