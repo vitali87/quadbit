@@ -368,20 +368,50 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+
+    # FUSED sparse MLP: gate_up sparse GEMM -> C[28672,tp] (no transpose) -> fused_swiglu_quant
+    # (silu(g)*u + NVFP4 quant, one pass, no bf16 intermediate) -> down sparse GEMM. This is BOTH the
+    # correct path (cos 0.997 vs unfused two-level; the model's SiluAndMul custom op must NOT be reused
+    # on sparse bf16 output -> that produced the 129854-PPL garbage) AND the fast one (~1.25x vs native
+    # NVFP4 MLP at chunk M). down activation is single-level (gB=1) as fused_swiglu_quant emits.
+    def make_fwd(m):
+        gu, dn = m._qb_gu, m._qb_dn
+        H, Iw = gu.in_f, dn.in_f  # 4096, 14336
+
+        def fwd(x):
+            lead = x.shape[:-1]; x2 = x.reshape(-1, H).to(torch.bfloat16)
+            t = x2.shape[0]; pad = (-t) % 128
+            if pad:
+                x2 = torch.cat([x2, x2.new_zeros(pad, H)], 0)
+            x2 = x2.contiguous(); tp = t + pad
+            Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+            sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
+            gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
+            Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
+                                   gu.meta.data_ptr(), Cgu.data_ptr(), gu.out_f, tp, H,
+                                   gu.gA.data_ptr(), gBg.data_ptr())
+            Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+            sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+            lib.fused_swiglu_quant(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(), sH.data_ptr(), tp, Iw)
+            gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
+            Cout = torch.empty((dn.out_f, tp), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                   dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
+                                   dn.gA.data_ptr(), gB1.data_ptr())
+            return Cout.t()[:t].reshape(*lead, dn.out_f).to(x.dtype)
+        return fwd
 
     for li, layer in enumerate(model.model.layers):
         gu, dn = mlpw[li]
         mlp = layer.mlp
         mlp._qb_gu = QBSparse(gu.to(dev)); mlp._qb_dn = QBSparse(dn.to(dev))
         mlpw[li] = None  # free CPU copy as we go
-
-        def make_fwd(m):
-            def fwd(x):  # sparse MLP on ALL M (same pruned weights for prefill + decode)
-                return m._qb_dn.forward(m.act_fn(m._qb_gu.forward(x)))
-            return fwd
         mlp.forward = make_fwd(mlp)
     del mlpw; gc.collect(); torch.cuda.empty_cache()
     mem_patched = gpu_mib()
