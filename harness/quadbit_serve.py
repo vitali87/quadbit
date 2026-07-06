@@ -47,7 +47,12 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 @app.function(image=build_image, timeout=1200, volumes={"/cache": vol})
 def store_so() -> None:
+    # --default-stream per-thread: the kernels' <<<>>> (stream 0) then bind to the CALLING THREAD's current
+    # stream, i.e. vLLM's stream, not the legacy default stream. Removes the cross-stream hazard that
+    # otherwise forced torch.cuda.synchronize + a re-materializing copy in every MLP forward (which erased
+    # the batch speedup). With per-thread streams the kernel is naturally ordered on vLLM's stream.
     c = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                        "--default-stream", "per-thread",
                         "--cudart", "shared",  # resolve libcudart.so.12 at runtime (12.9 provides it)
                         "-o", SO_PATH, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"],
                        capture_output=True, text=True)
