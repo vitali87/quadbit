@@ -329,7 +329,8 @@ BF16_CKPT = "meta-llama/Llama-3.1-8B-Instruct"
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False) -> None:
+def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
+                 fused: bool = True, ppl_only: bool = False) -> None:
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -381,6 +382,13 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     def make_fwd(m):
         gu, dn = m._qb_gu, m._qb_dn
         H, Iw = gu.in_f, dn.in_f  # 4096, 14336
+
+        if not fused:  # unfused TWO-LEVEL path via PLAIN SwiGLU (NOT the model's SiluAndMul; that was
+            def fwd_unf(x):  # the cos~0 bug). Slower (parity, no fusion) but two-level down activation.
+                y = gu.forward(x)  # [.., 28672]
+                h = torch.nn.functional.silu(y[..., :Iw]) * y[..., Iw:]
+                return dn.forward(h)
+            return fwd_unf
 
         def fwd(x):
             lead = x.shape[:-1]; x2 = x.reshape(-1, H).to(torch.bfloat16)
@@ -483,7 +491,9 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
             plp = o.prompt_logprobs
             nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
         print(f"PPL_THROUGH_SERVING {math.exp(nll / n):.4f} (magnitude pair-2:4 MLP, no recovery; "
-              f"non-MLP NVFP4; {len(wins)}x{S})", flush=True)
+              f"non-MLP NVFP4; {'fused single-level' if fused else 'unfused two-level'}; {len(wins)}x{S})", flush=True)
+    if ppl_only:
+        print("PPL_ONLY_DONE", flush=True); return
 
     llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
     mem_peak = gpu_mib()
@@ -745,11 +755,11 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
-         util: float = 0.8, instrument: bool = False) -> None:
+         util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False) -> None:
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only)
     elif mode == "bench":
         call = bench_mlp.spawn(util, instrument)  # reuse --instrument flag as the verify gate
     else:
