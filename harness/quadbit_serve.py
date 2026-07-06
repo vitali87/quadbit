@@ -473,7 +473,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def bench_mlp(util: float = 0.55) -> None:
+def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
     # Track A: exact MLP head-to-head. Times vLLM native NVFP4 MLP vs quadbit sparse MLP with CUDA
     # events (p50/p95/min), per component, over a shape sweep + real serving prefill shapes; then
     # measures the empirical MLP fraction of a real prefill forward and prints the Amdahl ceiling
@@ -526,6 +526,46 @@ def bench_mlp(util: float = 0.55) -> None:
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     QBSparse = _qbsparse_factory(torch, lib, dev)
     qb_gu, qb_dn = QBSparse(gu0.to(dev)), QBSparse(dn0.to(dev))
+
+    if verify:  # CORRECTNESS GATE for the B4 fused path (before trusting its 1.25x speed)
+        M = 2048
+        x = torch.randn(M, H, device=dev, dtype=torch.bfloat16)
+        Wgu, Wdn = gu0.to(dev).float(), dn0.to(dev).float()
+        gu_bf = x.float() @ Wgu.t()                    # [M,28672] bf16-input fp32-acc reference
+        g_ref, u_ref = gu_bf[:, :I], gu_bf[:, I:]
+        h_ref = (g_ref * torch.sigmoid(g_ref)) * u_ref  # silu(gate)*up
+        ref = h_ref @ Wdn.t()                           # [M,4096]
+        uns = qb_dn.forward(nmlp.act_fn(qb_gu.forward(x))).float()  # unfused sparse (two-level)
+        # fused single-level path
+        Bb = torch.empty((M, H // 2), dtype=torch.uint8, device=dev)
+        sBg = torch.empty((H // 128, M, 4), dtype=torch.uint8, device=dev)
+        gBg = torch.empty((M,), dtype=torch.float32, device=dev)
+        Cgu = torch.empty((qb_gu.out_f, M), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((M, I // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((I // 128, M, 4), dtype=torch.uint8, device=dev)
+        gB1 = torch.ones((M,), dtype=torch.float32, device=dev)
+        Cout = torch.empty((qb_dn.out_f, M), dtype=torch.bfloat16, device=dev)
+        lib.quantize_act_nvfp4_2lvl(x.contiguous().data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), M, H)
+        lib.sparse_fp4_mm_2lvl(qb_gu.Ac.data_ptr(), Bb.data_ptr(), qb_gu.scaleA.data_ptr(), sBg.data_ptr(),
+                               qb_gu.meta.data_ptr(), Cgu.data_ptr(), qb_gu.out_f, M, H,
+                               qb_gu.gA.data_ptr(), gBg.data_ptr())
+        lib.fused_swiglu_quant(Cgu.data_ptr(), Cgu.data_ptr() + 14336 * M * 2, Hb.data_ptr(), sH.data_ptr(), M, I)
+        lib.sparse_fp4_mm_2lvl(qb_dn.Ac.data_ptr(), Hb.data_ptr(), qb_dn.scaleA.data_ptr(), sH.data_ptr(),
+                               qb_dn.meta.data_ptr(), Cout.data_ptr(), qb_dn.out_f, M, I,
+                               qb_dn.gA.data_ptr(), gB1.data_ptr())
+        fused = Cout.t()[:M].float()
+
+        def cmp(a, b):
+            cos = torch.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim=0).item()
+            mr = ((a - b).abs().max() / b.abs().max().clamp_min(1e-9)).item()
+            return cos, mr
+
+        for nm, t in (("unfused-sparse", uns), ("fused", fused)):
+            cos, mr = cmp(t, ref)
+            print(f"VERIFY {nm:>14} vs bf16-ref: cos {cos:.5f}  maxrel {mr:.4f}", flush=True)
+        cos, mr = cmp(fused, uns)
+        print(f"VERIFY {'fused':>14} vs unfused : cos {cos:.5f}  maxrel {mr:.4f}", flush=True)
+        print("VERIFY_DONE", flush=True); return
     del gu0, dn0; gc.collect(); torch.cuda.empty_cache()
 
     def nat_gu(x):
@@ -675,7 +715,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     elif mode == "hybrid":
         call = serve_hybrid.spawn(do_ppl, util, instrument)
     elif mode == "bench":
-        call = bench_mlp.spawn(util)
+        call = bench_mlp.spawn(util, instrument)  # reuse --instrument flag as the verify gate
     else:
         call = {"store_so": store_so, "smoke": smoke}.get(mode, smoke).spawn()
     print(f"SPAWN_ID {call.object_id}", flush=True)
