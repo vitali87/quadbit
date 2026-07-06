@@ -556,24 +556,6 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
 
-    rec = torch.load(ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32 recovered bf16
-    nl = len(model.model.layers)
-    assert len(rec) == 3 * nl, f"recovered weights {len(rec)} != 3*{nl}"
-    for li, layer in enumerate(model.model.layers):
-        g, u, d = rec[3 * li], rec[3 * li + 1], rec[3 * li + 2]
-        mlp = layer.mlp
-        mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev)); mlp._qb_dn = QBSparse(d.to(dev))
-        if fused:
-            _fused_mlp_fwd(mlp, torch, lib, dev)
-        else:  # unfused TWO-LEVEL plain SwiGLU (real-activation outlier control vs single-level fused)
-            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
-                y = g_.forward(x)
-                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
-            mlp.forward = unf
-    del rec; gc.collect(); torch.cuda.empty_cache()
-    print(f"patched {nl} MLPs to {'fused single-level' if fused else 'unfused two-level'} sparse "
-          f"from recovered ckpt {ckpt.split('/')[-1]}", flush=True)
-
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download
     from transformers import AutoTokenizer
@@ -582,14 +564,45 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
         "Salesforce/wikitext", "wikitext-2-raw-v1/test-00000-of-00001.parquet",
         repo_type="dataset")).column("text").to_pylist())).input_ids
     wins = [ids[i:i + S] for i in range(0, min(len(ids), 16 * S) - S, S)]
-    outs = llm.generate([{"prompt_token_ids": w} for w in wins],
-                        SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1), use_tqdm=False)
-    nll = n = 0
-    for w, o in zip(wins, outs):
-        plp = o.prompt_logprobs
-        nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
-    print(f"PPL_RECOVERED_THROUGH_FUSED {math.exp(nll / n):.4f} (base 8B, all-MLP SparseGPT+QAT recovered, "
-          f"fused single-level kernel, non-MLP bf16; {len(wins)}x{S}); through-kernel two-level ref ~8.30", flush=True)
+
+    def ppl(tag):
+        outs = llm.generate([{"prompt_token_ids": w} for w in wins],
+                            SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1), use_tqdm=False)
+        nll = n = 0
+        for w, o in zip(wins, outs):
+            plp = o.prompt_logprobs
+            nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
+        print(f"PPL[{tag}] {math.exp(nll / n):.4f} ({len(wins)}x{S})", flush=True)
+
+    ppl("base-unpatched")  # CONTROL: base Meta-Llama-3-8B through this exact harness (expect ~6)
+
+    rec = torch.load(ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32 recovered bf16
+    nl = len(model.model.layers)
+    assert len(rec) == 3 * nl, f"recovered weights {len(rec)} != 3*{nl}"
+    for li, layer in enumerate(model.model.layers):
+        g, u, d = rec[3 * li], rec[3 * li + 1], rec[3 * li + 2]
+        mlp = layer.mlp
+        mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev)); mlp._qb_dn = QBSparse(d.to(dev))
+        # CONTROL: recovered weights as DENSE bf16 (no sparse/quant) via my monkeypatch -> isolates whether
+        # the patch MECHANISM/full-forward is broken (dense should reproduce the masked-recovered model ~8-9).
+        gg = torch.cat([g, u], 0).to(dev).bfloat16(); dd = d.to(dev).bfloat16()
+        mlp.forward = (lambda guw, dw, iw: (lambda x: torch.nn.functional.linear(
+            torch.nn.functional.silu(torch.nn.functional.linear(x, guw)[..., :iw])
+            * torch.nn.functional.linear(x, guw)[..., iw:], dw)))(gg, dd, d.shape[1])
+    del rec; gc.collect(); torch.cuda.empty_cache()
+    ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
+
+    for li, layer in enumerate(model.model.layers):  # now the real sparse path
+        mlp = layer.mlp
+        if fused:
+            _fused_mlp_fwd(mlp, torch, lib, dev)
+        else:
+            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
+                y = g_.forward(x)
+                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
+            mlp.forward = unf
+    torch.cuda.empty_cache()
+    ppl(f"recovered-{'fused-1lvl' if fused else 'unfused-2lvl'}-sparse")
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
