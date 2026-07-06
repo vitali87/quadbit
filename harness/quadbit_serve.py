@@ -183,7 +183,11 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
             torch.cuda.synchronize()
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            # .clone() is REQUIRED: C.t() is non-contiguous so reshape returns a VIEW into C, and .to(dtype)
+            # is a no-op when dtypes match -> the returned tensor aliases the local C buffer, which the
+            # caching allocator frees when forward() returns. vLLM reads it LATER (residual add) -> garbage.
+            # gate_up escaped this (its view is consumed by silu*mul within the forward); down did not.
+            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype).clone()
 
     n = 0; sparse_params = 0; total_params = 0
     for layer in model.model.layers:
@@ -333,7 +337,11 @@ def _qbsparse_factory(torch, lib, dev):
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
             torch.cuda.synchronize()
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            # .clone() is REQUIRED: C.t() is non-contiguous so reshape returns a VIEW into C, and .to(dtype)
+            # is a no-op when dtypes match -> the returned tensor aliases the local C buffer, which the
+            # caching allocator frees when forward() returns. vLLM reads it LATER (residual add) -> garbage.
+            # gate_up escaped this (its view is consumed by silu*mul within the forward); down did not.
+            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype).clone()
 
     return QBSparse
 
@@ -370,7 +378,10 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
                                dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                dn.gA.data_ptr(), gB1.data_ptr())
         torch.cuda.synchronize()  # all kernels done before torch reads Cout
-        return Cout.t()[:t].reshape(*lead, dn.out_f).to(x.dtype)
+        # .clone(): Cout.t() is non-contiguous -> reshape returns a VIEW into Cout, .to(dtype) is a no-op
+        # when dtypes match -> returned tensor aliases the local Cout, freed on return; vLLM reads it later
+        # (residual add) -> garbage. Force an independent copy.
+        return Cout.t()[:t].reshape(*lead, dn.out_f).to(x.dtype).clone()
     mlp.forward = fwd
 
 
