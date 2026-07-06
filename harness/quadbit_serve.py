@@ -595,6 +595,18 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     def _cos(a, b):
         return torch.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim=0).item()
 
+    # capture a REAL layer-0 MLP input activation (Gaussian probe misses outlier channels)
+    cap = {}
+    h = model.model.layers[0].mlp.register_forward_pre_hook(
+        lambda m, a: cap.setdefault("x", a[0].detach().reshape(-1, a[0].shape[-1])[:256].clone()))
+    llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
+    h.remove()
+    xr = cap["x"].to(dev)
+    kr = qgu.forward(xr).float(); fqr = xr.float() @ qgu.Wdq.t()
+    print(f"PROBE REAL-activation L0 gate_up: kernel-vs-Wdq cos {_cos(kr, fqr):.5f}  "
+          f"x max {xr.abs().max().item():.1f} mean-abs {xr.abs().mean().item():.3f} "
+          f"(outlier ratio {xr.abs().max().item() / xr.abs().mean().clamp_min(1e-9).item():.0f}x)", flush=True)
+
     xg = torch.randn(256, 4096, device=dev, dtype=torch.bfloat16)
     xh = torch.randn(256, d0.shape[1], device=dev, dtype=torch.bfloat16)
     k_gu = qgu.forward(xg).float(); fq_gu = xg.float() @ qgu.Wdq.t()
