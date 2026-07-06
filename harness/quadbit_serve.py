@@ -523,6 +523,7 @@ def bench_mlp(util: float = 0.55) -> None:
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     QBSparse = _qbsparse_factory(torch, lib, dev)
     qb_gu, qb_dn = QBSparse(gu0.to(dev)), QBSparse(dn0.to(dev))
     del gu0, dn0; gc.collect(); torch.cuda.empty_cache()
@@ -536,7 +537,7 @@ def bench_mlp(util: float = 0.55) -> None:
     print("\n=== MLP HEAD-TO-HEAD (ms, p50/p95/min via CUDA events; gate+up FUSED) ===", flush=True)
     print(f"{'M':>7} | {'native gate_up':>22} | {'sparse gate_up':>22} | "
           f"{'native full MLP':>22} | {'sparse full MLP':>22} | {'MLP speedup':>11}", flush=True)
-    speedup_at = {}
+    speedup_at = {}; nfull_at = {}
     for M in SHAPES:
         try:
             x = torch.randn(M, H, device=dev, dtype=torch.bfloat16)
@@ -545,7 +546,7 @@ def bench_mlp(util: float = 0.55) -> None:
             nfull = evstats(lambda: nat_dn(nmlp.act_fn(nat_gu(x))))
             sfull = evstats(lambda: qb_dn.forward(nmlp.act_fn(qb_gu.forward(x))))
             sp = nfull[0] / sfull[0]
-            speedup_at[M] = sp
+            speedup_at[M] = sp; nfull_at[M] = nfull[0]
             print(f"{M:>7} | {ngu[0]:7.3f}/{ngu[1]:6.3f}/{ngu[2]:6.3f} | "
                   f"{sgu[0]:7.3f}/{sgu[1]:6.3f}/{sgu[2]:6.3f} | "
                   f"{nfull[0]:7.3f}/{nfull[1]:6.3f}/{nfull[2]:6.3f} | "
@@ -554,6 +555,47 @@ def bench_mlp(util: float = 0.55) -> None:
         except torch.cuda.OutOfMemoryError:
             print(f"{M:>7} | OOM (skip, reported honestly)", flush=True)
             torch.cuda.empty_cache()
+
+    # B4: FUSED SwiGLU+quant path. gate_up sparse GEMM -> C[28672,M] (no transpose); fused_swiglu_quant
+    # reads gate rows [0,14336) + up rows [14336,28672) straight from C, does silu(g)*u + NVFP4 quant in
+    # one pass (no bf16 intermediate, no transpose, no separate quant); down sparse GEMM consumes it.
+    # NOTE: fused_swiglu_quant is SINGLE-level (per-32 ue4m3, no per-token gB) -> down activation is
+    # single-level here (gB=1), a small accuracy regression vs the two-level path; this measures the
+    # SPEED ceiling of fusion. If it clears s>=1.09, a two-level fused variant recovers the accuracy.
+    print("\n=== B4 FUSED SwiGLU+quant full MLP (prealloc scratch; single-level down act) ===", flush=True)
+    print(f"{'M':>7} | {'fused full MLP':>22} | {'vs native':>10} | {'vs unfused sparse':>17}", flush=True)
+    for M in SHAPES:
+        try:
+            x = torch.randn(M, H, device=dev, dtype=torch.bfloat16).contiguous()
+            Bb = torch.empty((M, H // 2), dtype=torch.uint8, device=dev)
+            sBg = torch.empty((H // 128, M, 4), dtype=torch.uint8, device=dev)
+            gBg = torch.empty((M,), dtype=torch.float32, device=dev)
+            Cgu = torch.empty((qb_gu.out_f, M), dtype=torch.bfloat16, device=dev)
+            Hb = torch.empty((M, I // 2), dtype=torch.uint8, device=dev)
+            sH = torch.empty((I // 128, M, 4), dtype=torch.uint8, device=dev)
+            gB1 = torch.ones((M,), dtype=torch.float32, device=dev)
+            Cout = torch.empty((qb_dn.out_f, M), dtype=torch.bfloat16, device=dev)
+            u_off = 14336 * M * 2  # bf16 bytes: up rows start at row 14336 of C[28672,M]
+
+            def fused_full():
+                lib.quantize_act_nvfp4_2lvl(x.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), M, H)
+                lib.sparse_fp4_mm_2lvl(qb_gu.Ac.data_ptr(), Bb.data_ptr(), qb_gu.scaleA.data_ptr(),
+                                       sBg.data_ptr(), qb_gu.meta.data_ptr(), Cgu.data_ptr(),
+                                       qb_gu.out_f, M, H, qb_gu.gA.data_ptr(), gBg.data_ptr())
+                lib.fused_swiglu_quant(Cgu.data_ptr(), Cgu.data_ptr() + u_off,
+                                       Hb.data_ptr(), sH.data_ptr(), M, I)
+                lib.sparse_fp4_mm_2lvl(qb_dn.Ac.data_ptr(), Hb.data_ptr(), qb_dn.scaleA.data_ptr(),
+                                       sH.data_ptr(), qb_dn.meta.data_ptr(), Cout.data_ptr(),
+                                       qb_dn.out_f, M, I, qb_dn.gA.data_ptr(), gB1.data_ptr())
+
+            ff = evstats(fused_full)
+            nf = nfull_at.get(M)
+            vn = f"{nf / ff[0]:.3f}x" if nf else "n/a"
+            vs = f"{(nf / speedup_at[M]) / ff[0]:.3f}x" if nf and M in speedup_at else "n/a"
+            print(f"{M:>7} | {ff[0]:7.3f}/{ff[1]:6.3f}/{ff[2]:6.3f} | {vn:>10} | {vs:>17}", flush=True)
+            del x, Bb, sBg, gBg, Cgu, Hb, sH, gB1, Cout; torch.cuda.empty_cache()
+        except torch.cuda.OutOfMemoryError:
+            print(f"{M:>7} | OOM (skip)", flush=True); torch.cuda.empty_cache()
 
     # empirical MLP fraction of a REAL prefill forward, native vs sparse patched, via event accumulators
     class Acc:
