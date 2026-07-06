@@ -160,46 +160,30 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             # (value 6.0, MAX magnitude) instead of 0. Dead blocks (common in PRUNED/recovered weights,
             # never in dense) would otherwise become maximal garbage. blk is 0 there, so code 0 is correct.
             kc = q_fp4(blk / sdeq[..., None, None].clamp_min(1e-30))
-            # OOB-READ TEST: pad each WEIGHT buffer with trailing zero slack. gate_up (ks=32) kernel works
-            # in-vLLM; down (ks=112) breaks. If the kernel reads past a weight buffer for large ks, in
-            # isolation it hits benign zeros (probe cos 0.995) but in vLLM hits live tensors -> garbage.
-            # Trailing zeros make any OOB read benign. If this fixes it, the .cu has a read-bounds bug.
-            def _pad(tt):  # keep data at the front; trailing zero slack absorbs out-of-bounds reads
-                flat = tt.reshape(-1).contiguous()
-                buf = torch.zeros(flat.numel() + (1 << 20), dtype=tt.dtype, device=dev)
-                buf[:flat.numel()] = flat
-                return buf
-            self.Ac = _pad((kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8))
+            self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
-            self.meta = _pad((nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous())
-            self.scaleA = _pad(scode.to(torch.uint8).permute(1, 0, 2).contiguous())
-            self.gA = _pad(gA.reshape(out_f).float())
+            self.meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+            self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()
+            self.gA = gA.reshape(out_f).float().contiguous()
 
         def forward(self, x):
-            # vLLM runs the model forward on ITS OWN cuda stream, but the ctypes kernels are hardcoded to
-            # the DEFAULT stream (0). Cross-stream, the caching allocator hands scratch that vLLM's stream
-            # still owns -> race -> garbage (faithful when called directly outside vLLM's forward). Run the
-            # torch scratch ops AND the kernels together on the default stream so they are mutually ordered.
-            ds = torch.cuda.default_stream()
-            with torch.cuda.stream(ds):
-                lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
-                t = x2.shape[0]; pad = (-t) % 128
-                if pad:
-                    x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
-                x2 = x2.contiguous(); tp = t + pad
-                Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
-                sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
-                gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-                ds.synchronize()  # x2 (torch, on ds) ready before kernel reads it
-                lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
-                C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-                lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                       sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                       self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-                ds.synchronize()  # kernel done before torch reads C
-                out = C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
-            return out
+            lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
+            t = x2.shape[0]; pad = (-t) % 128
+            if pad:
+                x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
+            x2 = x2.contiguous(); tp = t + pad
+            Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
+            sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
+            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            torch.cuda.synchronize()  # ctypes kernels are on the default stream; vLLM forward is on another
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
+            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            torch.cuda.synchronize()
+            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     n = 0; sparse_params = 0; total_params = 0
     for layer in model.model.layers:
@@ -321,21 +305,12 @@ def _qbsparse_factory(torch, lib, dev):
             # (value 6.0, MAX magnitude) instead of 0. Dead blocks (common in PRUNED/recovered weights,
             # never in dense) would otherwise become maximal garbage. blk is 0 there, so code 0 is correct.
             kc = q_fp4(blk / sdeq[..., None, None].clamp_min(1e-30))
-            # OOB-READ TEST: pad each WEIGHT buffer with trailing zero slack. gate_up (ks=32) kernel works
-            # in-vLLM; down (ks=112) breaks. If the kernel reads past a weight buffer for large ks, in
-            # isolation it hits benign zeros (probe cos 0.995) but in vLLM hits live tensors -> garbage.
-            # Trailing zeros make any OOB read benign. If this fixes it, the .cu has a read-bounds bug.
-            def _pad(tt):  # keep data at the front; trailing zero slack absorbs out-of-bounds reads
-                flat = tt.reshape(-1).contiguous()
-                buf = torch.zeros(flat.numel() + (1 << 20), dtype=tt.dtype, device=dev)
-                buf[:flat.numel()] = flat
-                return buf
-            self.Ac = _pad((kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8))
+            self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
-            self.meta = _pad((nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous())
-            self.scaleA = _pad(scode.to(torch.uint8).permute(1, 0, 2).contiguous())
-            self.gA = _pad(gA.reshape(out_f).float())
+            self.meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+            self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()
+            self.gA = gA.reshape(out_f).float().contiguous()
             if keep_wdq:  # dense fake-quant weight the kernel REPRESENTS (for kernel-correctness test)
                 kept_dq = (FP4[kc] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
                 Wdq_g = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
@@ -343,29 +318,22 @@ def _qbsparse_factory(torch, lib, dev):
                 self.Wdq = Wdq_g.reshape(out_f, in_f)
 
         def forward(self, x):
-            # vLLM runs the model forward on ITS OWN cuda stream, but the ctypes kernels are hardcoded to
-            # the DEFAULT stream (0). Cross-stream, the caching allocator hands scratch that vLLM's stream
-            # still owns -> race -> garbage (faithful when called directly outside vLLM's forward). Run the
-            # torch scratch ops AND the kernels together on the default stream so they are mutually ordered.
-            ds = torch.cuda.default_stream()
-            with torch.cuda.stream(ds):
-                lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
-                t = x2.shape[0]; pad = (-t) % 128
-                if pad:
-                    x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
-                x2 = x2.contiguous(); tp = t + pad
-                Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
-                sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
-                gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-                ds.synchronize()  # x2 (torch, on ds) ready before kernel reads it
-                lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
-                C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-                lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                       sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                       self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-                ds.synchronize()  # kernel done before torch reads C
-                out = C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
-            return out
+            lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
+            t = x2.shape[0]; pad = (-t) % 128
+            if pad:
+                x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
+            x2 = x2.contiguous(); tp = t + pad
+            Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
+            sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
+            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            torch.cuda.synchronize()  # ctypes kernels are on the default stream; vLLM forward is on another
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
+            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            torch.cuda.synchronize()
+            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     return QBSparse
 
