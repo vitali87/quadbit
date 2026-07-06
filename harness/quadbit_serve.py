@@ -168,28 +168,29 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             self.gA = gA.reshape(out_f).float().contiguous()
 
         def forward(self, x):
-            lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
-            t = x2.shape[0]; pad = (-t) % 128
-            if pad:
-                x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
-            x2 = x2.contiguous(); tp = t + pad
-            # OOB-WRITE TEST: over-allocate each kernel write buffer with a large trailing SLACK region and
-            # pass a data_ptr into the START of it. If the kernel over-writes (out-of-bounds), the write
-            # lands in slack instead of corrupting live vLLM tensors. If this fixes the recovered PPL, the
-            # down kernel (in_f=14336) has an OOB write (probe survives with isolated allocation slack).
-            SL = 1 << 20
-            Bbf = torch.empty((tp * (self.in_f // 2) + SL,), dtype=torch.uint8, device=dev)
-            sBf = torch.empty((self.ks * tp * 4 + SL,), dtype=torch.uint8, device=dev)
-            gBf = torch.empty((tp + SL,), dtype=torch.float32, device=dev)
-            Cf = torch.empty((self.out_f * tp + SL,), dtype=torch.bfloat16, device=dev)
-            torch.cuda.synchronize()  # torch writes (x2) complete before default-stream kernel reads
-            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bbf.data_ptr(), sBf.data_ptr(), gBf.data_ptr(), tp, self.in_f)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bbf.data_ptr(), self.scaleA.data_ptr(),
-                                   sBf.data_ptr(), self.meta.data_ptr(), Cf.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gBf.data_ptr())
-            torch.cuda.synchronize()  # kernel done before torch reads Cf
-            C = Cf[:self.out_f * tp].view(self.out_f, tp)
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            # vLLM runs the model forward on ITS OWN cuda stream, but the ctypes kernels are hardcoded to
+            # the DEFAULT stream (0). Cross-stream, the caching allocator hands scratch that vLLM's stream
+            # still owns -> race -> garbage (faithful when called directly outside vLLM's forward). Run the
+            # torch scratch ops AND the kernels together on the default stream so they are mutually ordered.
+            ds = torch.cuda.default_stream()
+            with torch.cuda.stream(ds):
+                lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
+                t = x2.shape[0]; pad = (-t) % 128
+                if pad:
+                    x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
+                x2 = x2.contiguous(); tp = t + pad
+                Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
+                sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
+                gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+                ds.synchronize()  # x2 (torch, on ds) ready before kernel reads it
+                lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
+                C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
+                lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                       sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                       self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+                ds.synchronize()  # kernel done before torch reads C
+                out = C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            return out
 
     n = 0; sparse_params = 0; total_params = 0
     for layer in model.model.layers:
@@ -324,28 +325,29 @@ def _qbsparse_factory(torch, lib, dev):
                 self.Wdq = Wdq_g.reshape(out_f, in_f)
 
         def forward(self, x):
-            lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
-            t = x2.shape[0]; pad = (-t) % 128
-            if pad:
-                x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
-            x2 = x2.contiguous(); tp = t + pad
-            # OOB-WRITE TEST: over-allocate each kernel write buffer with a large trailing SLACK region and
-            # pass a data_ptr into the START of it. If the kernel over-writes (out-of-bounds), the write
-            # lands in slack instead of corrupting live vLLM tensors. If this fixes the recovered PPL, the
-            # down kernel (in_f=14336) has an OOB write (probe survives with isolated allocation slack).
-            SL = 1 << 20
-            Bbf = torch.empty((tp * (self.in_f // 2) + SL,), dtype=torch.uint8, device=dev)
-            sBf = torch.empty((self.ks * tp * 4 + SL,), dtype=torch.uint8, device=dev)
-            gBf = torch.empty((tp + SL,), dtype=torch.float32, device=dev)
-            Cf = torch.empty((self.out_f * tp + SL,), dtype=torch.bfloat16, device=dev)
-            torch.cuda.synchronize()  # torch writes (x2) complete before default-stream kernel reads
-            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bbf.data_ptr(), sBf.data_ptr(), gBf.data_ptr(), tp, self.in_f)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bbf.data_ptr(), self.scaleA.data_ptr(),
-                                   sBf.data_ptr(), self.meta.data_ptr(), Cf.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gBf.data_ptr())
-            torch.cuda.synchronize()  # kernel done before torch reads Cf
-            C = Cf[:self.out_f * tp].view(self.out_f, tp)
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            # vLLM runs the model forward on ITS OWN cuda stream, but the ctypes kernels are hardcoded to
+            # the DEFAULT stream (0). Cross-stream, the caching allocator hands scratch that vLLM's stream
+            # still owns -> race -> garbage (faithful when called directly outside vLLM's forward). Run the
+            # torch scratch ops AND the kernels together on the default stream so they are mutually ordered.
+            ds = torch.cuda.default_stream()
+            with torch.cuda.stream(ds):
+                lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
+                t = x2.shape[0]; pad = (-t) % 128
+                if pad:
+                    x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
+                x2 = x2.contiguous(); tp = t + pad
+                Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
+                sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
+                gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+                ds.synchronize()  # x2 (torch, on ds) ready before kernel reads it
+                lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
+                C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
+                lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                       sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                       self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+                ds.synchronize()  # kernel done before torch reads C
+                out = C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            return out
 
     return QBSparse
 
