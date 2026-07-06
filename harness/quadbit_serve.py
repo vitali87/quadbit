@@ -623,15 +623,26 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             torch.nn.functional.silu((x.float() @ gw.t())[..., :iw]) * (x.float() @ gw.t())[..., iw:],
             dw).to(x.dtype)
 
-    for K in (1, 4, 16, 32):
+    def sparse_fwd(mlp):  # unfused TWO-LEVEL (QBSparse.forward for gate_up and down; plain SwiGLU)
+        g_, d_, iw = mlp._qb_gu, mlp._qb_dn, mlp._qb_dn.in_f
+
+        def fwd(x):
+            y = g_.forward(x)
+            return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
+        return fwd
+
+    for K in (1, 2, 4, 32):
         for li, layer in enumerate(model.model.layers):
             mlp = layer.mlp
             if li < K:
-                _fused_mlp_fwd(mlp, torch, lib, dev)  # sparse fused
+                if fused:
+                    _fused_mlp_fwd(mlp, torch, lib, dev)
+                else:
+                    mlp.forward = sparse_fwd(mlp)
             else:
                 mlp.forward = dense_fwd(mlp)  # dense Wdq
         torch.cuda.empty_cache()
-        ppl(f"down-sparse first K={K:2d} layers (rest dense-Wdq)")
+        ppl(f"MLP-sparse[{'fused' if fused else '2lvl'}] first K={K:2d} (rest dense-Wdq)")
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
