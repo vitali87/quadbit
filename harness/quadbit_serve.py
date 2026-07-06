@@ -659,7 +659,7 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     for li, layer in enumerate(model.model.layers):  # gate_up SPARSE, down DENSE (h full-precision)
         mlp = layer.mlp
         mlp.forward = (lambda gu, dw, iw: (lambda x: torch.nn.functional.linear(
-            (lambda y: torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])(gu.forward(x)),
+            (lambda y: torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])(gu.forward(x)).float(),
             dw).to(x.dtype)))(mlp._qb_gu, mlp._qb_dn.Wdq, mlp._qb_dn.in_f)
     torch.cuda.empty_cache()
     ppl("gu-SPARSE_dn-DENSE (h full-prec)")
