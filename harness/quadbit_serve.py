@@ -731,21 +731,24 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
         gw0, dw0, iw0 = m0._qb_gu.Wdq, m0._qb_dn.Wdq, m0._qb_dn.in_f
         qd0 = m0._qb_dn
 
+        qg0 = m0._qb_gu
+
         def diag_fwd(x):
-            y = torch.nn.functional.silu((x.float() @ gw0.t())[..., :iw0]) * (x.float() @ gw0.t())[..., iw0:]
-            ref = torch.nn.functional.linear(y, dw0)  # dense reference (what the model uses)
-            if not diag_state["done"] and y.shape[0] >= 8:
-                hb = y.to(torch.bfloat16).contiguous()
-                k_orig = qd0.forward(hb).float()                 # sparse kernel on vLLM tensor, IN-CONTEXT
-                k_clone = qd0.forward(hb.clone().contiguous()).float()  # on a clone
-                fq = hb.float() @ qd0.Wdq.t()                    # reference dequant matmul, same input
+            # dense reference for layer 0 (what the model actually uses this run)
+            yd = (x.float() @ gw0.t())
+            ref = torch.nn.functional.linear(torch.nn.functional.silu(yd[..., :iw0]) * yd[..., iw0:], dw0)
+            if not diag_state["done"] and x.shape[0] >= 8:
+                # EXACT sparse_fwd path for layer 0: sparse gate_up -> silu -> sparse down
+                ys = qg0.forward(x)
+                hs = torch.nn.functional.silu(ys[..., :iw0]) * ys[..., iw0:]
+                sout = qd0.forward(hs).float()
                 c = torch.nn.functional.cosine_similarity
-                print(f"DIAG-INCTX M={y.shape[0]} x-contig {x.is_contiguous()} y-contig {hb.is_contiguous()} "
-                      f"| kernel(vLLM-tensor)-vs-Wdq cos {c(k_orig.flatten(), fq.flatten(), dim=0).item():.5f} "
-                      f"kernel(clone)-vs-Wdq cos {c(k_clone.flatten(), fq.flatten(), dim=0).item():.5f} "
-                      f"kernel-orig-vs-clone cos {c(k_orig.flatten(), k_clone.flatten(), dim=0).item():.5f} "
-                      f"NaN orig {torch.isnan(k_orig).any().item()} kmax {k_orig.abs().max().item():.1f} "
-                      f"refmax {fq.abs().max().item():.1f}", flush=True)
+                rc = c(sout, ref.float(), dim=1)
+                print(f"DIAG-FULLSPARSE M={x.shape[0]} | sparseMLP-vs-denseMLP GLOBAL cos "
+                      f"{c(sout.flatten(), ref.float().flatten(), dim=0).item():.5f} per-row mean {rc.mean().item():.4f} "
+                      f"min {rc.min().item():.3f} frac<0.5 {(rc < 0.5).float().mean().item():.3f} "
+                      f"sout-max {sout.abs().max().item():.1f} ref-max {ref.abs().max().item():.1f} "
+                      f"NaN {torch.isnan(sout).any().item()}", flush=True)
                 diag_state["done"] = True
             return ref.to(x.dtype)
         m0.forward = diag_fwd
