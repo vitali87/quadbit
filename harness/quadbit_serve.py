@@ -176,11 +176,17 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
             sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
             gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            # ctypes kernels launch on the DEFAULT stream; vLLM/torch run on a non-default stream. Without
+            # this sync, the kernel reads x2 before torch finished writing it (and scratch is recycled by
+            # the caching allocator mid-flight) -> stream race -> garbage in the full forward (per-layer
+            # probes always synced, so they passed). Sync current stream so torch writes complete first.
+            torch.cuda.synchronize()
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
             C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
             lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            torch.cuda.synchronize()  # kernel (default stream) done before torch (its stream) reads C
             return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     n = 0; sparse_params = 0; total_params = 0
@@ -324,11 +330,17 @@ def _qbsparse_factory(torch, lib, dev):
             Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
             sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
             gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            # ctypes kernels launch on the DEFAULT stream; vLLM/torch run on a non-default stream. Without
+            # this sync, the kernel reads x2 before torch finished writing it (and scratch is recycled by
+            # the caching allocator mid-flight) -> stream race -> garbage in the full forward (per-layer
+            # probes always synced, so they passed). Sync current stream so torch writes complete first.
+            torch.cuda.synchronize()
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
             C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
             lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            torch.cuda.synchronize()  # kernel (default stream) done before torch (its stream) reads C
             return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     return QBSparse
@@ -351,19 +363,21 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
         sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
         gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
-        lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
         Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
+        Cout = torch.empty((dn.out_f, tp), dtype=torch.bfloat16, device=dev)
+        torch.cuda.synchronize()  # torch writes (x2, gB1) done before default-stream kernels read them
+        lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
         lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
                                gu.meta.data_ptr(), Cgu.data_ptr(), gu.out_f, tp, H,
                                gu.gA.data_ptr(), gBg.data_ptr())
-        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
-        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
         lib.fused_swiglu_quant(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(), sH.data_ptr(), tp, Iw)
-        gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
-        Cout = torch.empty((dn.out_f, tp), dtype=torch.bfloat16, device=dev)
         lib.sparse_fp4_mm_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
                                dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                dn.gA.data_ptr(), gB1.data_ptr())
+        torch.cuda.synchronize()  # all kernels done before torch reads Cout
         return Cout.t()[:t].reshape(*lead, dn.out_f).to(x.dtype)
     mlp.forward = fwd
 
