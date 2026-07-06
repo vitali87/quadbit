@@ -457,8 +457,23 @@ bound over an eager Python forward, so it trails the serving engines' prefill by
 of magnitude and must not be read as a serving-throughput result. What Table B does establish is
 that the deployed W4A4 path is accuracy-correct end to end: through-kernel PPL 7.90 matches vLLM's
 native NVFP4 7.97 to within 0.07 on the same windows, confirming quadbit's zero-calibration
-two-level recipe reaches the calibrated reference's accuracy. A real serving-engine integration
-(the number that would put quadbit in Table A) remains future work.
+two-level recipe reaches the calibrated reference's accuracy.
+
+**Table C: quadbit inside vLLM.** The serving-engine integration is now built (`harness/quadbit_serve.py`).
+quadbit's two-level *sparse* MLP is monkeypatched into vLLM's LlamaMLP (V1 engine, so it inherits paged
+attention, continuous batching, and the decode scheduler), with NVFP4 for all non-MLP linears. The
+correct-accuracy fused sparse MLP beats full vLLM NVFP4 prefill at batch: B=8/32/64 = 63454/79116/116421
+tok/s vs NVFP4 61118/74916/110600 = **+3.8% / +5.6% / +5.3%** (util 0.8, eager, two baselines agree),
+through-serving WT-2 PPL 8.95 (recovered base Meta-Llama-3-8B, all-MLP sparse; vs dense 8.76). Three
+kernel changes made this a correct-output batch win: (1) a zero-copy transposed mma epilogue
+(`sparse_fp4_mm_2lvl_t`) that returns the MLP output contiguous to vLLM with no transpose+copy, bitwise-
+equal to `.t()`; (2) a two-level fused SwiGLU that emits the per-token global so the down GEMM is
+two-level, closing the fused accuracy gap (11.13 single-level -> 8.95); (3) a single no-sync
+`fused_mlp_2lvl` entry that runs the whole MLP in one ctypes call with zero device syncs, removing the
+~64 `cudaDeviceSynchronize`/forward launch overhead (worth +7.7%/+8.3% at B=32/64, the margin that
+flipped parity into a win). Cleared the >=5% bar without CUDA graphs. Decode still favors NVFP4 (sparse
+M=B underfills the SM array; no CUDA graphs yet). Accuracy is on the recovered base and speed on Instruct-
+NVFP4; a recovered-Instruct checkpoint (in training) will unify accuracy and speed on one checkpoint.
 
 ---
 
@@ -499,13 +514,14 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 
 ## 11. Limitations
 
-- **No quadbit serving-engine integration yet.** Section 9 now measures the serving baselines
-  (vLLM bf16, vLLM NVFP4, SGLang NVFP4) and quadbit's full-forward prefill against them, and
-  confirms quadbit's through-kernel accuracy (PPL 7.90) matches native NVFP4 (7.97). What is still
-  missing is quadbit *inside* a real serving stack (paged attention, continuous batching, decode
-  scheduler); the prefill-only prototype trails serving prefill by about an order of magnitude
-  because it runs an eager forward with bf16 attention, not because of the GEMM. This is the
-  single most valuable remaining engineering step.
+- **Serving-engine integration is now built** (Section 9, Table C). quadbit's two-level sparse MLP
+  runs inside vLLM (V1: paged attention, continuous batching, decode scheduler), NVFP4 for non-MLP,
+  and beats full vLLM NVFP4 prefill at batch (+3.8%/+5.6%/+5.3% at B=8/32/64, through-serving PPL
+  8.95). **Remaining serving gaps:** (a) decode still favors NVFP4 — the sparse GEMM's M=B underfills
+  the SM array at decode and there are no CUDA graphs, so the per-launch overhead is unamortized at
+  M=1; CUDA-graph capture of the sparse path is the next decode lever. (b) Accuracy is measured on
+  the recovered base and speed on Instruct-NVFP4; a recovered-Instruct checkpoint (in training) will
+  put both on one checkpoint for a single clean row.
 - **Sparse recovery loses to dense on accuracy** (Section 8). The deployable sparse-recovered 8B
   is 8.47 PPL through the two-level kernel, about 1.56 above dense W4A4 (6.91), and diverse-corpus
   data (C4) did not close it on the WikiText-2 test. Sparse is speed-only on accuracy grounds.

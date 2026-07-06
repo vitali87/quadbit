@@ -108,7 +108,7 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 | Decode small-M beats bf16 | `[measured, marginal]` | 1.27× attn-qkv, 4.53× ffn-up; real-scale decode ties bf16 in the small-N corner (router falls back to bf16) |
 | Sparse decode is a win | `[measured, negative]` | `sparse_sk_lib.cu` marginal; reverted |
 | **End-to-end serving baselines measured** (vLLM bf16 / vLLM NVFP4 / SGLang NVFP4, distinct-prompt, CUDA-graphs) | `[measured]` | `harness/vllm_nvfp4.py`, `harness/sglang_fp4.py`; serving table below + `docs/paper.md` §9 |
-| quadbit *inside* a serving engine (paged attn, continuous batching, decode) | `[not built]` | prefill-only prototype (`harness/dense_e2e.py`) trails serving prefill ~10× — eager bf16 attention, not the GEMM |
+| **quadbit *inside* vLLM (two-level sparse MLP, NVFP4 non-MLP) beats NVFP4 prefill at batch** | **`[measured]`** | `harness/quadbit_serve.py`; correct-accuracy fused sparse MLP B=8/32/64 = 63454/79116/116421 vs NVFP4 61118/74916/110600 = +3.8%/+5.6%/+5.3%, through-serving PPL 8.95; zero-copy epilogue + two-level fused swiglu + single no-sync `fused_mlp_2lvl` (removed 64 syncs/forward). Decode still NVFP4-favored (sparse M=B underfills, no CUDA graphs) |
 
 ### Serving table (RTX PRO 6000, Llama-3.1-8B-Instruct family, CUDA graphs on, distinct prompts, S=2048 prefill / GEN=128 decode)
 
@@ -193,11 +193,15 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    (`harness/cutlass_shapes.py`, committed): rectangular Llama-3 shapes reveal dense **loses** to
    79b (0.89–1.01×) while sparse **wins** vs 80b (1.14–1.18×). The square dense win was an artifact;
    sparse is the consistent win.
-3. ~~**A real end-to-end model run**~~ **DONE for accuracy + baselines** (serving table above):
-   quadbit full-forward through-kernel PPL 7.90 == native NVFP4 7.97; vLLM/SGLang NVFP4 measured
-   on the same card. **Remaining:** quadbit inside a real serving engine for a true tok/s
-   head-to-head (paged attn + continuous batching + decode). The kernel is proven; the serving
-   integration is the open engineering step.
+3. ~~**A real end-to-end model run**~~ ~~**Remaining: quadbit inside a real serving engine**~~ **DONE
+   (2026-07-07):** quadbit's two-level sparse MLP is monkeypatched into vLLM's LlamaMLP (V1 engine,
+   paged attention + continuous batching + decode scheduler), NVFP4 for non-MLP. The correct-accuracy
+   fused sparse MLP BEATS vLLM NVFP4 prefill at batch: B=8/32/64 = 63454/79116/116421 vs 61118/74916/
+   110600 = +3.8%/+5.6%/+5.3%, through-serving WT-2 PPL 8.95 (recovered base). Enablers: zero-copy
+   transposed epilogue (contiguous output, no copy) + two-level fused swiglu (correct accuracy) +
+   single no-sync `fused_mlp_2lvl` (removed the 64-`cudaDeviceSynchronize`/forward launch overhead,
+   the +7.7%/+8.3%@B32/64 that flipped parity to a win). Cleared >=5% WITHOUT CUDA graphs. **Remaining:**
+   recovered-INSTRUCT ckpt to put accuracy + speed on ONE checkpoint; decode (sparse M=B underfills).
 4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
    "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
 5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The
@@ -244,9 +248,10 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    (2026-07-06, `harness/leaderboard_fp4.py`).** Every FlashInfer backend + quadbit, matched
    shapes/card/fp32-gate. Verdict: dense lost (FI 1.35–2.2×), sparse is the Pareto headline
    (beats best FI dense 1.07–1.38× wall-clock, only deployed sparse FP4). `cudnn` broken all
-   shapes, `b12x` collapses at M≥65536, CUDA-13-vs-12.8 mma split documented. **Next natural
-   step:** quadbit inside a real serving engine (paged attn + continuous batching + decode) — the
-   only way to turn the GEMM-level Pareto win into a serving-throughput row.
+   shapes, `b12x` collapses at M≥65536, CUDA-13-vs-12.8 mma split documented. **Next step DONE
+   (2026-07-07):** quadbit's sparse MLP inside vLLM (paged attn + continuous batching + decode) beats
+   NVFP4 prefill at batch (+3.8%/+5.6%/+5.3% B=8/32/64, PPL 8.95) — the GEMM-level Pareto win is now a
+   serving-throughput row. See the roadmap item 3 above and `harness/quadbit_serve.py`.
 1. ~~**Run CUTLASS 80b sparse and benchmark our sparse kernel against it.**~~ **DONE**
    (`harness/cutlass_sparse.py`): win 4–8K, lose 16K, 80b ref-verify PASSES. Gating experiment
    resolved. Next natural step is #2 (rectangular shapes) to see if the win holds off-square.

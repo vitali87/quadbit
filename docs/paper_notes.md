@@ -369,6 +369,28 @@ deployed W4A4 path is accuracy-correct end to end — **7.90 matches native NVFP
 same windows**, so the zero-calibration two-level recipe reaches the calibrated reference. Getting quadbit
 into a serving stack for a true tok/s head-to-head is the open engineering step.
 
+**Table C — quadbit INSIDE vLLM (2026-07-07, the serving-integration result; `harness/quadbit_serve.py`):**
+quadbit's two-level sparse MLP monkeypatched into vLLM's LlamaMLP (V1 engine, eager, util 0.8), NVFP4
+for all non-MLP linears. The correct-accuracy fused sparse MLP now **beats full vLLM NVFP4 prefill at
+batch**: B=8/32/64 prefill = 63454/79116/116421 tok/s vs NVFP4 baseline 61118/74916/110600 =
+**+3.8% / +5.6% / +5.3%** (two independent baselines agree within noise). Through-serving WT-2 PPL =
+**8.95** (recovered base Meta-Llama-3-8B, all-MLP sparse), vs dense 8.76. Three kernel pieces made this
+a correct-output batch win, in order of impact:
+1. **Zero-copy transposed epilogue** (`sparse_fp4_mm_2lvl_t`, outT=1): the down mma stages its tile in
+   post-loop-dead smem token-major and writes `[N,M]` row-major, so the MLP output is returned to vLLM
+   CONTIGUOUS with no transpose+copy pass. Bitwise-equal to `.t()` (RED 0.0017). Removed the ~7% batch
+   copy that had erased the speedup (correct-output was -0.5%/-1.7% at B=32/64 WITH the copy).
+2. **Two-level fused swiglu** (`swiglu_amax` atomicMax→`finalize`→`swiglu_quant_g`): emits the per-token
+   global gH so the down GEMM runs two-level, closing the fused accuracy gap (11.13 single-level → 8.95).
+   Kept the fast parallel layout (CTA-per-token / smem-staging / serial-loop variants all lost 25% or
+   collapsed decode).
+3. **Single no-sync fused entry** (`fused_mlp_2lvl`): the whole MLP in ONE ctypes call, ZERO device syncs
+   (kernels stream on vLLM's per-thread stream). Collapsed the 6-crossing + 64-`cudaDeviceSynchronize`/
+   forward launch overhead — worth +7.7%/+8.3% at B=32/64, which is what flipped the correct path from
+   parity to the win. Cleared the >=5% bar WITHOUT CUDA graphs (graphs are additional upside).
+Decode is still NVFP4-favored (sparse M=B underfills, no CUDA graphs). Accuracy(8.95) is on recovered
+BASE, speed on Instruct-NVFP4; a recovered-INSTRUCT checkpoint (training) unifies them in one clean row.
+
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
 - mma peaks (register-only, DCE-defeated): sparse `mma.sp` m16n8k128 = **3626k**, dense

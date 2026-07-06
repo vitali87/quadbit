@@ -52,7 +52,9 @@ Real serving engines on the same card, same model family, same protocol (CUDA gr
 | vLLM | NVFP4 | 5.66 GiB | 7.974 | 116831 | 8465 |
 | SGLang | NVFP4 | ~5.6 GiB | 7.97 | 109002 | 10145 |
 
-Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration. quadbit is a kernel + `nn.Linear` drop-in, not a serving engine (no paged attention / continuous batching / decode scheduler), so its full-model prefill (7987 tok/s, eager, bf16 attention) is a prototype number, not a serving-throughput row. A real engine integration is the open step. See [docs/paper.md §9](docs/paper.md).
+Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration.
+
+**quadbit inside vLLM beats native NVFP4 prefill at batch.** The two-level *sparse* MLP is monkeypatched into vLLM's LlamaMLP (V1 engine, paged attention + continuous batching + decode scheduler), NVFP4 for all non-MLP linears. Correct-accuracy fused sparse MLP prefill B=8/32/64 = **63454 / 79116 / 116421** tok/s vs full NVFP4 **61118 / 74916 / 110600** = **+3.8% / +5.6% / +5.3%**, through-serving WT-2 PPL **8.95** (recovered base, all-MLP sparse; vs dense 8.76). Three kernel enablers: a zero-copy transposed epilogue (contiguous MLP output, no transpose+copy), a two-level fused SwiGLU (correct accuracy in the fused path), and a single no-sync `fused_mlp_2lvl` entry that runs the whole MLP in one ctypes call with zero device syncs (removing ~64 `cudaDeviceSynchronize`/forward — the +7.7%/+8.3% at B=32/64 that turned parity into a win). Cleared the ≥5% bar without CUDA graphs. Decode still favors NVFP4 (sparse M=B underfills; no CUDA graphs yet). See `harness/quadbit_serve.py` and [docs/paper.md §9](docs/paper.md).
 
 ## The stack
 
