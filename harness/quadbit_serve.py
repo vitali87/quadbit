@@ -352,8 +352,10 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
     -> fused_swiglu_quant (silu(g)*u + NVFP4 quant, one pass) -> down sparse GEMM. Correct (cos 0.997
     vs two-level; do NOT reuse the model's SiluAndMul on sparse bf16) and fast (~1.25x vs native NVFP4
     MLP at chunk M). Uses mlp._qb_gu / mlp._qb_dn (QBSparse). down activation is single-level (gB=1)."""
+    import os
     gu, dn = mlp._qb_gu, mlp._qb_dn
     H, Iw = gu.in_f, dn.in_f  # 4096, 14336
+    _fused_single = os.environ.get("QB_FUSED_SINGLE", "1") == "1"  # 1 ctypes call, 0 syncs; "0" -> 6-call A/B
 
     def fwd(x):
         lead = x.shape[:-1]; x2 = x.reshape(-1, H).to(torch.bfloat16)
@@ -371,6 +373,15 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         # ZERO-COPY: down GEMM writes [tp, out_f] token-major (outT=1 epilogue) -> Cout[:t] is a
         # CONTIGUOUS, storage_offset-0 tensor returnable to vLLM with no transpose+copy pass.
         Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
+        if _fused_single:
+            # ONE ctypes crossing, ZERO device syncs: the whole two-level sparse MLP streams back-to-back
+            # on vLLM's per-thread stream (removes 5/6 Python crossings + 2 cudaDeviceSynchronize per layer).
+            lib.fused_mlp_2lvl(x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                               gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                               dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                               Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                               tp, H, Iw, gu.out_f, dn.out_f)
+            return Cout[:t].reshape(*lead, dn.out_f)
         # per-thread-stream .so: kernels run on vLLM's stream, ordered with the torch ops; no explicit sync
         lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
         lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
@@ -440,6 +451,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -689,6 +701,7 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
 
@@ -841,6 +854,7 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5
     QBSparse = _qbsparse_factory(torch, lib, dev)
     qb_gu = QBSparse(gu0.to(dev), keep_wdq=verify)
     qb_dn = QBSparse(dn0.to(dev), keep_wdq=verify)
