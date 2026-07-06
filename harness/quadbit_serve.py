@@ -745,7 +745,10 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
                   f"frac>0.3 {(rl2 > 0.3).float().mean().item():.3f} | magratio mean {magr.mean().item():.4f} "
                   f"min {magr.min().item():.3f} max {magr.max().item():.3f} | sout-rms {sout.pow(2).mean().sqrt().item():.4f} "
                   f"ref-rms {ref.pow(2).mean().sqrt().item():.4f}", flush=True)
-            return ref.to(x.dtype)
+            # RETURN THE SPARSE OUTPUT for layer 0 (identical to K=1's layer 0, everything else provably
+            # fixed). If PPL ~= dense, the K-sweep machinery was the culprit; if ~13809, returning this
+            # clean-10%-approx tensor genuinely breaks it (a non-value effect I'm missing).
+            return sout.to(x.dtype)
         m0.forward = diag_fwd
         ppl("diag-incontext-layer0")
         print("DIAG_DONE", flush=True); return
