@@ -607,8 +607,23 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
           f"x max {xr.abs().max().item():.1f} mean-abs {xr.abs().mean().item():.3f} "
           f"(outlier ratio {xr.abs().max().item() / xr.abs().mean().clamp_min(1e-9).item():.0f}x)", flush=True)
 
-    # M-DEPENDENCE: all prior probes used M=256; the PPL eval runs at M=2048. Test if sparse_fp4_mm_2lvl
-    # is faithful across M (a tiling bug at M=2048 would tank PPL while M=256 probes pass).
+    # DOWN path is the culprit (bisection: gu-sparse/dn-dense=8.84, gu-dense/dn-sparse=121k). down has
+    # in_f=14336 (vs gate_up 4096) and runs at M=2048; prior down probe was only M=256 Gaussian. Test the
+    # down kernel at M sweep AND on a REAL SwiGLU intermediate h (captured from the dense forward).
+    caph = {}
+    hh = model.model.layers[0].mlp.down_proj.register_forward_pre_hook(
+        lambda m, a: caph.setdefault("h", a[0].detach().reshape(-1, a[0].shape[-1]).clone()))
+    llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
+    hh.remove()
+    hr = caph["h"].to(dev)
+    for Mt in (256, 2048):
+        hm = hr[:Mt] if hr.shape[0] >= Mt else torch.randn(Mt, d0.shape[1], device=dev, dtype=torch.bfloat16)
+        km = qd.forward(hm).float(); fm = hm.float() @ qd.Wdq.t()
+        print(f"PROBE DOWN real-h M={Mt:5d} kernel-vs-Wdq cos {_cos(km, fm):.5f}  "
+              f"h-max {hm.abs().max().item():.1f} kernel-max {km.abs().max().item():.1f} "
+              f"Wdq-mm-max {fm.abs().max().item():.1f}", flush=True)
+        del hm, km, fm
+    del hr; caph.clear()
     for Mt in (256, 512, 1024, 2048, 2049):
         xm = torch.randn(Mt, 4096, device=dev, dtype=torch.bfloat16)
         km = qgu.forward(xm).float(); fm = xm.float() @ qgu.Wdq.t()
