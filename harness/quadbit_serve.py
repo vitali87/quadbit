@@ -787,7 +787,10 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
                   f"cos {c(deqk.flatten(), af.flatten(), dim=0).item():.5f} | "
                   f"kernel-down-out vs torch-W4A4-down relL2 {r(k_sout, tw4a4):.4f} "
                   f"cos {c(k_sout.flatten(), tw4a4.flatten(), dim=0).item():.5f}", flush=True)
-            return tw4a4.to(x.dtype)
+            # RETURN the kernel down output (relL2 0.018 from the working torch-W4A4) for layer 0, torch-W4A4
+            # rest. ~8.95 -> returning the kernel tensor is fine (bug was in gate_up-kernel/sparse_fwd path);
+            # ~15k -> returning this 1.8%-off kernel tensor breaks it (non-value kernel-tensor effect).
+            return k_sout.to(x.dtype)
         m0.forward = diag_fwd
         for layer in model.model.layers[1:]:
             mlp = layer.mlp
