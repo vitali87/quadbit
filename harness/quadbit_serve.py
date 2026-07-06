@@ -471,6 +471,157 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
           flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def bench_mlp(util: float = 0.55) -> None:
+    # Track A: exact MLP head-to-head. Times vLLM native NVFP4 MLP vs quadbit sparse MLP with CUDA
+    # events (p50/p95/min), per component, over a shape sweep + real serving prefill shapes; then
+    # measures the empirical MLP fraction of a real prefill forward and prints the Amdahl ceiling
+    # table (sparse-MLP speedup needed for +5%/+10% whole-prefill; projected from the measured speedup).
+    # Everything eager (sparse ctypes kernel can't be graph-captured yet -> B6). gate+up are FUSED in
+    # both vLLM (MergedColumnParallelLinear) and our kernel; separate gate/up are not addressable in
+    # the merged layout, reported as one fused unit.
+    import ctypes
+    import gc
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    H, I = 4096, 14336  # llama-3.1-8B hidden / intermediate
+    SHAPES = (256, 2048, 8192, 16384, 65536, 131072)
+    dev = torch.device("cuda")
+
+    def evstats(fn, it=40, warm=8):
+        for _ in range(warm):
+            fn()
+        torch.cuda.synchronize()
+        ss = [torch.cuda.Event(True) for _ in range(it)]
+        ee = [torch.cuda.Event(True) for _ in range(it)]
+        for k in range(it):
+            ss[k].record(); fn(); ee[k].record()
+        torch.cuda.synchronize()
+        ts = sorted(ss[k].elapsed_time(ee[k]) for k in range(it))
+        return ts[len(ts) // 2], ts[min(len(ts) - 1, int(0.95 * len(ts)))], ts[0]
+
+    # side-load true bf16 Instruct MLP weights for the sparse path (same family as the NVFP4 model)
+    from transformers import AutoModelForCausalLM
+    src = AutoModelForCausalLM.from_pretrained(BF16_CKPT, dtype=torch.bfloat16, low_cpu_mem_usage=True)
+    gu0 = torch.cat([src.model.layers[0].mlp.gate_proj.weight.data,
+                     src.model.layers[0].mlp.up_proj.weight.data], 0).clone()
+    dn0 = src.model.layers[0].mlp.down_proj.weight.data.clone()
+    del src; gc.collect()
+
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=2048 + 128 + 16,
+              kv_cache_dtype="auto", gpu_memory_utilization=util)
+    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}", flush=True)
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    nmlp = model.model.layers[0].mlp  # native NVFP4 MLP (modelopt_fp4)
+
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    qb_gu, qb_dn = QBSparse(gu0.to(dev)), QBSparse(dn0.to(dev))
+    del gu0, dn0; gc.collect(); torch.cuda.empty_cache()
+
+    def nat_gu(x):
+        return nmlp.gate_up_proj(x)[0]
+
+    def nat_dn(y):
+        return nmlp.down_proj(y)[0]
+
+    print("\n=== MLP HEAD-TO-HEAD (ms, p50/p95/min via CUDA events; gate+up FUSED) ===", flush=True)
+    print(f"{'M':>7} | {'native gate_up':>22} | {'sparse gate_up':>22} | "
+          f"{'native full MLP':>22} | {'sparse full MLP':>22} | {'MLP speedup':>11}", flush=True)
+    speedup_at = {}
+    for M in SHAPES:
+        try:
+            x = torch.randn(M, H, device=dev, dtype=torch.bfloat16)
+            ngu = evstats(lambda: nat_gu(x))
+            sgu = evstats(lambda: qb_gu.forward(x))
+            nfull = evstats(lambda: nat_dn(nmlp.act_fn(nat_gu(x))))
+            sfull = evstats(lambda: qb_dn.forward(nmlp.act_fn(qb_gu.forward(x))))
+            sp = nfull[0] / sfull[0]
+            speedup_at[M] = sp
+            print(f"{M:>7} | {ngu[0]:7.3f}/{ngu[1]:6.3f}/{ngu[2]:6.3f} | "
+                  f"{sgu[0]:7.3f}/{sgu[1]:6.3f}/{sgu[2]:6.3f} | "
+                  f"{nfull[0]:7.3f}/{nfull[1]:6.3f}/{nfull[2]:6.3f} | "
+                  f"{sfull[0]:7.3f}/{sfull[1]:6.3f}/{sfull[2]:6.3f} | {sp:8.3f}x", flush=True)
+            del x; torch.cuda.empty_cache()
+        except torch.cuda.OutOfMemoryError:
+            print(f"{M:>7} | OOM (skip, reported honestly)", flush=True)
+            torch.cuda.empty_cache()
+
+    # empirical MLP fraction of a REAL prefill forward, native vs sparse patched, via event accumulators
+    class Acc:
+        def __init__(self):
+            self.p = []
+
+        def wrap(self, fn):
+            def g(*a, **k):
+                s = torch.cuda.Event(True); e = torch.cuda.Event(True)
+                s.record(); r = fn(*a, **k); e.record(); self.p.append((s, e)); return r
+            return g
+
+        def ms(self):
+            torch.cuda.synchronize(); return sum(s.elapsed_time(e) for s, e in self.p)
+
+    S = 2048
+
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
+
+    orig_attn = [layer.self_attn.forward for layer in model.model.layers]
+    orig_mlp = [layer.mlp.forward for layer in model.model.layers]
+
+    def prefill_fracs(B, patch_sparse):
+        am, mm = Acc(), Acc()
+        for i, layer in enumerate(model.model.layers):  # always wrap pristine originals (no stacking)
+            layer.self_attn.forward = am.wrap(orig_attn[i])
+            if patch_sparse:
+                mlp = layer.mlp
+                mlp._qb_gu, mlp._qb_dn = qb_gu, qb_dn  # share (weights identical for timing)
+                f = (lambda m: (lambda x: m._qb_dn.forward(m.act_fn(m._qb_gu.forward(x)))))(mlp)
+                layer.mlp.forward = mm.wrap(f)
+            else:
+                layer.mlp.forward = mm.wrap(orig_mlp[i])
+        wall_s = torch.cuda.Event(True); wall_e = torch.cuda.Event(True)
+        torch.cuda.synchronize(); wall_s.record()
+        llm.generate([{"prompt_token_ids": distinct_ids(i)} for i in range(B)],
+                     SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
+        wall_e.record(); torch.cuda.synchronize()
+        wall = wall_s.elapsed_time(wall_e)
+        return am.ms(), mm.ms(), wall
+
+    print("\n=== EMPIRICAL PREFILL FRACTION (native NVFP4, real forward) ===", flush=True)
+    frac_mlp = {}
+    for B in (1, 8, 32, 64):
+        attn_ms, mlp_ms, wall = prefill_fracs(B, patch_sparse=False)
+        f = mlp_ms / wall
+        frac_mlp[B] = f
+        print(f"B={B:>3} M={B * S:>6}: mlp {mlp_ms:8.2f}ms  attn {attn_ms:8.2f}ms  wall {wall:8.2f}ms  "
+              f"| MLP frac of wall {f:5.3f}  attn frac {attn_ms / wall:5.3f}", flush=True)
+
+    print("\n=== AMDAHL CEILING (sparse-MLP speedup needed vs measured) ===", flush=True)
+    print(f"{'B':>4} | {'MLP frac f':>10} | {'s for +5%':>10} | {'s for +10%':>11} | "
+          f"{'measured s':>10} | {'proj total':>10}", flush=True)
+    for B in (1, 8, 32, 64):
+        f = frac_mlp[B]
+        M = B * S
+        s_meas = speedup_at.get(M, speedup_at.get(min(speedup_at, key=lambda k: abs(k - M)), 1.0))
+
+        def need(G):
+            d = 1.0 / G - (1.0 - f)
+            return f / d if d > 1e-9 else float("inf")
+
+        proj = 1.0 / ((1.0 - f) + f / s_meas)
+        n5, n10 = need(1.05), need(1.10)
+        print(f"{B:>4} | {f:10.3f} | {('inf' if n5 == float('inf') else f'{n5:.2f}x'):>10} | "
+              f"{('inf' if n10 == float('inf') else f'{n10:.2f}x'):>11} | {s_meas:8.3f}x | "
+              f"{proj:8.3f}x", flush=True)
+    print("BENCH_MLP_DONE", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False) -> None:
@@ -478,6 +629,8 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
         call = serve_hybrid.spawn(do_ppl, util, instrument)
+    elif mode == "bench":
+        call = bench_mlp.spawn(util)
     else:
         call = {"store_so": store_so, "smoke": smoke}.get(mode, smoke).spawn()
     print(f"SPAWN_ID {call.object_id}", flush=True)
