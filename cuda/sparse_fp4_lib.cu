@@ -359,17 +359,28 @@ extern "C" void fused_swiglu_quant(const void *g, const void *u, void *Hbytes, v
 // CTA-per-token layout reads strided-by-batch and is ~25% slower). Pass 1 = per-token amax: one thread
 // owns one token, loops the hidden dim, reduces its OWN token's amax in a register (no atomics, no
 // cross-thread reduce) -> gH. Pass 2 = the fast single-level quantizer, but encoded RELATIVE to gH.
-__global__ void swiglu_rowamax(const __nv_bfloat16 *g, const __nv_bfloat16 *u, float *gH, int batch, int hidden) {
-    int b = blockIdx.x * blockDim.x + threadIdx.x;         // one token per thread; consecutive threads coalesce
-    if (b >= batch) return;
+// Pass 1: per-token amax via the FAST single-level layout (one thread per 32-block, massively parallel
+// -> good at prefill AND decode, unlike a one-thread-per-token serial loop). Each thread reduces its
+// block's amax and atomicMaxes it into gH[b] (float>=0, so __float_as_int is monotonic; gH pre-zeroed).
+__global__ void swiglu_amax(const __nv_bfloat16 *g, const __nv_bfloat16 *u, float *gH, int batch, int hidden) {
+    int hb = hidden / 32;
+    long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= (long)batch * hb) return;
+    int hblock = (int)(t / batch), b = (int)(t % batch);   // b fastest -> coalesced g/u reads
+    long base = (long)(hblock * 32) * batch + b;
     float amax = 0.f;
-    for (int e = 0; e < hidden; e++) {
-        float gv = __bfloat162float(g[(long)e * batch + b]);
-        float uv = __bfloat162float(u[(long)e * batch + b]);
-        float h = (gv / (1.f + __expf(-gv))) * uv;
-        amax = fmaxf(amax, fabsf(h));
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+        float gv = __bfloat162float(g[base + (long)i * batch]);
+        float uv = __bfloat162float(u[base + (long)i * batch]);
+        amax = fmaxf(amax, fabsf((gv / (1.f + __expf(-gv))) * uv));
     }
-    gH[b] = amax > 0.f ? amax / 2688.f : 1.f;              // per-token global (2688 = e4m3max * e2m1max)
+    atomicMax((int *)&gH[b], __float_as_int(amax));
+}
+__global__ void swiglu_finalize(float *gH, int batch) {    // raw per-token amax -> global (amax/2688)
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= batch) return;
+    gH[b] = gH[b] > 0.f ? gH[b] / 2688.f : 1.f;            // 2688 = e4m3max(448) * e2m1max(6)
 }
 __global__ void swiglu_quant_g(const __nv_bfloat16 *g, const __nv_bfloat16 *u, uint32_t *Hwords,
                                uint8_t *scaleH, const float *gH, int batch, int hidden) {
@@ -399,12 +410,13 @@ __global__ void swiglu_quant_g(const __nv_bfloat16 *g, const __nv_bfloat16 *u, u
     }
     *reinterpret_cast<uint4 *>(Hwords + (long)b * (hidden / 8) + hblock * 4) = make_uint4(w[0], w[1], w[2], w[3]);
 }
+// gH MUST be pre-zeroed by the caller (swiglu_amax atomicMaxes into it).
 extern "C" void fused_swiglu_quant_2lvl(const void *g, const void *u, void *Hbytes, void *scaleH,
                                         void *gH, int batch, int hidden) {
-    int tpb = 256;
-    swiglu_rowamax<<<(batch + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
-                                                     (float *)gH, batch, hidden);
-    int total = batch * (hidden / 32);
+    int tpb = 256, total = batch * (hidden / 32);
+    swiglu_amax<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
+                                                  (float *)gH, batch, hidden);
+    swiglu_finalize<<<(batch + tpb - 1) / tpb, tpb>>>((float *)gH, batch);
     swiglu_quant_g<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
                                                      (uint32_t *)Hbytes, (uint8_t *)scaleH, (const float *)gH, batch, hidden);
 }

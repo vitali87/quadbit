@@ -367,7 +367,7 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
         Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
         sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
-        gH = torch.empty((tp,), dtype=torch.float32, device=dev)   # per-token global for the down activation (two-level)
+        gH = torch.zeros((tp,), dtype=torch.float32, device=dev)   # per-token global (two-level); zeroed for atomicMax in swiglu_amax
         # ZERO-COPY: down GEMM writes [tp, out_f] token-major (outT=1 epilogue) -> Cout[:t] is a
         # CONTIGUOUS, storage_offset-0 tensor returnable to vLLM with no transpose+copy pass.
         Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
