@@ -361,20 +361,33 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
     gu, dn = mlp._qb_gu, mlp._qb_dn
     H, Iw = gu.in_f, dn.in_f  # 4096, 14336
 
+    ws = {}  # persistent per-layer workspace (Track B B1: prealloc). Cout kept persistent so the returned
+    # view does NOT dangle -> no per-call copy (the copy was the ~7% batch overhead). vLLM's residual add
+    # consumes the view within the same forward, before this layer's Cout is reused next forward.
+
+    def buf(key, shape, dt):  # contiguous exact-shape view of a flat persistent buffer (kernel needs
+        n = 1                 # stride==shape; slicing a grown [.,.] buffer would give the wrong stride)
+        for s in shape:
+            n *= s
+        b = ws.get(key)
+        if b is None or b.numel() < n or b.dtype != dt:
+            b = torch.empty(n, dtype=dt, device=dev); ws[key] = b
+        return b[:n].view(*shape)
+
     def fwd(x):
         lead = x.shape[:-1]; x2 = x.reshape(-1, H).to(torch.bfloat16)
         t = x2.shape[0]; pad = (-t) % 128
         if pad:
             x2 = torch.cat([x2, x2.new_zeros(pad, H)], 0)
         x2 = x2.contiguous(); tp = t + pad
-        Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
-        sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
-        gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
-        Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
-        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
-        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
-        gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
-        Cout = torch.empty((dn.out_f, tp), dtype=torch.bfloat16, device=dev)
+        Bb = buf("Bb", (tp, H // 2), torch.uint8)
+        sBg = buf("sBg", (gu.ks, tp, 4), torch.uint8)
+        gBg = buf("gBg", (tp,), torch.float32)
+        Cgu = buf("Cgu", (gu.out_f, tp), torch.bfloat16)
+        Hb = buf("Hb", (tp, Iw // 2), torch.uint8)
+        sH = buf("sH", (Iw // 128, tp, 4), torch.uint8)
+        gB1 = buf("gB1", (tp,), torch.float32); gB1.fill_(1.0)
+        Cout = buf("Cout", (dn.out_f, tp), torch.bfloat16)
         # per-thread-stream .so: kernels run on vLLM's stream, ordered with the torch ops; no explicit sync
         lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
         lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
@@ -384,10 +397,7 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         lib.sparse_fp4_mm_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
                                dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                dn.gA.data_ptr(), gB1.data_ptr())
-        res = Cout.t()[:t].reshape(*lead, dn.out_f)  # copy so the view into local Cout doesn't dangle
-        out = torch.empty(res.shape, dtype=x.dtype, device=dev)
-        out.copy_(res)
-        return out
+        return Cout.t()[:t].reshape(*lead, dn.out_f)  # view into persistent Cout (no copy, no dangle)
     mlp.forward = fwd
 
 
