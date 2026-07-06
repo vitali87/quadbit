@@ -654,6 +654,24 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     torch.cuda.empty_cache()
     ppl("recovered-WEIGHT-only-fp4-fullprec-act")
 
+    # BISECT gate_up-path vs down-path: which quantized-ACTIVATION input kills it? down-proj input is
+    # h=silu(gate)*up (SwiGLU intermediate, outlier-heavy - NOT Gaussian like the probes used).
+    for li, layer in enumerate(model.model.layers):  # gate_up SPARSE, down DENSE (h full-precision)
+        mlp = layer.mlp
+        mlp.forward = (lambda gu, dw, iw: (lambda x: torch.nn.functional.linear(
+            (lambda y: torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])(gu.forward(x)),
+            dw).to(x.dtype)))(mlp._qb_gu, mlp._qb_dn.Wdq, mlp._qb_dn.in_f)
+    torch.cuda.empty_cache()
+    ppl("gu-SPARSE_dn-DENSE (h full-prec)")
+
+    for li, layer in enumerate(model.model.layers):  # gate_up DENSE, down SPARSE (h fp4-quantized)
+        mlp = layer.mlp
+        mlp.forward = (lambda guw, dn, iw: (lambda x: dn.forward(
+            (lambda y: torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])(x.float() @ guw.t()).to(torch.bfloat16)
+        )))(mlp._qb_gu.Wdq, mlp._qb_dn, mlp._qb_dn.in_f)
+    torch.cuda.empty_cache()
+    ppl("gu-DENSE_dn-SPARSE (h fp4-quant)")
+
     for li, layer in enumerate(model.model.layers):  # now the real sparse path
         mlp = layer.mlp
         if fused:
