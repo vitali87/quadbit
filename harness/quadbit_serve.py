@@ -721,36 +721,23 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             * torch.nn.functional.linear(x, guw)[..., iw:], dw)))(gg, dd, d.shape[1])
     del rec; gc.collect()
 
-    if diag:  # BRANCH B4: run the down kernel INSIDE the real vLLM forward and compare to reference
-        # IN-CONTEXT (before any later op can clobber). All layers dense (model runs correct); layer 0's
-        # forward additionally runs dn.forward(h) in-context and logs cos vs h@Wdq. HIGH cos -> kernel is
-        # fine in-context, garbage comes from AFTER (output lifetime/clobber). LOW cos -> kernel genuinely
-        # computes wrong in the vLLM forward context (stream/resource), not just when I call it directly.
-        diag_state = {"done": False}
-        m0 = model.model.layers[0].mlp
-        gw0, dw0, iw0 = m0._qb_gu.Wdq, m0._qb_dn.Wdq, m0._qb_dn.in_f
-        qd0 = m0._qb_dn
-
-        qg0 = m0._qb_gu
-
-        def diag_fwd(x):  # RELATIVE L2 (cos is scale-invariant and has been hiding a per-row magnitude error)
-            yd = (x.float() @ gw0.t())
-            ref = torch.nn.functional.linear(torch.nn.functional.silu(yd[..., :iw0]) * yd[..., iw0:], dw0).float()
-            ys = qg0.forward(x)
-            hs = torch.nn.functional.silu(ys[..., :iw0]) * ys[..., iw0:]
-            sout = qd0.forward(hs).float()
-            rl2 = ((sout - ref).norm(dim=1) / ref.norm(dim=1).clamp_min(1e-9))  # per-row relative L2 error
-            magr = (sout.norm(dim=1) / ref.norm(dim=1).clamp_min(1e-9))         # per-row magnitude ratio
-            print(f"DIAG call M={x.shape[0]:6d} | relL2 mean {rl2.mean().item():.4f} max {rl2.max().item():.3f} "
-                  f"frac>0.3 {(rl2 > 0.3).float().mean().item():.3f} | magratio mean {magr.mean().item():.4f} "
-                  f"min {magr.min().item():.3f} max {magr.max().item():.3f} | sout-rms {sout.pow(2).mean().sqrt().item():.4f} "
-                  f"ref-rms {ref.pow(2).mean().sqrt().item():.4f}", flush=True)
-            # RETURN THE SPARSE OUTPUT for layer 0 (identical to K=1's layer 0, everything else provably
-            # fixed). If PPL ~= dense, the K-sweep machinery was the culprit; if ~13809, returning this
-            # clean-10%-approx tensor genuinely breaks it (a non-value effect I'm missing).
-            return sout.to(x.dtype)
-        m0.forward = diag_fwd
-        ppl("diag-incontext-layer0")
+    if diag:  # GENERATION ground-truth: PPL-via-prompt_logprobs shows a 1600x swing from a 0.1%-residual
+        # perturbation (impossible). Stop trusting PPL; patch ALL layers unfused-two-level sparse and READ
+        # generated text. Coherent -> the 121k is a prompt_logprobs artifact and serving actually works.
+        from vllm import SamplingParams
+        for layer in model.model.layers:
+            mlp = layer.mlp
+            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
+                y = g_.forward(x)
+                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
+            mlp.forward = unf
+        torch.cuda.empty_cache()
+        prompts = ["The capital of France is", "Water is made of hydrogen and",
+                   "To sort a list in Python, you can use the", "The theory of relativity was developed by"]
+        outs = llm.generate(prompts, SamplingParams(temperature=0, max_tokens=24), use_tqdm=False)
+        for p, o in zip(prompts, outs):
+            print(f"GEN {p!r} -> {o.outputs[0].text!r}", flush=True)
+        ppl("all-sparse-unfused-2lvl")
         print("DIAG_DONE", flush=True); return
 
     ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
