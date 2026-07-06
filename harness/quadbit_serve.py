@@ -286,7 +286,7 @@ def _qbsparse_factory(torch, lib, dev):
         return torch.where(s > 0, code, torch.zeros_like(code))
 
     class QBSparse:
-        def __init__(self, W):
+        def __init__(self, W, keep_wdq=False):
             out_f, in_f = W.shape; ks = in_f // 128
             self.out_f, self.in_f, self.ks = out_f, in_f, ks
             Wg = W.float().to(dev).view(out_f, ks, 16, 4, 2)
@@ -303,6 +303,11 @@ def _qbsparse_factory(torch, lib, dev):
             self.meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
             self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()
             self.gA = gA.reshape(out_f).float().contiguous()
+            if keep_wdq:  # dense fake-quant weight the kernel REPRESENTS (for kernel-correctness test)
+                kept_dq = (FP4[kc] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
+                Wdq_g = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
+                Wdq_g.scatter_(3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kept_dq)
+                self.Wdq = Wdq_g.reshape(out_f, in_f)
 
         def forward(self, x):
             lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
@@ -634,7 +639,8 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     QBSparse = _qbsparse_factory(torch, lib, dev)
-    qb_gu, qb_dn = QBSparse(gu0.to(dev)), QBSparse(dn0.to(dev))
+    qb_gu = QBSparse(gu0.to(dev), keep_wdq=verify)
+    qb_dn = QBSparse(dn0.to(dev), keep_wdq=verify)
 
     if verify:  # CORRECTNESS GATE for the B4 fused path (before trusting its 1.25x speed)
         M = 2048
@@ -644,6 +650,21 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
         g_ref, u_ref = gu_bf[:, :I], gu_bf[:, I:]
         h_ref = (g_ref * torch.sigmoid(g_ref)) * u_ref  # silu(gate)*up
         ref = h_ref @ Wdn.t()                           # [M,4096]
+
+        # KERNEL FAITHFULNESS: does the staged 12.9 .so compute what the packed weights represent?
+        # Compare qb_gu kernel output to x @ Wdq.t() (Wdq = the dense fake-quant weight the pack encodes,
+        # activation full precision). cos ~0.97+ => kernel faithful (only act-fp4 error). Low => .so wrong.
+        kgu = qb_gu.forward(x).float()
+        fq_gu = x.float() @ qb_gu.Wdq.t()
+
+        def _cmp(a, b):
+            return (torch.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim=0).item(),
+                    ((a - b).abs().max() / b.abs().max().clamp_min(1e-9)).item())
+
+        c, m = _cmp(kgu, fq_gu)
+        print(f"VERIFY kernel(gate_up) vs its-own-Wdq (act full-prec): cos {c:.5f}  maxrel {m:.4f}", flush=True)
+        c, m = _cmp(fq_gu, gu_bf)
+        print(f"VERIFY Wdq(gate_up) vs bf16-dense (weight fake-quant only): cos {c:.5f}  maxrel {m:.4f}", flush=True)
         print(f"VERIFY act_fn type = {type(nmlp.act_fn).__name__}", flush=True)
 
         def plain_act(y):  # explicit SwiGLU, not the NVFP4 model's (possibly quant-fused) act_fn
