@@ -183,11 +183,14 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
             torch.cuda.synchronize()
-            # .clone() is REQUIRED: C.t() is non-contiguous so reshape returns a VIEW into C, and .to(dtype)
-            # is a no-op when dtypes match -> the returned tensor aliases the local C buffer, which the
-            # caching allocator frees when forward() returns. vLLM reads it LATER (residual add) -> garbage.
-            # gate_up escaped this (its view is consumed by silu*mul within the forward); down did not.
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype).clone()
+            # Re-materialize the result through a plain torch.empty+copy_ (NOT .clone()). The kernel-derived
+            # tensor (view into the ctypes-written C buffer) has storage/provenance that vLLM's later residual
+            # /logprob ops mishandle -> garbage, even after .clone(). Proven: return kernel .clone() -> PPL
+            # 11594; copy same values into a fresh torch.empty -> 8.93. Allocate the output the way vLLM does.
+            res = C.t()[:t].reshape(*lead, self.out_f)
+            out = torch.empty(res.shape, dtype=x.dtype, device=dev)
+            out.copy_(res)
+            return out
 
     n = 0; sparse_params = 0; total_params = 0
     for layer in model.model.layers:
@@ -337,11 +340,14 @@ def _qbsparse_factory(torch, lib, dev):
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
             torch.cuda.synchronize()
-            # .clone() is REQUIRED: C.t() is non-contiguous so reshape returns a VIEW into C, and .to(dtype)
-            # is a no-op when dtypes match -> the returned tensor aliases the local C buffer, which the
-            # caching allocator frees when forward() returns. vLLM reads it LATER (residual add) -> garbage.
-            # gate_up escaped this (its view is consumed by silu*mul within the forward); down did not.
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype).clone()
+            # Re-materialize the result through a plain torch.empty+copy_ (NOT .clone()). The kernel-derived
+            # tensor (view into the ctypes-written C buffer) has storage/provenance that vLLM's later residual
+            # /logprob ops mishandle -> garbage, even after .clone(). Proven: return kernel .clone() -> PPL
+            # 11594; copy same values into a fresh torch.empty -> 8.93. Allocate the output the way vLLM does.
+            res = C.t()[:t].reshape(*lead, self.out_f)
+            out = torch.empty(res.shape, dtype=x.dtype, device=dev)
+            out.copy_(res)
+            return out
 
     return QBSparse
 
@@ -378,10 +384,12 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
                                dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                dn.gA.data_ptr(), gB1.data_ptr())
         torch.cuda.synchronize()  # all kernels done before torch reads Cout
-        # .clone(): Cout.t() is non-contiguous -> reshape returns a VIEW into Cout, .to(dtype) is a no-op
-        # when dtypes match -> returned tensor aliases the local Cout, freed on return; vLLM reads it later
-        # (residual add) -> garbage. Force an independent copy.
-        return Cout.t()[:t].reshape(*lead, dn.out_f).to(x.dtype).clone()
+        # re-materialize via torch.empty+copy_ (see QBSparse.forward): kernel-derived tensor storage breaks
+        # vLLM's downstream ops; a plain torch allocation does not.
+        res = Cout.t()[:t].reshape(*lead, dn.out_f)
+        out = torch.empty(res.shape, dtype=x.dtype, device=dev)
+        out.copy_(res)
+        return out
     mlp.forward = fwd
 
 
@@ -721,90 +729,23 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             * torch.nn.functional.linear(x, guw)[..., iw:], dw)))(gg, dd, d.shape[1])
     del rec; gc.collect()
 
-    if diag:  # KERNEL vs ALGORITHM: weight-Wdq (fine, 8.74) + TORCH activation fake-quant (the exact QAT
-        # training-time act_fp4_dequant, NO kernel). Coherent -> the KERNEL's quantize_act differs from
-        # training (kernel/recipe bug). Garbage -> fp4 activations genuinely break this model (algorithm).
+    if diag:  # VALIDATE the provenance fix end-to-end: ALL layers full sparse via the fixed QBSparse.forward
+        # (unfused two-level: sparse gate_up -> silu -> sparse down). Expect sane PPL (~11 single-level-ish)
+        # + coherent generation now that the returned tensor is re-materialized via torch.empty+copy_.
         from vllm import SamplingParams
-        FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
-        BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
-        _cc = torch.arange(128, device=dev); _e, _m = (_cc >> 3) & 0xf, _cc & 7
-        UE = torch.where(_e == 0, _m.float() * 0.001953125, (1.0 + _m.float() / 8.0) * torch.exp2((_e - 7).float()))
-
-        def q_fp4(v):
-            return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
-
-        def enc(s):
-            mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
-            biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
-            mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
-            code = (biased.long() << 3) | mant
-            code = torch.where(biased < 1, torch.ones_like(code), code)
-            code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
-            code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
-            return torch.where(s > 0, code, torch.zeros_like(code))
-
-        def act_fq(x):  # per-32 two-level NVFP4 activation fake-quant (matches finetune act_fp4_dequant); float32
-            lead = x.shape[:-1]; i = x.shape[-1]
-            b = x.float().reshape(-1, i)
-            gB = (b.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)
-            bb = b.reshape(b.shape[0], i // 32, 32)
-            sdeq = UE[enc((bb.abs().amax(-1) / 6.0) / gB)] * gB
-            return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
-
-        # Algorithm is correct (torch-W4A4 = 8.95). Now measure the KERNEL vs torch-W4A4 gap directly on
-        # layer 0 (both fp4-weight x fp4-act): large gap -> kernel diverges from correct W4A4. Split into
-        # activation-quant vs mma by also dequantizing the kernel's activation quant and comparing to act_fq.
-        m0 = model.model.layers[0].mlp
-        gw0, dw0, iw0 = m0._qb_gu.Wdq, m0._qb_dn.Wdq, m0._qb_dn.in_f
-        qg0, qd0 = m0._qb_gu, m0._qb_dn
-        UEt = UE  # device ue4m3 table for dequant
-
-        def diag_fwd(x):
-            # torch-W4A4 reference (the WORKING 8.95 path) for layer 0
-            yq = torch.nn.functional.linear(act_fq(x), gw0)
-            hq = torch.nn.functional.silu(yq[..., :iw0]) * yq[..., iw0:]
-            tw4a4 = torch.nn.functional.linear(act_fq(hq), dw0)
-            # kernel gate_up on x, then kernel down on the SAME hq (isolate down)
-            k_sout = qd0.forward(hq.to(torch.bfloat16)).float()
-            # dequant the kernel's activation quant of hq and compare to act_fq(hq)
-            tp = hq.shape[0]; inf = iw0
-            Bb = torch.empty((tp, inf // 2), dtype=torch.uint8, device=dev)
-            sB = torch.empty((inf // 128, tp, 4), dtype=torch.uint8, device=dev)
-            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-            hqc = hq.to(torch.bfloat16).contiguous(); torch.cuda.synchronize()
-            lib.quantize_act_nvfp4_2lvl(hqc.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, inf)
-            torch.cuda.synchronize()
-            lo = (Bb & 0xf).to(torch.long); hi = (Bb >> 4).to(torch.long)  # [tp, inf/2] two nibbles
-            deq = torch.empty(tp, inf, device=dev)
-            deq[:, 0::2] = FP4[lo]; deq[:, 1::2] = FP4[hi]
-            # sB layout [step=inf/128, tp, 4]; blk=step*4+kb -> per-32 local ue4m3 scale [tp, inf/32]
-            scblk = (UEt[sB.long()]).permute(1, 0, 2).reshape(tp, inf // 32)
-            deqk = (deq.reshape(tp, inf // 32, 32) * (scblk * gB[:, None])[..., None]).reshape(tp, inf)
-            af = act_fq(hq)
-            c = torch.nn.functional.cosine_similarity
-            r = lambda a, b: ((a - b).norm() / b.norm().clamp_min(1e-9)).item()
-            print(f"DIAG-KVQ M={tp} | kernel-act-dequant vs torch-act_fq relL2 {r(deqk, af):.4f} "
-                  f"cos {c(deqk.flatten(), af.flatten(), dim=0).item():.5f} | "
-                  f"kernel-down-out vs torch-W4A4-down relL2 {r(k_sout, tw4a4):.4f} "
-                  f"cos {c(k_sout.flatten(), tw4a4.flatten(), dim=0).item():.5f}", flush=True)
-            # VALUE vs PROVENANCE: copy the kernel's exact values into a FRESH torch-allocated bf16 tensor
-            # and return that. ~8.95 -> the kernel tensor's storage/provenance was the issue (fix: copy into
-            # a torch tensor before returning); ~11.5k -> genuinely the values (impossible at relL2 0.018).
-            out = torch.empty(k_sout.shape, dtype=x.dtype, device=dev)
-            out.copy_(k_sout)
-            return out
-        m0.forward = diag_fwd
-        for layer in model.model.layers[1:]:
+        for layer in model.model.layers:
             mlp = layer.mlp
-            gw, dw, iw = mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f
-
-            def tfq(x, gw=gw, dw=dw, iw=iw):
-                y = torch.nn.functional.linear(act_fq(x), gw)
-                h = torch.nn.functional.silu(y[..., :iw]) * y[..., iw:]
-                return torch.nn.functional.linear(act_fq(h), dw).to(x.dtype)
-            mlp.forward = tfq
+            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
+                y = g_.forward(x)
+                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
+            mlp.forward = unf
         torch.cuda.empty_cache()
-        ppl("diag-kernel-vs-torchW4A4")
+        prompts = ["The capital of France is", "Water is made of hydrogen and",
+                   "To sort a list in Python, you can use the", "The theory of relativity was developed by"]
+        outs = llm.generate(prompts, SamplingParams(temperature=0, max_tokens=24), use_tqdm=False)
+        for p, o in zip(prompts, outs):
+            print(f"GEN-FIXED {p!r} -> {o.outputs[0].text!r}", flush=True)
+        ppl("all-sparse-kernel-provenance-fixed")
         print("DIAG_DONE", flush=True); return
 
     ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
