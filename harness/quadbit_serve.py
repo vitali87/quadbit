@@ -365,7 +365,7 @@ RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
-                 fused: bool = True, ppl_only: bool = False) -> None:
+                 fused: bool = True, ppl_only: bool = False, baseline: bool = False) -> None:
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -384,15 +384,18 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         return int(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                                   capture_output=True, text=True).stdout.strip().splitlines()[0])
 
-    # 1) side-load true bf16 Instruct MLP weights on CPU (same checkpoint family as the NVFP4 model)
-    from transformers import AutoModelForCausalLM
-    src = AutoModelForCausalLM.from_pretrained(BF16_CKPT, dtype=torch.bfloat16, low_cpu_mem_usage=True)
+    # 1) side-load true bf16 Instruct MLP weights on CPU (same checkpoint family as the NVFP4 model).
+    # baseline=True: skip side-load + patch entirely -> pure vLLM native NVFP4 (the speed comparand,
+    # measured in THIS identical harness/util so the fused-vs-NVFP4 delta is apples-to-apples).
     mlpw = []
-    for layer in src.model.layers:
-        gu = torch.cat([layer.mlp.gate_proj.weight.data, layer.mlp.up_proj.weight.data], 0).clone()
-        mlpw.append((gu, layer.mlp.down_proj.weight.data.clone()))
-    del src; gc.collect()
-    print(f"side-loaded bf16 MLP weights for {len(mlpw)} layers", flush=True)
+    if not baseline:
+        from transformers import AutoModelForCausalLM
+        src = AutoModelForCausalLM.from_pretrained(BF16_CKPT, dtype=torch.bfloat16, low_cpu_mem_usage=True)
+        for layer in src.model.layers:
+            gu = torch.cat([layer.mlp.gate_proj.weight.data, layer.mlp.up_proj.weight.data], 0).clone()
+            mlpw.append((gu, layer.mlp.down_proj.weight.data.clone()))
+        del src; gc.collect()
+        print(f"side-loaded bf16 MLP weights for {len(mlpw)} layers", flush=True)
 
     # 2) vLLM native NVFP4 (non-MLP linears 4-bit). Lower util to leave room for sparse MLP buffers.
     S, GEN = 2048, 128
@@ -424,7 +427,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
             return dn.forward(torch.nn.functional.silu(y[..., :Iw]) * y[..., Iw:])
         mlp.forward = fwd_unf
 
-    for li, layer in enumerate(model.model.layers):
+    for li, layer in enumerate(model.model.layers if not baseline else []):
         gu, dn = mlpw[li]
         mlp = layer.mlp
         mlp._qb_gu = QBSparse(gu.to(dev)); mlp._qb_dn = QBSparse(dn.to(dev))
@@ -432,7 +435,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         patch(mlp)
     del mlpw; gc.collect(); torch.cuda.empty_cache()
     mem_patched = gpu_mib()
-    print(f"patched {len(model.model.layers)} MLPs to sparse (all M); device MiB load={mem_load} "
+    npatched = 0 if baseline else len(model.model.layers)
+    print(f"patched {npatched} MLPs to sparse (all M); device MiB load={mem_load} "
           f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
 
     if instrument:  # Option 3: explain the parity - is per-call overhead eating the GEMM win?
@@ -515,8 +519,9 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         gen = sum(len(o.outputs[0].token_ids) for o in outs)
         mem_peak = max(mem_peak, gpu_mib())
         print(f"{B:>4} | {B * S / pf_dt:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
-    print(f"RESULT [nvfp4-base+sparse-MLP] util={util} device_MiB load={mem_load} "
-          f"post-patch={mem_patched} peak={mem_peak} (nvidia-smi, incl KV pool). Non-MLP NVFP4, MLP sparse.",
+    tag = "full-NVFP4-baseline" if baseline else ("nvfp4-base+sparse-MLP" + ("" if fused else "-unfused2lvl"))
+    print(f"RESULT [{tag}] util={util} device_MiB load={mem_load} "
+          f"post-patch={mem_patched} peak={mem_peak} (nvidia-smi, incl KV pool).",
           flush=True)
 
 
@@ -819,11 +824,12 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
-         util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False) -> None:
+         util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
+         baseline: bool = False) -> None:
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util)
     elif mode == "bench":
