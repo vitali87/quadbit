@@ -611,11 +611,25 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     # in_f=14336 (vs gate_up 4096) and runs at M=2048; prior down probe was only M=256 Gaussian. Test the
     # down kernel at M sweep AND on a REAL SwiGLU intermediate h (captured from the dense forward).
     caph = {}
-    hh = model.model.layers[0].mlp.down_proj.register_forward_pre_hook(
-        lambda m, a: caph.setdefault("h", a[0].detach().reshape(-1, a[0].shape[-1]).clone()))
+    hooks = [model.model.layers[li].mlp.down_proj.register_forward_pre_hook(
+        (lambda idx: (lambda m, a: caph.__setitem__(idx, a[0].detach().reshape(-1, a[0].shape[-1]).clone())))(li))
+        for li in range(nl)]
     llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
-    hh.remove()
-    hr = caph["h"].to(dev)
+    for hk in hooks:
+        hk.remove()
+    # per-LAYER: max |h| and worst down per-row cos (find the layer where dn.forward mangles h)
+    print("PROBE DOWN per-layer (real h from dense fwd): layer | h-max | dn per-row-cos min/mean", flush=True)
+    for li in (0, 1, 2, 4, 8, 16, 24, 31):
+        hL = caph[li].to(dev)
+        qdL = QBSparse(rec[3 * li + 2].to(dev), keep_wdq=True)
+        kL = qdL.forward(hL).float(); fL = hL.float() @ qdL.Wdq.t()
+        rc = torch.nn.functional.cosine_similarity(kL, fL, dim=1)
+        print(f"  L{li:2d} | h-max {hL.abs().max().item():8.1f} | rowcos min {rc.min().item():.3f} "
+              f"mean {rc.mean().item():.4f} frac<0.5 {(rc < 0.5).float().mean().item():.3f}", flush=True)
+        del hL, qdL, kL, fL, rc
+    caph.clear(); torch.cuda.empty_cache()
+    hr = rec[2].to(dev)[:0]  # unused placeholder; keep downstream probe lines happy
+    hr = torch.randn(2048, d0.shape[1], device=dev, dtype=torch.bfloat16)
     for Mt in (256, 2048):
         hm = hr[:Mt] if hr.shape[0] >= Mt else torch.randn(Mt, d0.shape[1], device=dev, dtype=torch.bfloat16)
         km = qd.forward(hm).float(); fm = hm.float() @ qd.Wdq.t()
