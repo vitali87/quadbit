@@ -182,8 +182,11 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
 
     n = 0; sparse_params = 0; total_params = 0
     for layer in model.model.layers:
-        for nm2 in ("q_proj", "k_proj", "v_proj", "o_proj"):
-            total_params += getattr(layer.self_attn, nm2).weight.numel()
+        attn = layer.self_attn  # vLLM fuses QKV into qkv_proj; count whatever attn linears exist
+        for nm2 in ("qkv_proj", "q_proj", "k_proj", "v_proj", "o_proj"):
+            lin = getattr(attn, nm2, None)
+            if lin is not None and hasattr(lin, "weight"):
+                total_params += lin.weight.numel()
         mlp = layer.mlp
         total_params += mlp.gate_up_proj.weight.numel() + mlp.down_proj.weight.numel()
         gu = QBSparse(mlp.gate_up_proj.weight.data); dn = QBSparse(mlp.down_proj.weight.data)
