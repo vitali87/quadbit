@@ -607,6 +607,15 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
           f"x max {xr.abs().max().item():.1f} mean-abs {xr.abs().mean().item():.3f} "
           f"(outlier ratio {xr.abs().max().item() / xr.abs().mean().clamp_min(1e-9).item():.0f}x)", flush=True)
 
+    # M-DEPENDENCE: all prior probes used M=256; the PPL eval runs at M=2048. Test if sparse_fp4_mm_2lvl
+    # is faithful across M (a tiling bug at M=2048 would tank PPL while M=256 probes pass).
+    for Mt in (256, 512, 1024, 2048, 2049):
+        xm = torch.randn(Mt, 4096, device=dev, dtype=torch.bfloat16)
+        km = qgu.forward(xm).float(); fm = xm.float() @ qgu.Wdq.t()
+        print(f"PROBE M={Mt:5d} gate_up kernel-vs-Wdq cos {_cos(km, fm):.5f}  "
+              f"kernel-max {km.abs().max().item():.1f} Wdq-mm-max {fm.abs().max().item():.1f}", flush=True)
+        del xm, km, fm
+
     xg = torch.randn(256, 4096, device=dev, dtype=torch.bfloat16)
     xh = torch.randn(256, d0.shape[1], device=dev, dtype=torch.bfloat16)
     k_gu = qgu.forward(xg).float(); fq_gu = xg.float() @ qgu.Wdq.t()
