@@ -733,23 +733,17 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
 
         qg0 = m0._qb_gu
 
-        def diag_fwd(x):
-            # dense reference for layer 0 (what the model actually uses this run)
+        def diag_fwd(x):  # log EVERY call (all M/chunks) - a bad-M chunk the single-shot diag missed
             yd = (x.float() @ gw0.t())
             ref = torch.nn.functional.linear(torch.nn.functional.silu(yd[..., :iw0]) * yd[..., iw0:], dw0)
-            if not diag_state["done"] and x.shape[0] >= 8:
-                # EXACT sparse_fwd path for layer 0: sparse gate_up -> silu -> sparse down
-                ys = qg0.forward(x)
-                hs = torch.nn.functional.silu(ys[..., :iw0]) * ys[..., iw0:]
-                sout = qd0.forward(hs).float()
-                c = torch.nn.functional.cosine_similarity
-                rc = c(sout, ref.float(), dim=1)
-                print(f"DIAG-FULLSPARSE M={x.shape[0]} | sparseMLP-vs-denseMLP GLOBAL cos "
-                      f"{c(sout.flatten(), ref.float().flatten(), dim=0).item():.5f} per-row mean {rc.mean().item():.4f} "
-                      f"min {rc.min().item():.3f} frac<0.5 {(rc < 0.5).float().mean().item():.3f} "
-                      f"sout-max {sout.abs().max().item():.1f} ref-max {ref.abs().max().item():.1f} "
-                      f"NaN {torch.isnan(sout).any().item()}", flush=True)
-                diag_state["done"] = True
+            ys = qg0.forward(x)
+            hs = torch.nn.functional.silu(ys[..., :iw0]) * ys[..., iw0:]
+            sout = qd0.forward(hs).float()
+            c = torch.nn.functional.cosine_similarity
+            rc = c(sout, ref.float(), dim=1)
+            print(f"DIAG call M={x.shape[0]:6d} | per-row cos mean {rc.mean().item():.4f} min {rc.min().item():.3f} "
+                  f"frac<0.5 {(rc < 0.5).float().mean().item():.3f} sout-max {sout.abs().max().item():.1f} "
+                  f"NaN {torch.isnan(sout).any().item()}", flush=True)
             return ref.to(x.dtype)
         m0.forward = diag_fwd
         ppl("diag-incontext-layer0")
