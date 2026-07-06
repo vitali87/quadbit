@@ -648,7 +648,8 @@ def serve_gu_sparse(util: float = 0.8, do_ppl: bool = True) -> None:
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool = True) -> None:
+def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool = True,
+                    diag: bool = False) -> None:
     # Deliverable #5: RECOVERED-weight PPL through the FUSED serving path. The recovered checkpoint is
     # base Meta-Llama-3-8B, all-MLP SparseGPT-pruned + QAT-recovered (through-kernel ~8.30 via two-level
     # QuadbitLinear). Here we run those SAME recovered weights through the FUSED single-level serving
@@ -708,6 +709,38 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             torch.nn.functional.silu(torch.nn.functional.linear(x, guw)[..., :iw])
             * torch.nn.functional.linear(x, guw)[..., iw:], dw)))(gg, dd, d.shape[1])
     del rec; gc.collect()
+
+    if diag:  # BRANCH B4: run the down kernel INSIDE the real vLLM forward and compare to reference
+        # IN-CONTEXT (before any later op can clobber). All layers dense (model runs correct); layer 0's
+        # forward additionally runs dn.forward(h) in-context and logs cos vs h@Wdq. HIGH cos -> kernel is
+        # fine in-context, garbage comes from AFTER (output lifetime/clobber). LOW cos -> kernel genuinely
+        # computes wrong in the vLLM forward context (stream/resource), not just when I call it directly.
+        diag_state = {"done": False}
+        m0 = model.model.layers[0].mlp
+        gw0, dw0, iw0 = m0._qb_gu.Wdq, m0._qb_dn.Wdq, m0._qb_dn.in_f
+        qd0 = m0._qb_dn
+
+        def diag_fwd(x):
+            y = torch.nn.functional.silu((x.float() @ gw0.t())[..., :iw0]) * (x.float() @ gw0.t())[..., iw0:]
+            ref = torch.nn.functional.linear(y, dw0)  # dense reference (what the model uses)
+            if not diag_state["done"] and y.shape[0] >= 8:
+                hb = y.to(torch.bfloat16).contiguous()
+                k_orig = qd0.forward(hb).float()                 # sparse kernel on vLLM tensor, IN-CONTEXT
+                k_clone = qd0.forward(hb.clone().contiguous()).float()  # on a clone
+                fq = hb.float() @ qd0.Wdq.t()                    # reference dequant matmul, same input
+                c = torch.nn.functional.cosine_similarity
+                print(f"DIAG-INCTX M={y.shape[0]} x-contig {x.is_contiguous()} y-contig {hb.is_contiguous()} "
+                      f"| kernel(vLLM-tensor)-vs-Wdq cos {c(k_orig.flatten(), fq.flatten(), dim=0).item():.5f} "
+                      f"kernel(clone)-vs-Wdq cos {c(k_clone.flatten(), fq.flatten(), dim=0).item():.5f} "
+                      f"kernel-orig-vs-clone cos {c(k_orig.flatten(), k_clone.flatten(), dim=0).item():.5f} "
+                      f"NaN orig {torch.isnan(k_orig).any().item()} kmax {k_orig.abs().max().item():.1f} "
+                      f"refmax {fq.abs().max().item():.1f}", flush=True)
+                diag_state["done"] = True
+            return ref.to(x.dtype)
+        m0.forward = diag_fwd
+        ppl("diag-incontext-layer0")
+        print("DIAG_DONE", flush=True); return
+
     ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
 
     # K-SWEEP: patch down-sparse for the FIRST K layers only, dense-Wdq for the rest. Reveals whether the
@@ -1026,7 +1059,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     elif mode == "hybrid":
         call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline)
     elif mode == "recovered":
-        call = serve_recovered.spawn(RECOVERED_CKPT, util, fused)
+        call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
         call = serve_gu_sparse.spawn(util, do_ppl)
     elif mode == "bench":
