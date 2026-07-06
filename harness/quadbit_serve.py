@@ -156,7 +156,10 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             blk = keptW.reshape(out_f, ks, 4, 8, 2)
             scode = enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)
             sdeq = UE4M3[scode] * gA
-            kc = q_fp4(blk / sdeq[..., None, None])
+            # guard all-zero scale-blocks: sdeq==0 -> blk/sdeq = 0/0 = NaN -> q_fp4(NaN) buckets to code 7
+            # (value 6.0, MAX magnitude) instead of 0. Dead blocks (common in PRUNED/recovered weights,
+            # never in dense) would otherwise become maximal garbage. blk is 0 there, so code 0 is correct.
+            kc = q_fp4(blk / sdeq[..., None, None].clamp_min(1e-30))
             self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
@@ -296,7 +299,10 @@ def _qbsparse_factory(torch, lib, dev):
             blk = keptW.reshape(out_f, ks, 4, 8, 2)
             scode = enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)
             sdeq = UE4M3[scode] * gA
-            kc = q_fp4(blk / sdeq[..., None, None])
+            # guard all-zero scale-blocks: sdeq==0 -> blk/sdeq = 0/0 = NaN -> q_fp4(NaN) buckets to code 7
+            # (value 6.0, MAX magnitude) instead of 0. Dead blocks (common in PRUNED/recovered weights,
+            # never in dense) would otherwise become maximal garbage. blk is 0 there, so code 0 is correct.
+            kc = q_fp4(blk / sdeq[..., None, None].clamp_min(1e-30))
             self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
