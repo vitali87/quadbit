@@ -611,15 +611,27 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     for li, layer in enumerate(model.model.layers):
         g, u, d = rec[3 * li], rec[3 * li + 1], rec[3 * li + 2]
         mlp = layer.mlp
-        mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev)); mlp._qb_dn = QBSparse(d.to(dev))
+        mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev), keep_wdq=True)
+        mlp._qb_dn = QBSparse(d.to(dev), keep_wdq=True)
         # CONTROL: recovered weights as DENSE bf16 (no sparse/quant) via my monkeypatch -> isolates whether
         # the patch MECHANISM/full-forward is broken (dense should reproduce the masked-recovered model ~8-9).
         gg = torch.cat([g, u], 0).to(dev).bfloat16(); dd = d.to(dev).bfloat16()
         mlp.forward = (lambda guw, dw, iw: (lambda x: torch.nn.functional.linear(
             torch.nn.functional.silu(torch.nn.functional.linear(x, guw)[..., :iw])
             * torch.nn.functional.linear(x, guw)[..., iw:], dw)))(gg, dd, d.shape[1])
-    del rec; gc.collect(); torch.cuda.empty_cache()
+    del rec; gc.collect()
     ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
+
+    # BISECTION: weight-only fp4 quant (use the dequantized Wdq the kernel represents) with FULL-PRECISION
+    # activations + plain silu. Isolates weight-quant from ACTIVATION-quant. If this is ~9 and full-sparse
+    # is 121k, the activation quantizer chokes on real outlier activations (Gaussian probe missed them).
+    for li, layer in enumerate(model.model.layers):
+        mlp = layer.mlp
+        mlp.forward = (lambda gw, dw, iw: (lambda x: torch.nn.functional.linear(
+            torch.nn.functional.silu((x.float() @ gw.t())[..., :iw]) * (x.float() @ gw.t())[..., iw:],
+            dw).to(x.dtype)))(mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f)
+    torch.cuda.empty_cache()
+    ppl("recovered-WEIGHT-only-fp4-fullprec-act")
 
     for li, layer in enumerate(model.model.layers):  # now the real sparse path
         mlp = layer.mlp
