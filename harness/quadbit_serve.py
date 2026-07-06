@@ -644,16 +644,17 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     caph.clear(); torch.cuda.empty_cache()
     hr = rec[2].to(dev)[:0]  # unused placeholder; keep downstream probe lines happy
     hr = torch.randn(2048, d0.shape[1], device=dev, dtype=torch.bfloat16)
-    for Mt in (256, 2048):
-        hm = hr[:Mt] if hr.shape[0] >= Mt else torch.randn(Mt, d0.shape[1], device=dev, dtype=torch.bfloat16)
-        km = qd.forward(hm).float(); fm = hm.float() @ qd.Wdq.t()
-        # per-ROW cos (each token vs its OWN ref row) - low here + high global = token misalignment
-        rowcos = torch.nn.functional.cosine_similarity(km, fm, dim=1)
-        # also: does kernel row i best-match ref row i, or a different row? (diag vs offset)
-        diag_ok = (rowcos > 0.9).float().mean().item()
-        print(f"PROBE DOWN real-h M={Mt:5d} GLOBAL cos {_cos(km, fm):.5f}  PER-ROW cos mean {rowcos.mean().item():.5f} "
-              f"min {rowcos.min().item():.3f}  frac>0.9 {diag_ok:.3f}  h-max {hm.abs().max().item():.1f}", flush=True)
-        del hm, km, fm, rowcos
+    # BIAS test: sparse-down activation quant may add a SYSTEMATIC per-output-channel bias (h=silu*up is
+    # asymmetric, unlike gate_up's symmetric RMSNorm input). A coherent bias accumulates over 32 residual
+    # adds -> drift to random, invisible to per-call cos (which the dense-run-h probe used).
+    hm = hr[:2048]
+    km = qd.forward(hm).float(); fm = hm.float() @ qd.Wdq.t()
+    err = km - fm
+    bias = err.mean(0)  # per-output-channel systematic component
+    print(f"PROBE DOWN bias: err|mean-over-tokens| max {bias.abs().max().item():.4f} "
+          f"rms {bias.pow(2).mean().sqrt().item():.4f}  vs ref-rms {fm.pow(2).mean().sqrt().item():.4f}  "
+          f"err-rms {err.pow(2).mean().sqrt().item():.4f}  bias/err-rms {bias.pow(2).mean().sqrt().item() / err.pow(2).mean().sqrt().clamp_min(1e-9).item():.3f}", flush=True)
+    del hm, km, fm, err, bias
     del hr; caph.clear()
     for Mt in (256, 512, 1024, 2048, 2049):
         xm = torch.randn(Mt, 4096, device=dev, dtype=torch.bfloat16)
