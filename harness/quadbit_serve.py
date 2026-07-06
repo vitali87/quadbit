@@ -181,17 +181,15 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
             sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
             gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-            torch.cuda.synchronize()  # ctypes kernels are on the default stream; vLLM forward is on another
+            # .so compiled with --default-stream per-thread -> these <<<>>> kernels run on vLLM's current
+            # stream (same as the torch ops above/below), so they are naturally ordered; no explicit sync.
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
             C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
             lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            torch.cuda.synchronize()
-            # Re-materialize the result through a plain torch.empty+copy_ (NOT .clone()). The kernel-derived
-            # tensor (view into the ctypes-written C buffer) has storage/provenance that vLLM's later residual
-            # /logprob ops mishandle -> garbage, even after .clone(). Proven: return kernel .clone() -> PPL
-            # 11594; copy same values into a fresh torch.empty -> 8.93. Allocate the output the way vLLM does.
+            # copy into a fresh torch tensor: the returned view into the local C buffer must not dangle when
+            # forward() returns (C freed by the allocator, read later by vLLM's residual add).
             res = C.t()[:t].reshape(*lead, self.out_f)
             out = torch.empty(res.shape, dtype=x.dtype, device=dev)
             out.copy_(res)
@@ -338,17 +336,15 @@ def _qbsparse_factory(torch, lib, dev):
             Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
             sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
             gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-            torch.cuda.synchronize()  # ctypes kernels are on the default stream; vLLM forward is on another
+            # .so compiled with --default-stream per-thread -> these <<<>>> kernels run on vLLM's current
+            # stream (same as the torch ops above/below), so they are naturally ordered; no explicit sync.
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
             C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
             lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            torch.cuda.synchronize()
-            # Re-materialize the result through a plain torch.empty+copy_ (NOT .clone()). The kernel-derived
-            # tensor (view into the ctypes-written C buffer) has storage/provenance that vLLM's later residual
-            # /logprob ops mishandle -> garbage, even after .clone(). Proven: return kernel .clone() -> PPL
-            # 11594; copy same values into a fresh torch.empty -> 8.93. Allocate the output the way vLLM does.
+            # copy into a fresh torch tensor: the returned view into the local C buffer must not dangle when
+            # forward() returns (C freed by the allocator, read later by vLLM's residual add).
             res = C.t()[:t].reshape(*lead, self.out_f)
             out = torch.empty(res.shape, dtype=x.dtype, device=dev)
             out.copy_(res)
@@ -379,7 +375,7 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
         gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
         Cout = torch.empty((dn.out_f, tp), dtype=torch.bfloat16, device=dev)
-        torch.cuda.synchronize()  # torch writes (x2, gB1) done before default-stream kernels read them
+        # per-thread-stream .so: kernels run on vLLM's stream, ordered with the torch ops; no explicit sync
         lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
         lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
                                gu.meta.data_ptr(), Cgu.data_ptr(), gu.out_f, tp, H,
@@ -388,10 +384,7 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         lib.sparse_fp4_mm_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
                                dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                dn.gA.data_ptr(), gB1.data_ptr())
-        torch.cuda.synchronize()  # all kernels done before torch reads Cout
-        # re-materialize via torch.empty+copy_ (see QBSparse.forward): kernel-derived tensor storage breaks
-        # vLLM's downstream ops; a plain torch allocation does not.
-        res = Cout.t()[:t].reshape(*lead, dn.out_f)
+        res = Cout.t()[:t].reshape(*lead, dn.out_f)  # copy so the view into local Cout doesn't dangle
         out = torch.empty(res.shape, dtype=x.dtype, device=dev)
         out.copy_(res)
         return out
