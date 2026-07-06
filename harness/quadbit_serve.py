@@ -585,6 +585,29 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     rec = torch.load(ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32 recovered bf16
     nl = len(model.model.layers)
     assert len(rec) == 3 * nl, f"recovered weights {len(rec)} != 3*{nl}"
+
+    # PROBE: kernel faithfulness on RECOVERED (not Instruct) layer-0 weights - the missing measurement.
+    # Also test the gate_up MERGE (finetune deploys separate gate/up/down and gets 8.30; serve merges).
+    g0, u0, d0 = rec[0].to(dev), rec[1].to(dev), rec[2].to(dev)
+    gu0 = torch.cat([g0, u0], 0)
+    qgu = QBSparse(gu0, keep_wdq=True); qg = QBSparse(g0, keep_wdq=True); qd = QBSparse(d0, keep_wdq=True)
+
+    def _cos(a, b):
+        return torch.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim=0).item()
+
+    xg = torch.randn(256, 4096, device=dev, dtype=torch.bfloat16)
+    xh = torch.randn(256, d0.shape[1], device=dev, dtype=torch.bfloat16)
+    k_gu = qgu.forward(xg).float(); fq_gu = xg.float() @ qgu.Wdq.t()
+    k_g = qg.forward(xg).float(); fq_g = xg.float() @ qg.Wdq.t()
+    k_d = qd.forward(xh).float(); fq_d = xh.float() @ qd.Wdq.t()
+    print(f"PROBE L0 recovered: merged-gu kernel-vs-Wdq cos {_cos(k_gu, fq_gu):.5f}  "
+          f"sep-gate cos {_cos(k_g, fq_g):.5f}  down cos {_cos(k_d, fq_d):.5f}", flush=True)
+    print(f"PROBE Wdq NaN/Inf: gu {torch.isnan(qgu.Wdq).any().item()}/{torch.isinf(qgu.Wdq).any().item()}  "
+          f"gu-max {qgu.Wdq.abs().max().item():.2f} dense-max {gu0.float().abs().max().item():.2f}  "
+          f"kernel-gu NaN {torch.isnan(k_gu).any().item()} max {k_gu.abs().max().item():.1f} "
+          f"fq-gu max {fq_gu.abs().max().item():.1f}", flush=True)
+    del qgu, qg, qd, k_gu, fq_gu, k_g, fq_g, k_d, fq_d, g0, u0, d0, gu0; gc.collect(); torch.cuda.empty_cache()
+
     for li, layer in enumerate(model.model.layers):
         g, u, d = rec[3 * li], rec[3 * li + 1], rec[3 * li + 2]
         mlp = layer.mlp
