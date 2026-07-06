@@ -743,19 +743,19 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
             return torch.where(s > 0, code, torch.zeros_like(code))
 
-        def act_fq(x):  # per-32 two-level NVFP4 activation fake-quant (matches finetune act_fp4_dequant)
+        def act_fq(x):  # per-32 two-level NVFP4 activation fake-quant (matches finetune act_fp4_dequant); float32
             lead = x.shape[:-1]; i = x.shape[-1]
             b = x.float().reshape(-1, i)
             gB = (b.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)
             bb = b.reshape(b.shape[0], i // 32, 32)
             sdeq = UE[enc((bb.abs().amax(-1) / 6.0) / gB)] * gB
-            return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i).to(x.dtype)
+            return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
         for layer in model.model.layers:
             mlp = layer.mlp
             gw, dw, iw = mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f
 
-            def tfq(x, gw=gw, dw=dw, iw=iw):  # weight fp4 (Wdq) + TORCH activation fp4, no kernel
+            def tfq(x, gw=gw, dw=dw, iw=iw):  # weight fp4 (Wdq, float32) + TORCH activation fp4, all float32
                 y = torch.nn.functional.linear(act_fq(x), gw)
                 h = torch.nn.functional.silu(y[..., :iw]) * y[..., iw:]
                 return torch.nn.functional.linear(act_fq(h), dw).to(x.dtype)
