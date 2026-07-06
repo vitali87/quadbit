@@ -751,22 +751,55 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             sdeq = UE[enc((bb.abs().amax(-1) / 6.0) / gB)] * gB
             return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
-        for layer in model.model.layers:
+        # Algorithm is correct (torch-W4A4 = 8.95). Now measure the KERNEL vs torch-W4A4 gap directly on
+        # layer 0 (both fp4-weight x fp4-act): large gap -> kernel diverges from correct W4A4. Split into
+        # activation-quant vs mma by also dequantizing the kernel's activation quant and comparing to act_fq.
+        m0 = model.model.layers[0].mlp
+        gw0, dw0, iw0 = m0._qb_gu.Wdq, m0._qb_dn.Wdq, m0._qb_dn.in_f
+        qg0, qd0 = m0._qb_gu, m0._qb_dn
+        UEt = UE  # device ue4m3 table for dequant
+
+        def diag_fwd(x):
+            # torch-W4A4 reference (the WORKING 8.95 path) for layer 0
+            yq = torch.nn.functional.linear(act_fq(x), gw0)
+            hq = torch.nn.functional.silu(yq[..., :iw0]) * yq[..., iw0:]
+            tw4a4 = torch.nn.functional.linear(act_fq(hq), dw0)
+            # kernel gate_up on x, then kernel down on the SAME hq (isolate down)
+            k_sout = qd0.forward(hq.to(torch.bfloat16)).float()
+            # dequant the kernel's activation quant of hq and compare to act_fq(hq)
+            tp = hq.shape[0]; inf = iw0
+            Bb = torch.empty((tp, inf // 2), dtype=torch.uint8, device=dev)
+            sB = torch.empty((inf // 128, tp, 4), dtype=torch.uint8, device=dev)
+            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            hqc = hq.to(torch.bfloat16).contiguous(); torch.cuda.synchronize()
+            lib.quantize_act_nvfp4_2lvl(hqc.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, inf)
+            torch.cuda.synchronize()
+            lo = (Bb & 0xf).to(torch.long); hi = (Bb >> 4).to(torch.long)  # [tp, inf/2] two nibbles
+            deq = torch.empty(tp, inf, device=dev)
+            deq[:, 0::2] = FP4[lo]; deq[:, 1::2] = FP4[hi]
+            # sB layout [step=inf/128, tp, 4]; blk=step*4+kb -> per-32 local ue4m3 scale [tp, inf/32]
+            scblk = (UEt[sB.long()]).permute(1, 0, 2).reshape(tp, inf // 32)
+            deqk = (deq.reshape(tp, inf // 32, 32) * (scblk * gB[:, None])[..., None]).reshape(tp, inf)
+            af = act_fq(hq)
+            c = torch.nn.functional.cosine_similarity
+            r = lambda a, b: ((a - b).norm() / b.norm().clamp_min(1e-9)).item()
+            print(f"DIAG-KVQ M={tp} | kernel-act-dequant vs torch-act_fq relL2 {r(deqk, af):.4f} "
+                  f"cos {c(deqk.flatten(), af.flatten(), dim=0).item():.5f} | "
+                  f"kernel-down-out vs torch-W4A4-down relL2 {r(k_sout, tw4a4):.4f} "
+                  f"cos {c(k_sout.flatten(), tw4a4.flatten(), dim=0).item():.5f}", flush=True)
+            return tw4a4.to(x.dtype)
+        m0.forward = diag_fwd
+        for layer in model.model.layers[1:]:
             mlp = layer.mlp
             gw, dw, iw = mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f
 
-            def tfq(x, gw=gw, dw=dw, iw=iw):  # weight fp4 (Wdq, float32) + TORCH activation fp4, all float32
+            def tfq(x, gw=gw, dw=dw, iw=iw):
                 y = torch.nn.functional.linear(act_fq(x), gw)
                 h = torch.nn.functional.silu(y[..., :iw]) * y[..., iw:]
                 return torch.nn.functional.linear(act_fq(h), dw).to(x.dtype)
             mlp.forward = tfq
         torch.cuda.empty_cache()
-        prompts = ["The capital of France is", "Water is made of hydrogen and",
-                   "To sort a list in Python, you can use the", "The theory of relativity was developed by"]
-        outs = llm.generate(prompts, SamplingParams(temperature=0, max_tokens=24), use_tqdm=False)
-        for p, o in zip(prompts, outs):
-            print(f"GEN-TORCHFQ {p!r} -> {o.outputs[0].text!r}", flush=True)
-        ppl("all-torch-fakequant-W4A4")
+        ppl("diag-kernel-vs-torchW4A4")
         print("DIAG_DONE", flush=True); return
 
     ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
