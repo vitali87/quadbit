@@ -677,12 +677,13 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     import ctypes
     import gc
     import math
+    import subprocess
 
     import torch
     from vllm import LLM, SamplingParams
 
     S = 2048
-    llm = LLM(model=BASE, enforce_eager=True, max_model_len=S + 16, dtype="bfloat16",
+    llm = LLM(model=BASE, enforce_eager=True, max_model_len=S + 128 + 16, dtype="bfloat16",
               gpu_memory_utilization=util)
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     lib = ctypes.CDLL(SO_PATH)
@@ -759,44 +760,45 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             torch.nn.functional.silu((x.float() @ gw.t())[..., :iw]) * (x.float() @ gw.t())[..., iw:],
             dw).to(x.dtype)
 
-    def sparse_fwd(mlp):  # unfused TWO-LEVEL (QBSparse.forward for gate_up and down; plain SwiGLU)
-        g_, d_, iw = mlp._qb_gu, mlp._qb_dn, mlp._qb_dn.in_f
+    # ACCURACY+SPEED row (recovered base, provenance fix applied): all-MLP sparse via the kernel (fused or
+    # unfused two-level), PPL through serving + prefill/decode tok/s + memory. Non-MLP is bf16 (base has no
+    # NVFP4), so this is the accuracy proof + the sparse-MLP speedup over the bf16 all-dense path.
+    import time
+    for layer in model.model.layers:
+        mlp = layer.mlp
+        if fused:
+            _fused_mlp_fwd(mlp, torch, lib, dev)
+        else:
+            mlp.forward = sparse_fwd(mlp)
+    torch.cuda.empty_cache()
+    ppl(f"recovered-all-MLP-sparse-{'fused' if fused else '2lvl'}")
 
-        def fwd(x):
-            y = g_.forward(x)
-            return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
-        return fwd
+    def gmib():
+        return int(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                                  capture_output=True, text=True).stdout.strip().splitlines()[0])
 
-    # DEFINITIVE: capture the REAL layer-0 mlp input x0 in-run, then compare sparse_fwd(x0) vs dense_fwd(x0)
-    # on the EXACT same input (removes all "which h" ambiguity). Low cos => the in-run sparse MLP output is
-    # genuinely wrong for the real input (vs faithful on captured/dense h) -> the real x0 has a property the
-    # probes missed. Also dumps x0 dtype/shape/contiguity/max (vLLM may hand a surprising layout).
-    m0 = model.model.layers[0].mlp
-    capx = {}
-    hk0 = m0.register_forward_pre_hook(lambda m, a: capx.setdefault("x", a[0].detach().clone()))
-    llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
-    hk0.remove()
-    x0 = capx["x"]
-    so = sparse_fwd(m0)(x0).float(); do = dense_fwd(m0)(x0).float()
-    rc = torch.nn.functional.cosine_similarity(so, do, dim=-1).reshape(-1)
-    print(f"DEFINITIVE x0 shape {tuple(x0.shape)} dtype {x0.dtype} contig {x0.is_contiguous()} max {x0.abs().max().item():.2f} | "
-          f"sparse-vs-dense cos {torch.nn.functional.cosine_similarity(so.flatten(), do.flatten(), dim=0).item():.5f} "
-          f"per-row mean {rc.mean().item():.4f} min {rc.min().item():.3f} sparse-max {so.abs().max().item():.1f} "
-          f"dense-max {do.abs().max().item():.1f} sparse-NaN {torch.isnan(so).any().item()}", flush=True)
-    del x0, so, do, rc, capx; torch.cuda.empty_cache()
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
 
-    for K in (1, 2, 4, 32):
-        for li, layer in enumerate(model.model.layers):
-            mlp = layer.mlp
-            if li < K:
-                if fused:
-                    _fused_mlp_fwd(mlp, torch, lib, dev)
-                else:
-                    mlp.forward = sparse_fwd(mlp)
-            else:
-                mlp.forward = dense_fwd(mlp)  # dense Wdq
-        torch.cuda.empty_cache()
-        ppl(f"MLP-sparse[{'fused' if fused else '2lvl'}] first K={K:2d} (rest dense-Wdq)")
+    def distinct_short(i):
+        return f"Explain concept {i}: how does mechanism {i * 7 + 3} operate in practice, step by step?"
+
+    llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
+    mem_peak = gmib()
+    print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
+    for B in (1, 8, 32, 64):
+        torch.cuda.synchronize(); t = time.perf_counter()
+        llm.generate([{"prompt_token_ids": distinct_ids(i)} for i in range(B)],
+                     SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
+        pf = B * S / (time.perf_counter() - t)
+        t = time.perf_counter()
+        outs = llm.generate([distinct_short(i) for i in range(B)],
+                            SamplingParams(temperature=0, max_tokens=128, ignore_eos=True), use_tqdm=False)
+        gen = sum(len(o.outputs[0].token_ids) for o in outs); dc = gen / (time.perf_counter() - t)
+        mem_peak = max(mem_peak, gmib())
+        print(f"{B:>4} | {pf:>14.0f} | {dc:>13.0f}", flush=True)
+    print(f"RESULT [recovered-all-MLP-sparse-{'fused' if fused else '2lvl'}] peak_MiB={mem_peak} "
+          f"(non-MLP bf16; accuracy proof + sparse-MLP speedup over bf16-dense)", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
