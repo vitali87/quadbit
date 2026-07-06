@@ -173,20 +173,22 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             if pad:
                 x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
             x2 = x2.contiguous(); tp = t + pad
-            Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
-            sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
-            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-            # ctypes kernels launch on the DEFAULT stream; vLLM/torch run on a non-default stream. Without
-            # this sync, the kernel reads x2 before torch finished writing it (and scratch is recycled by
-            # the caching allocator mid-flight) -> stream race -> garbage in the full forward (per-layer
-            # probes always synced, so they passed). Sync current stream so torch writes complete first.
-            torch.cuda.synchronize()
-            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
-            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            torch.cuda.synchronize()  # kernel (default stream) done before torch (its stream) reads C
+            # OOB-WRITE TEST: over-allocate each kernel write buffer with a large trailing SLACK region and
+            # pass a data_ptr into the START of it. If the kernel over-writes (out-of-bounds), the write
+            # lands in slack instead of corrupting live vLLM tensors. If this fixes the recovered PPL, the
+            # down kernel (in_f=14336) has an OOB write (probe survives with isolated allocation slack).
+            SL = 1 << 20
+            Bbf = torch.empty((tp * (self.in_f // 2) + SL,), dtype=torch.uint8, device=dev)
+            sBf = torch.empty((self.ks * tp * 4 + SL,), dtype=torch.uint8, device=dev)
+            gBf = torch.empty((tp + SL,), dtype=torch.float32, device=dev)
+            Cf = torch.empty((self.out_f * tp + SL,), dtype=torch.bfloat16, device=dev)
+            torch.cuda.synchronize()  # torch writes (x2) complete before default-stream kernel reads
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bbf.data_ptr(), sBf.data_ptr(), gBf.data_ptr(), tp, self.in_f)
+            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bbf.data_ptr(), self.scaleA.data_ptr(),
+                                   sBf.data_ptr(), self.meta.data_ptr(), Cf.data_ptr(),
+                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gBf.data_ptr())
+            torch.cuda.synchronize()  # kernel done before torch reads Cf
+            C = Cf[:self.out_f * tp].view(self.out_f, tp)
             return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     n = 0; sparse_params = 0; total_params = 0
@@ -327,20 +329,22 @@ def _qbsparse_factory(torch, lib, dev):
             if pad:
                 x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
             x2 = x2.contiguous(); tp = t + pad
-            Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
-            sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
-            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
-            # ctypes kernels launch on the DEFAULT stream; vLLM/torch run on a non-default stream. Without
-            # this sync, the kernel reads x2 before torch finished writing it (and scratch is recycled by
-            # the caching allocator mid-flight) -> stream race -> garbage in the full forward (per-layer
-            # probes always synced, so they passed). Sync current stream so torch writes complete first.
-            torch.cuda.synchronize()
-            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
-            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            torch.cuda.synchronize()  # kernel (default stream) done before torch (its stream) reads C
+            # OOB-WRITE TEST: over-allocate each kernel write buffer with a large trailing SLACK region and
+            # pass a data_ptr into the START of it. If the kernel over-writes (out-of-bounds), the write
+            # lands in slack instead of corrupting live vLLM tensors. If this fixes the recovered PPL, the
+            # down kernel (in_f=14336) has an OOB write (probe survives with isolated allocation slack).
+            SL = 1 << 20
+            Bbf = torch.empty((tp * (self.in_f // 2) + SL,), dtype=torch.uint8, device=dev)
+            sBf = torch.empty((self.ks * tp * 4 + SL,), dtype=torch.uint8, device=dev)
+            gBf = torch.empty((tp + SL,), dtype=torch.float32, device=dev)
+            Cf = torch.empty((self.out_f * tp + SL,), dtype=torch.bfloat16, device=dev)
+            torch.cuda.synchronize()  # torch writes (x2) complete before default-stream kernel reads
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bbf.data_ptr(), sBf.data_ptr(), gBf.data_ptr(), tp, self.in_f)
+            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bbf.data_ptr(), self.scaleA.data_ptr(),
+                                   sBf.data_ptr(), self.meta.data_ptr(), Cf.data_ptr(),
+                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gBf.data_ptr())
+            torch.cuda.synchronize()  # kernel done before torch reads Cf
+            C = Cf[:self.out_f * tp].view(self.out_f, tp)
             return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     return QBSparse
