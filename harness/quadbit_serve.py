@@ -488,7 +488,10 @@ def bench_mlp(util: float = 0.55) -> None:
     from vllm import LLM, SamplingParams
 
     H, I = 4096, 14336  # llama-3.1-8B hidden / intermediate
-    SHAPES = (256, 2048, 8192, 16384, 65536, 131072)
+    # ponytail: cap at 65536; the sparse kernel indexes out_f*M in int32 and M=131072 x out=28672
+    # overflows 2^31 (illegal access). No real serving call hits M=131072 in one GEMM (vLLM chunks
+    # prefill), so cap + note rather than an int64 recompile. Upgrade path: widen kernel indices to long.
+    SHAPES = (256, 2048, 8192, 16384, 65536)
     dev = torch.device("cuda")
 
     def evstats(fn, it=40, warm=8):
