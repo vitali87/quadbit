@@ -635,6 +635,24 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
             return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
         return fwd
 
+    # DEFINITIVE: capture the REAL layer-0 mlp input x0 in-run, then compare sparse_fwd(x0) vs dense_fwd(x0)
+    # on the EXACT same input (removes all "which h" ambiguity). Low cos => the in-run sparse MLP output is
+    # genuinely wrong for the real input (vs faithful on captured/dense h) -> the real x0 has a property the
+    # probes missed. Also dumps x0 dtype/shape/contiguity/max (vLLM may hand a surprising layout).
+    m0 = model.model.layers[0].mlp
+    capx = {}
+    hk0 = m0.register_forward_pre_hook(lambda m, a: capx.setdefault("x", a[0].detach().clone()))
+    llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
+    hk0.remove()
+    x0 = capx["x"]
+    so = sparse_fwd(m0)(x0).float(); do = dense_fwd(m0)(x0).float()
+    rc = torch.nn.functional.cosine_similarity(so, do, dim=-1).reshape(-1)
+    print(f"DEFINITIVE x0 shape {tuple(x0.shape)} dtype {x0.dtype} contig {x0.is_contiguous()} max {x0.abs().max().item():.2f} | "
+          f"sparse-vs-dense cos {torch.nn.functional.cosine_similarity(so.flatten(), do.flatten(), dim=0).item():.5f} "
+          f"per-row mean {rc.mean().item():.4f} min {rc.min().item():.3f} sparse-max {so.abs().max().item():.1f} "
+          f"dense-max {do.abs().max().item():.1f} sparse-NaN {torch.isnan(so).any().item()}", flush=True)
+    del x0, so, do, rc, capx; torch.cuda.empty_cache()
+
     for K in (1, 2, 4, 32):
         for li, layer in enumerate(model.model.layers):
             mlp = layer.mlp
