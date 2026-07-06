@@ -619,10 +619,13 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     for Mt in (256, 2048):
         hm = hr[:Mt] if hr.shape[0] >= Mt else torch.randn(Mt, d0.shape[1], device=dev, dtype=torch.bfloat16)
         km = qd.forward(hm).float(); fm = hm.float() @ qd.Wdq.t()
-        print(f"PROBE DOWN real-h M={Mt:5d} kernel-vs-Wdq cos {_cos(km, fm):.5f}  "
-              f"h-max {hm.abs().max().item():.1f} kernel-max {km.abs().max().item():.1f} "
-              f"Wdq-mm-max {fm.abs().max().item():.1f}", flush=True)
-        del hm, km, fm
+        # per-ROW cos (each token vs its OWN ref row) - low here + high global = token misalignment
+        rowcos = torch.nn.functional.cosine_similarity(km, fm, dim=1)
+        # also: does kernel row i best-match ref row i, or a different row? (diag vs offset)
+        diag_ok = (rowcos > 0.9).float().mean().item()
+        print(f"PROBE DOWN real-h M={Mt:5d} GLOBAL cos {_cos(km, fm):.5f}  PER-ROW cos mean {rowcos.mean().item():.5f} "
+              f"min {rowcos.min().item():.3f}  frac>0.9 {diag_ok:.3f}  h-max {hm.abs().max().item():.1f}", flush=True)
+        del hm, km, fm, rowcos
     del hr; caph.clear()
     for Mt in (256, 512, 1024, 2048, 2049):
         xm = torch.randn(Mt, 4096, device=dev, dtype=torch.bfloat16)
