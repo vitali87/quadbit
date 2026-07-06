@@ -242,7 +242,7 @@ def serve(sparse: bool = True, thresh: int = 256) -> None:
     if sparse:
         lib = ctypes.CDLL(SO_PATH)
         lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
-    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+        lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
         lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
         model = llm.llm_engine.model_executor.driver_worker.model_runner.model
         npatched, frac = _patch_mlp_sparse(model, lib, torch, thresh)
