@@ -42,6 +42,7 @@ def run() -> None:
     lib = ctypes.CDLL(so)
     lib.sparse_fp4_mm.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
@@ -136,7 +137,14 @@ def run() -> None:
         lib.sparse_fp4_mm_2lvl(Ac.data_ptr(), Bb.data_ptr(), scaleA.data_ptr(),
                                sB.data_ptr(), meta.data_ptr(), C.data_ptr(), out_f, tp, in_f,
                                gA.data_ptr(), gB.data_ptr())
-        return C.t()[:t].float(), Bb[:t], sB[:, :t], gB[:t]
+        # zero-copy transposed entry: C is [tp, out_f] contiguous; return C[:t] directly (no .t())
+        Ct = torch.empty((tp, out_f), dtype=torch.bfloat16, device=dev)
+        lib.sparse_fp4_mm_2lvl_t(Ac.data_ptr(), Bb.data_ptr(), scaleA.data_ptr(),
+                                 sB.data_ptr(), meta.data_ptr(), Ct.data_ptr(), out_f, tp, in_f,
+                                 gA.data_ptr(), gB.data_ptr())
+        Ct = Ct[:t]
+        assert Ct.is_contiguous() and Ct.stride() == (out_f, 1) and Ct.storage_offset() == 0
+        return C.t()[:t].float(), Bb[:t], sB[:, :t], gB[:t], Ct.float()
 
     def deq_from_kernel_act_2lvl(Bb, sB, gB, in_f):  # dequant EXACTLY what mma+epilogue see for acts
         t = Bb.shape[0]; ks = in_f // 128
@@ -184,7 +192,9 @@ def run() -> None:
         W = torch.randn(out_f, in_f, device=dev) * 0.02
         x = torch.randn(toks, in_f, device=dev)
 
-        C2, Bb, sB, gB = kernel_mm_2lvl(W, x)
+        C2, Bb, sB, gB, C2t = kernel_mm_2lvl(W, x)
+        tmax = (C2 - C2t).abs().max().item()      # zero-copy transposed path must be BITWISE-equal to .t()
+        assert tmax == 0.0, f"zero-copy mismatch {out_f}x{in_f}: max|diff| {tmax}"
         Wd2 = sparse_fp4_dequant_2lvl(W.float())
         act_kernel = deq_from_kernel_act_2lvl(Bb, sB, gB, in_f)
         red = rel(C2, F.linear(act_kernel, Wd2))                    # kernel vs its OWN two-level dequant
@@ -203,6 +213,7 @@ def run() -> None:
     print(f"TRACK (kernel vs two-level sparse fake-quant): worst {worst_track:.4f}  "
           f"-> {'deploy gap closed' if worst_track < 0.03 else 'residual'}", flush=True)
     print("1lvl-vs-bf16 >> 2lvl-vs-bf16 shows the global rescale recovering the single-level loss.", flush=True)
+    print("ZERO-COPY: transposed [N,M] contiguous output is bitwise-equal to .t() on all shapes -> PASS", flush=True)
 
 
 @app.local_entrypoint()

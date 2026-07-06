@@ -79,6 +79,7 @@ def smoke() -> None:
     # 1) cross-version ABI: does the 12.8-compiled .so load + run inside the 12.9 vLLM process?
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     dev = torch.device("cuda")
     out_f, in_f, M = 256, 256, 128
     Ac = torch.zeros((out_f, (in_f // 128) * 32), dtype=torch.uint8, device=dev)
@@ -184,16 +185,12 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             # .so compiled with --default-stream per-thread -> these <<<>>> kernels run on vLLM's current
             # stream (same as the torch ops above/below), so they are naturally ordered; no explicit sync.
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
-            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            # copy into a fresh torch tensor: the returned view into the local C buffer must not dangle when
-            # forward() returns (C freed by the allocator, read later by vLLM's residual add).
-            res = C.t()[:t].reshape(*lead, self.out_f)
-            out = torch.empty(res.shape, dtype=x.dtype, device=dev)
-            out.copy_(res)
-            return out
+            # ZERO-COPY: [tp, out_f] token-major output (outT=1) -> C[:t] is contiguous for vLLM, no copy.
+            C = torch.empty((tp, self.out_f), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl_t(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                     sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                     self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            return C[:t].reshape(*lead, self.out_f)
 
     n = 0; sparse_params = 0; total_params = 0
     for layer in model.model.layers:
@@ -245,6 +242,7 @@ def serve(sparse: bool = True, thresh: int = 256) -> None:
     if sparse:
         lib = ctypes.CDLL(SO_PATH)
         lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
         lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
         model = llm.llm_engine.model_executor.driver_worker.model_runner.model
         npatched, frac = _patch_mlp_sparse(model, lib, torch, thresh)
@@ -339,16 +337,12 @@ def _qbsparse_factory(torch, lib, dev):
             # .so compiled with --default-stream per-thread -> these <<<>>> kernels run on vLLM's current
             # stream (same as the torch ops above/below), so they are naturally ordered; no explicit sync.
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
-            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            # copy into a fresh torch tensor: the returned view into the local C buffer must not dangle when
-            # forward() returns (C freed by the allocator, read later by vLLM's residual add).
-            res = C.t()[:t].reshape(*lead, self.out_f)
-            out = torch.empty(res.shape, dtype=x.dtype, device=dev)
-            out.copy_(res)
-            return out
+            # ZERO-COPY: [tp, out_f] token-major output (outT=1) -> C[:t] is contiguous for vLLM, no copy.
+            C = torch.empty((tp, self.out_f), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl_t(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                     sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                     self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            return C[:t].reshape(*lead, self.out_f)
 
     return QBSparse
 
@@ -374,23 +368,19 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
         sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
         gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
-        Cout = torch.empty((dn.out_f, tp), dtype=torch.bfloat16, device=dev)
+        # ZERO-COPY: down GEMM writes [tp, out_f] token-major (outT=1 epilogue) -> Cout[:t] is a
+        # CONTIGUOUS, storage_offset-0 tensor returnable to vLLM with no transpose+copy pass.
+        Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
         # per-thread-stream .so: kernels run on vLLM's stream, ordered with the torch ops; no explicit sync
         lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
         lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
                                gu.meta.data_ptr(), Cgu.data_ptr(), gu.out_f, tp, H,
                                gu.gA.data_ptr(), gBg.data_ptr())
         lib.fused_swiglu_quant(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(), sH.data_ptr(), tp, Iw)
-        lib.sparse_fp4_mm_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
-                               dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
-                               dn.gA.data_ptr(), gB1.data_ptr())
-        # vLLM needs a CONTIGUOUS MLP output; Cout.t() is a non-contiguous transpose view (mishandled +
-        # dangles). Re-materialize via torch.empty+copy_. This copy is ~7% batch overhead; the zero-copy
-        # fix is a .cu epilogue that writes [M,out_f] directly (future work).
-        res = Cout.t()[:t].reshape(*lead, dn.out_f)
-        out = torch.empty(res.shape, dtype=x.dtype, device=dev)
-        out.copy_(res)
-        return out
+        lib.sparse_fp4_mm_2lvl_t(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                 dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
+                                 dn.gA.data_ptr(), gB1.data_ptr())
+        return Cout[:t].reshape(*lead, dn.out_f)
     mlp.forward = fwd
 
 
@@ -443,6 +433,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
 
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
@@ -597,6 +588,7 @@ def serve_gu_sparse(util: float = 0.8, do_ppl: bool = True) -> None:
     mem_load = gpu_mib()
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
@@ -689,6 +681,7 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
@@ -853,6 +846,7 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
 
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     QBSparse = _qbsparse_factory(torch, lib, dev)

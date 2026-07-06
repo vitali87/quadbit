@@ -30,8 +30,9 @@ __global__ void __launch_bounds__(256)
 matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
           const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
           __nv_bfloat16 *C, int M, int N, int Klog,
-          const float *gA, const float *gB) {   // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
+          const float *gA, const float *gB,     // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
                                                  // nullptr -> single-level (mma-applied local scales only)
+          int outT) {                            // outT: 0 -> C is [M,N]; 1 -> C is [N,M] (token-major, contiguous for vLLM)
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -162,17 +163,46 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
             issue(s, next);
         }
     }
+    if (!outT) {
 #pragma unroll
-    for (int mt = 0; mt < 4; mt++)
+        for (int mt = 0; mt < 4; mt++)
 #pragma unroll
-        for (int n = 0; n < 8; n++) {
-            int idx = mt * 8 + n;
-            int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + b_col[n] + (lane & 3) * 2;
-            float ga0 = gA ? gA[gr] : 1.f, ga1 = gA ? gA[gr + 8] : 1.f;   // two-level global rescale:
-            float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;   // mma applied locals, globals here
-            *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0] * ga0 * gb0, acc[idx][1] * ga0 * gb1);
-            *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2] * ga1 * gb0, acc[idx][3] * ga1 * gb1);
-        }
+            for (int n = 0; n < 8; n++) {
+                int idx = mt * 8 + n;
+                int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + b_col[n] + (lane & 3) * 2;
+                float ga0 = gA ? gA[gr] : 1.f, ga1 = gA ? gA[gr + 8] : 1.f;   // two-level global rescale:
+                float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;   // mma applied locals, globals here
+                *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0] * ga0 * gb0, acc[idx][1] * ga0 * gb1);
+                *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2] * ga1 * gb0, acc[idx][3] * ga1 * gb1);
+            }
+    } else {
+        // Transposed epilogue (zero-copy): stage the [2*BM out_f x BN token] tile in smem token-major,
+        // then write C as [N token, M out_f] row-major so consecutive threads hit consecutive out_f ->
+        // coalesced global stores AND a contiguous tensor for vLLM (no separate transpose+copy pass).
+        // Reuses the (dead post-loop) input smem: tile = BN*2*BM bf16 = 64KB <= SMEM.
+        __nv_bfloat16 *Cs = (__nv_bfloat16 *)smem;   // Cs[lc*(2*BM) + lr]: lc=token 0..BN-1, lr=out_f 0..2*BM-1
+        __syncthreads();
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int idx = mt * 8 + n;
+                int lr = wg * BM + a_rowt[mt] + (lane >> 2);          // local out_f
+                int lc = b_col[n] + (lane & 3) * 2;                   // local token
+                int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + lc;
+                float ga0 = gA ? gA[gr] : 1.f, ga1 = gA ? gA[gr + 8] : 1.f;
+                float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;
+                Cs[lc * (2 * BM) + lr] = __float2bfloat16_rn(acc[idx][0] * ga0 * gb0);
+                Cs[(lc + 1) * (2 * BM) + lr] = __float2bfloat16_rn(acc[idx][1] * ga0 * gb1);
+                Cs[lc * (2 * BM) + lr + 8] = __float2bfloat16_rn(acc[idx][2] * ga1 * gb0);
+                Cs[(lc + 1) * (2 * BM) + lr + 8] = __float2bfloat16_rn(acc[idx][3] * ga1 * gb1);
+            }
+        __syncthreads();
+        int base_m = blockIdx.y * (2 * BM), base_n = blockIdx.x * BN;
+#pragma unroll
+        for (int col = 0; col < BN; col++)
+            C[(size_t)(base_n + col) * M + base_m + tid] = Cs[col * (2 * BM) + tid];
+    }
 }
 
 static void mk(CUtensorMap *m, uint8_t *p, int inner, int outer, int bi, int bo, CUtensorMapSwizzle sw) {
@@ -451,7 +481,7 @@ extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
     cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
     dim3 grid(N / BN, M / (2 * BM)), block(256);
     matmul_sp<<<grid, block, SMEM>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
-                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog, nullptr, nullptr);
+                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog, nullptr, nullptr, 0);
     return (int)cudaDeviceSynchronize();
 }
 
@@ -468,6 +498,23 @@ extern "C" int sparse_fp4_mm_2lvl(const void *A, const void *B, const void *scal
     dim3 grid(N / BN, M / (2 * BM)), block(256);
     matmul_sp<<<grid, block, SMEM>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
                                      (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog,
-                                     (const float *)gA, (const float *)gB);
+                                     (const float *)gA, (const float *)gB, 0);
+    return (int)cudaDeviceSynchronize();
+}
+
+// ZERO-COPY entry: identical math to _2lvl, but writes C in [N token, M out_f] row-major (outT=1)
+// so the caller returns C[:t] directly to vLLM with NO transpose+copy pass. See matmul_sp epilogue.
+extern "C" int sparse_fp4_mm_2lvl_t(const void *A, const void *B, const void *scaleA,
+                                    const void *scaleB, const void *meta, void *C,
+                                    int M, int N, int Klog, const void *gA, const void *gB) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+    dim3 grid(N / BN, M / (2 * BM)), block(256);
+    matmul_sp<<<grid, block, SMEM>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog,
+                                     (const float *)gA, (const float *)gB, 1);
     return (int)cudaDeviceSynchronize();
 }
