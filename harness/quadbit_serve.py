@@ -714,14 +714,8 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     for li, layer in enumerate(model.model.layers):
         g, u, d = rec[3 * li], rec[3 * li + 1], rec[3 * li + 2]
         mlp = layer.mlp
-        mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev), keep_wdq=True)
-        mlp._qb_dn = QBSparse(d.to(dev), keep_wdq=True)
-        # CONTROL: recovered weights as DENSE bf16 (no sparse/quant) via my monkeypatch -> isolates whether
-        # the patch MECHANISM/full-forward is broken (dense should reproduce the masked-recovered model ~8-9).
-        gg = torch.cat([g, u], 0).to(dev).bfloat16(); dd = d.to(dev).bfloat16()
-        mlp.forward = (lambda guw, dw, iw: (lambda x: torch.nn.functional.linear(
-            torch.nn.functional.silu(torch.nn.functional.linear(x, guw)[..., :iw])
-            * torch.nn.functional.linear(x, guw)[..., iw:], dw)))(gg, dd, d.shape[1])
+        mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev))
+        mlp._qb_dn = QBSparse(d.to(dev))
     del rec; gc.collect()
 
     if diag:  # VALIDATE the provenance fix end-to-end: ALL layers full sparse via the fixed QBSparse.forward
@@ -743,18 +737,7 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
         ppl("all-sparse-kernel-provenance-fixed")
         print("DIAG_DONE", flush=True); return
 
-    ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
-
-    # K-SWEEP: patch down-sparse for the FIRST K layers only, dense-Wdq for the rest. Reveals whether the
-    # 121k is accumulation (PPL grows smoothly with K) or divergence/instability (explodes past some K),
-    # or per-layer catastrophic (already bad at K=1, which would contradict the cos-0.995 probe).
-    def dense_fwd(mlp):
-        gw, dw, iw = mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f
-        return lambda x: torch.nn.functional.linear(
-            torch.nn.functional.silu((x.float() @ gw.t())[..., :iw]) * (x.float() @ gw.t())[..., iw:],
-            dw).to(x.dtype)
-
-    # ACCURACY+SPEED row (recovered base, provenance fix applied): all-MLP sparse via the kernel (fused or
+    # ACCURACY+SPEED row (recovered base, zero-copy epilogue): all-MLP sparse via the kernel (fused or
     # unfused two-level), PPL through serving + prefill/decode tok/s + memory. Non-MLP is bf16 (base has no
     # NVFP4), so this is the accuracy proof + the sparse-MLP speedup over the bf16 all-dense path.
     import time
@@ -763,7 +746,10 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
         if fused:
             _fused_mlp_fwd(mlp, torch, lib, dev)
         else:
-            mlp.forward = sparse_fwd(mlp)
+            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
+                y = g_.forward(x)
+                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
+            mlp.forward = unf
     torch.cuda.empty_cache()
     ppl(f"recovered-all-MLP-sparse-{'fused' if fused else '2lvl'}")
 
