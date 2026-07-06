@@ -36,6 +36,30 @@ image = (
 app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
+# 12.9 base = the CUDA the working vLLM serving baseline uses (vllm_nvfp4.py). Test whether nvcc 12.9
+# still assembles our sm_120a block-scale mma; if it does, vLLM + kernel share ONE image.
+image_129 = (
+    modal.Image.from_registry("nvidia/cuda:12.9.0-devel-ubuntu22.04", add_python="3.12")
+    .env({"PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"})
+    .add_local_dir((ROOT / "cuda").as_posix(), "/root/cuda")
+)
+
+
+@app.function(image=image_129, timeout=1200)
+def compile_check() -> None:
+    import subprocess as sp
+    v = sp.run(["nvcc", "--version"], capture_output=True, text=True).stdout
+    print(v, flush=True)
+    c = sp.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                "-o", "/root/sparse_fp4.so", "/root/cuda/sparse_fp4_lib.cu", "-lcuda"],
+               capture_output=True, text=True)
+    print(f"NVCC_129_RC {c.returncode}", flush=True)
+    if c.returncode != 0:
+        print("STDERR:\n" + c.stderr[-4000:], flush=True)
+    else:
+        print("NVCC_129_ASSEMBLES_OK", flush=True)
+
 
 def _compile_so() -> str:
     so = "/root/sparse_fp4.so"
@@ -124,6 +148,6 @@ def smoke() -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "smoke") -> None:
-    fn = {"smoke": smoke}.get(mode, smoke)
+    fn = {"smoke": smoke, "compile_check": compile_check}.get(mode, smoke)
     call = fn.spawn()
     print(f"SPAWN_ID {call.object_id}", flush=True)
