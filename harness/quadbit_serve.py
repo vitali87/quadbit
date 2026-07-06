@@ -532,7 +532,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85) -> None:
+def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool = True) -> None:
     # Deliverable #5: RECOVERED-weight PPL through the FUSED serving path. The recovered checkpoint is
     # base Meta-Llama-3-8B, all-MLP SparseGPT-pruned + QAT-recovered (through-kernel ~8.30 via two-level
     # QuadbitLinear). Here we run those SAME recovered weights through the FUSED single-level serving
@@ -563,9 +563,16 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85) -> None:
         g, u, d = rec[3 * li], rec[3 * li + 1], rec[3 * li + 2]
         mlp = layer.mlp
         mlp._qb_gu = QBSparse(torch.cat([g, u], 0).to(dev)); mlp._qb_dn = QBSparse(d.to(dev))
-        _fused_mlp_fwd(mlp, torch, lib, dev)
+        if fused:
+            _fused_mlp_fwd(mlp, torch, lib, dev)
+        else:  # unfused TWO-LEVEL plain SwiGLU (real-activation outlier control vs single-level fused)
+            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
+                y = g_.forward(x)
+                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
+            mlp.forward = unf
     del rec; gc.collect(); torch.cuda.empty_cache()
-    print(f"patched {nl} MLPs to fused sparse from recovered ckpt {ckpt.split('/')[-1]}", flush=True)
+    print(f"patched {nl} MLPs to {'fused single-level' if fused else 'unfused two-level'} sparse "
+          f"from recovered ckpt {ckpt.split('/')[-1]}", flush=True)
 
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download
@@ -852,7 +859,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     elif mode == "hybrid":
         call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline)
     elif mode == "recovered":
-        call = serve_recovered.spawn(RECOVERED_CKPT, util)
+        call = serve_recovered.spawn(RECOVERED_CKPT, util, fused)
     elif mode == "bench":
         call = bench_mlp.spawn(util, instrument)  # reuse --instrument flag as the verify gate
     else:
