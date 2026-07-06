@@ -160,12 +160,21 @@ def _patch_mlp_sparse(model, lib, torch, thresh: int):
             # (value 6.0, MAX magnitude) instead of 0. Dead blocks (common in PRUNED/recovered weights,
             # never in dense) would otherwise become maximal garbage. blk is 0 there, so code 0 is correct.
             kc = q_fp4(blk / sdeq[..., None, None].clamp_min(1e-30))
-            self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
+            # OOB-READ TEST: pad each WEIGHT buffer with trailing zero slack. gate_up (ks=32) kernel works
+            # in-vLLM; down (ks=112) breaks. If the kernel reads past a weight buffer for large ks, in
+            # isolation it hits benign zeros (probe cos 0.995) but in vLLM hits live tensors -> garbage.
+            # Trailing zeros make any OOB read benign. If this fixes it, the .cu has a read-bounds bug.
+            def _pad(tt):  # keep data at the front; trailing zero slack absorbs out-of-bounds reads
+                flat = tt.reshape(-1).contiguous()
+                buf = torch.zeros(flat.numel() + (1 << 20), dtype=tt.dtype, device=dev)
+                buf[:flat.numel()] = flat
+                return buf
+            self.Ac = _pad((kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8))
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
-            self.meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
-            self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()
-            self.gA = gA.reshape(out_f).float().contiguous()
+            self.meta = _pad((nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous())
+            self.scaleA = _pad(scode.to(torch.uint8).permute(1, 0, 2).contiguous())
+            self.gA = _pad(gA.reshape(out_f).float())
 
         def forward(self, x):
             # vLLM runs the model forward on ITS OWN cuda stream, but the ctypes kernels are hardcoded to
@@ -312,12 +321,21 @@ def _qbsparse_factory(torch, lib, dev):
             # (value 6.0, MAX magnitude) instead of 0. Dead blocks (common in PRUNED/recovered weights,
             # never in dense) would otherwise become maximal garbage. blk is 0 there, so code 0 is correct.
             kc = q_fp4(blk / sdeq[..., None, None].clamp_min(1e-30))
-            self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
+            # OOB-READ TEST: pad each WEIGHT buffer with trailing zero slack. gate_up (ks=32) kernel works
+            # in-vLLM; down (ks=112) breaks. If the kernel reads past a weight buffer for large ks, in
+            # isolation it hits benign zeros (probe cos 0.995) but in vLLM hits live tensors -> garbage.
+            # Trailing zeros make any OOB read benign. If this fixes it, the .cu has a read-bounds bug.
+            def _pad(tt):  # keep data at the front; trailing zero slack absorbs out-of-bounds reads
+                flat = tt.reshape(-1).contiguous()
+                buf = torch.zeros(flat.numel() + (1 << 20), dtype=tt.dtype, device=dev)
+                buf[:flat.numel()] = flat
+                return buf
+            self.Ac = _pad((kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8))
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
-            self.meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
-            self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()
-            self.gA = gA.reshape(out_f).float().contiguous()
+            self.meta = _pad((nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous())
+            self.scaleA = _pad(scode.to(torch.uint8).permute(1, 0, 2).contiguous())
+            self.gA = _pad(gA.reshape(out_f).float())
             if keep_wdq:  # dense fake-quant weight the kernel REPRESENTS (for kernel-correctness test)
                 kept_dq = (FP4[kc] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
                 Wdq_g = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
