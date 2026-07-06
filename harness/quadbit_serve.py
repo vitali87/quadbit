@@ -264,10 +264,182 @@ def serve(sparse: bool = True, thresh: int = 256) -> None:
           f"warm={mem_warm} peak={mem_peak} (nvidia-smi, incl KV pool @util0.9)", flush=True)
 
 
+def _qbsparse_factory(torch, lib, dev):
+    """QBSparse class shared by serve/serve_hybrid: two-level pair-2:4 sparse FP4 (magnitude prune +
+    per-16 ue4m3 local + per-row fp32 global). Prunes the given weight internally."""
+    FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    _cc = torch.arange(128, device=dev); _e, _m = (_cc >> 3) & 0xf, _cc & 7
+    UE4M3 = torch.where(_e == 0, _m.float() * 0.001953125, (1.0 + _m.float() / 8.0) * torch.exp2((_e - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
+
+    def enc_ue4m3_t(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
+        biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    class QBSparse:
+        def __init__(self, W):
+            out_f, in_f = W.shape; ks = in_f // 128
+            self.out_f, self.in_f, self.ks = out_f, in_f, ks
+            Wg = W.float().to(dev).view(out_f, ks, 16, 4, 2)
+            i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+            keptW = torch.gather(Wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+            gA = (keptW.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+            blk = keptW.reshape(out_f, ks, 4, 8, 2)
+            scode = enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)
+            sdeq = UE4M3[scode] * gA
+            kc = q_fp4(blk / sdeq[..., None, None])
+            self.Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8).contiguous()
+            nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+            sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+            self.meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+            self.scaleA = scode.to(torch.uint8).permute(1, 0, 2).contiguous()
+            self.gA = gA.reshape(out_f).float().contiguous()
+
+        def forward(self, x):
+            lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
+            t = x2.shape[0]; pad = (-t) % 128
+            if pad:
+                x2 = torch.cat([x2, x2.new_zeros(pad, self.in_f)], 0)
+            x2 = x2.contiguous(); tp = t + pad
+            Bb = torch.empty((tp, self.in_f // 2), dtype=torch.uint8, device=dev)
+            sB = torch.empty((self.ks, tp, 4), dtype=torch.uint8, device=dev)
+            gB = torch.empty((tp,), dtype=torch.float32, device=dev)
+            lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
+            C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
+            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+
+    return QBSparse
+
+
+NVFP4_CKPT = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
+BF16_CKPT = "meta-llama/Llama-3.1-8B-Instruct"
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def serve_hybrid(do_ppl: bool = True, util: float = 0.8) -> None:
+    # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
+    # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
+    # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
+    # magnitude pair-2:4 pruned (no recovery here -> PPL is the magnitude number, reported honestly;
+    # the recovered accuracy is the base-model 8.47 measured through-kernel elsewhere).
+    import ctypes
+    import gc
+    import math
+    import subprocess
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    def gpu_mib():
+        return int(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                                  capture_output=True, text=True).stdout.strip().splitlines()[0])
+
+    # 1) side-load true bf16 Instruct MLP weights on CPU (same checkpoint family as the NVFP4 model)
+    from transformers import AutoModelForCausalLM
+    src = AutoModelForCausalLM.from_pretrained(BF16_CKPT, dtype=torch.bfloat16, low_cpu_mem_usage=True)
+    mlpw = []
+    for layer in src.model.layers:
+        gu = torch.cat([layer.mlp.gate_proj.weight.data, layer.mlp.up_proj.weight.data], 0).clone()
+        mlpw.append((gu, layer.mlp.down_proj.weight.data.clone()))
+    del src; gc.collect()
+    print(f"side-loaded bf16 MLP weights for {len(mlpw)} layers", flush=True)
+
+    # 2) vLLM native NVFP4 (non-MLP linears 4-bit). Lower util to leave room for sparse MLP buffers.
+    S, GEN = 2048, 128
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=S + GEN + 16,
+              kv_cache_dtype="auto", gpu_memory_utilization=util)
+    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}", flush=True)  # expect modelopt_fp4
+    mem_load = gpu_mib()
+
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    dev = torch.device("cuda")
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+
+    for li, layer in enumerate(model.model.layers):
+        gu, dn = mlpw[li]
+        mlp = layer.mlp
+        mlp._qb_gu = QBSparse(gu.to(dev)); mlp._qb_dn = QBSparse(dn.to(dev))
+        mlpw[li] = None  # free CPU copy as we go
+
+        def make_fwd(m):
+            def fwd(x):  # sparse MLP on ALL M (same pruned weights for prefill + decode)
+                return m._qb_dn.forward(m.act_fn(m._qb_gu.forward(x)))
+            return fwd
+        mlp.forward = make_fwd(mlp)
+    del mlpw; gc.collect(); torch.cuda.empty_cache()
+    mem_patched = gpu_mib()
+    print(f"patched {len(model.model.layers)} MLPs to sparse (all M); device MiB load={mem_load} "
+          f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
+
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
+
+    def distinct_short(i):
+        return f"Explain concept {i}: how does mechanism {i * 7 + 3} operate in practice, step by step?"
+
+    def tps(prompts, sp):
+        torch.cuda.synchronize(); t = time.perf_counter()
+        outs = llm.generate(prompts, sp, use_tqdm=False)
+        return outs, time.perf_counter() - t
+
+    if do_ppl:  # PPL through the REAL serving path (prefill M=2048 -> sparse MLP + NVFP4 non-MLP)
+        import pyarrow.parquet as pq
+        from huggingface_hub import hf_hub_download
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(BF16_CKPT)
+        ids = tok("\n\n".join(pq.read_table(hf_hub_download(
+            "Salesforce/wikitext", "wikitext-2-raw-v1/test-00000-of-00001.parquet",
+            repo_type="dataset")).column("text").to_pylist())).input_ids
+        wins = [ids[i:i + S] for i in range(0, min(len(ids), 16 * S) - S, S)]
+        outs = llm.generate([{"prompt_token_ids": w} for w in wins],
+                            SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1), use_tqdm=False)
+        nll = n = 0
+        for w, o in zip(wins, outs):
+            plp = o.prompt_logprobs
+            nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
+        print(f"PPL_THROUGH_SERVING {math.exp(nll / n):.4f} (magnitude pair-2:4 MLP, no recovery; "
+              f"non-MLP NVFP4; {len(wins)}x{S})", flush=True)
+
+    llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
+    mem_peak = gpu_mib()
+    print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
+    for B in (1, 8, 32, 64):
+        _, pf_dt = tps([{"prompt_token_ids": distinct_ids(i)} for i in range(B)],
+                       SamplingParams(temperature=0, max_tokens=1))
+        outs, dc_dt = tps([distinct_short(i) for i in range(B)],
+                          SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True))
+        gen = sum(len(o.outputs[0].token_ids) for o in outs)
+        mem_peak = max(mem_peak, gpu_mib())
+        print(f"{B:>4} | {B * S / pf_dt:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
+    print(f"RESULT [nvfp4-base+sparse-MLP] util={util} device_MiB load={mem_load} "
+          f"post-patch={mem_patched} peak={mem_peak} (nvidia-smi, incl KV pool). Non-MLP NVFP4, MLP sparse.",
+          flush=True)
+
+
 @app.local_entrypoint()
-def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256) -> None:
+def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
+         util: float = 0.8) -> None:
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
+    elif mode == "hybrid":
+        call = serve_hybrid.spawn(do_ppl, util)
     else:
         call = {"store_so": store_so, "smoke": smoke}.get(mode, smoke).spawn()
     print(f"SPAWN_ID {call.object_id}", flush=True)
