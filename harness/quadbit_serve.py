@@ -535,7 +535,13 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
         g_ref, u_ref = gu_bf[:, :I], gu_bf[:, I:]
         h_ref = (g_ref * torch.sigmoid(g_ref)) * u_ref  # silu(gate)*up
         ref = h_ref @ Wdn.t()                           # [M,4096]
-        uns = qb_dn.forward(nmlp.act_fn(qb_gu.forward(x))).float()  # unfused sparse (two-level)
+        print(f"VERIFY act_fn type = {type(nmlp.act_fn).__name__}", flush=True)
+
+        def plain_act(y):  # explicit SwiGLU, not the NVFP4 model's (possibly quant-fused) act_fn
+            return torch.nn.functional.silu(y[:, :I]) * y[:, I:]
+
+        uns_af = qb_dn.forward(nmlp.act_fn(qb_gu.forward(x))).float()   # via NVFP4 model act_fn (suspect)
+        uns = qb_dn.forward(plain_act(qb_gu.forward(x))).float()        # via plain SwiGLU (unfused two-level)
         # fused single-level path
         Bb = torch.empty((M, H // 2), dtype=torch.uint8, device=dev)
         sBg = torch.empty((H // 128, M, 4), dtype=torch.uint8, device=dev)
@@ -560,11 +566,11 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
             mr = ((a - b).abs().max() / b.abs().max().clamp_min(1e-9)).item()
             return cos, mr
 
-        for nm, t in (("unfused-sparse", uns), ("fused", fused)):
+        for nm, t in (("unfused-plain", uns), ("unfused-act_fn", uns_af), ("fused", fused)):
             cos, mr = cmp(t, ref)
-            print(f"VERIFY {nm:>14} vs bf16-ref: cos {cos:.5f}  maxrel {mr:.4f}", flush=True)
+            print(f"VERIFY {nm:>15} vs bf16-ref: cos {cos:.5f}  maxrel {mr:.4f}", flush=True)
         cos, mr = cmp(fused, uns)
-        print(f"VERIFY {'fused':>14} vs unfused : cos {cos:.5f}  maxrel {mr:.4f}", flush=True)
+        print(f"VERIFY {'fused':>15} vs unfused-plain: cos {cos:.5f}  maxrel {mr:.4f}", flush=True)
         print("VERIFY_DONE", flush=True); return
     del gu0, dn0; gc.collect(); torch.cuda.empty_cache()
 
