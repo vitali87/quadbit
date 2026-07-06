@@ -600,68 +600,6 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     nl = len(model.model.layers)
     assert len(rec) == 3 * nl, f"recovered weights {len(rec)} != 3*{nl}"
 
-    # PROBE: kernel faithfulness on RECOVERED (not Instruct) layer-0 weights - the missing measurement.
-    # Also test the gate_up MERGE (finetune deploys separate gate/up/down and gets 8.30; serve merges).
-    g0, u0, d0 = rec[0].to(dev), rec[1].to(dev), rec[2].to(dev)
-    gu0 = torch.cat([g0, u0], 0)
-    qgu = QBSparse(gu0, keep_wdq=True); qg = QBSparse(g0, keep_wdq=True); qd = QBSparse(d0, keep_wdq=True)
-
-    def _cos(a, b):
-        return torch.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim=0).item()
-
-    # capture a REAL layer-0 MLP input activation (Gaussian probe misses outlier channels)
-    cap = {}
-    h = model.model.layers[0].mlp.register_forward_pre_hook(
-        lambda m, a: cap.setdefault("x", a[0].detach().reshape(-1, a[0].shape[-1])[:256].clone()))
-    llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
-    h.remove()
-    xr = cap["x"].to(dev)
-    kr = qgu.forward(xr).float(); fqr = xr.float() @ qgu.Wdq.t()
-    print(f"PROBE REAL-activation L0 gate_up: kernel-vs-Wdq cos {_cos(kr, fqr):.5f}  "
-          f"x max {xr.abs().max().item():.1f} mean-abs {xr.abs().mean().item():.3f} "
-          f"(outlier ratio {xr.abs().max().item() / xr.abs().mean().clamp_min(1e-9).item():.0f}x)", flush=True)
-
-    # DOWN path is the culprit (bisection: gu-sparse/dn-dense=8.84, gu-dense/dn-sparse=121k). down has
-    # in_f=14336 (vs gate_up 4096) and runs at M=2048; prior down probe was only M=256 Gaussian. Test the
-    # down kernel at M sweep AND on a REAL SwiGLU intermediate h (captured from the dense forward).
-    caph = {}
-    hooks = [model.model.layers[li].mlp.down_proj.register_forward_pre_hook(
-        (lambda idx: (lambda m, a: caph.__setitem__(idx, a[0].detach().reshape(-1, a[0].shape[-1]).clone())))(li))
-        for li in range(nl)]
-    llm.generate([{"prompt_token_ids": wins[0]}], SamplingParams(temperature=0, max_tokens=1), use_tqdm=False)
-    for hk in hooks:
-        hk.remove()
-    # per-LAYER: max |h| and worst down per-row cos (find the layer where dn.forward mangles h)
-    print("PROBE DOWN per-layer (real h from dense fwd): layer | h-max | dn per-row-cos min/mean", flush=True)
-    for li in (0, 1, 2, 4, 8, 16, 24, 31):
-        hL = caph[li].to(dev)
-        qdL = QBSparse(rec[3 * li + 2].to(dev), keep_wdq=True)
-        kL = qdL.forward(hL).float(); fL = hL.float() @ qdL.Wdq.t()
-        rc = torch.nn.functional.cosine_similarity(kL, fL, dim=1)
-        print(f"  L{li:2d} | h-max {hL.abs().max().item():8.1f} | rowcos min {rc.min().item():.3f} "
-              f"mean {rc.mean().item():.4f} frac<0.5 {(rc < 0.5).float().mean().item():.3f}", flush=True)
-        del hL, qdL, kL, fL, rc
-    caph.clear(); torch.cuda.empty_cache()
-    hr = rec[2].to(dev)[:0]  # unused placeholder; keep downstream probe lines happy
-    hr = torch.randn(2048, d0.shape[1], device=dev, dtype=torch.bfloat16)
-    # BIAS test: sparse-down activation quant may add a SYSTEMATIC per-output-channel bias (h=silu*up is
-    # asymmetric, unlike gate_up's symmetric RMSNorm input). A coherent bias accumulates over 32 residual
-    # adds -> drift to random, invisible to per-call cos (which the dense-run-h probe used).
-    hm = hr[:2048]
-    km = qd.forward(hm).float(); fm = hm.float() @ qd.Wdq.t()
-    err = km - fm
-    bias = err.mean(0)  # per-output-channel systematic component
-    print(f"PROBE DOWN bias: err|mean-over-tokens| max {bias.abs().max().item():.4f} "
-          f"rms {bias.pow(2).mean().sqrt().item():.4f}  vs ref-rms {fm.pow(2).mean().sqrt().item():.4f}  "
-          f"err-rms {err.pow(2).mean().sqrt().item():.4f}  bias/err-rms {bias.pow(2).mean().sqrt().item() / err.pow(2).mean().sqrt().clamp_min(1e-9).item():.3f}", flush=True)
-    del hm, km, fm, err, bias
-    del hr; caph.clear()
-    for Mt in (256, 512, 1024, 2048, 2049):
-        xm = torch.randn(Mt, 4096, device=dev, dtype=torch.bfloat16)
-        km = qgu.forward(xm).float(); fm = xm.float() @ qgu.Wdq.t()
-        print(f"PROBE M={Mt:5d} gate_up kernel-vs-Wdq cos {_cos(km, fm):.5f}  "
-              f"kernel-max {km.abs().max().item():.1f} Wdq-mm-max {fm.abs().max().item():.1f}", flush=True)
-        del xm, km, fm
 
     xg = torch.randn(256, 4096, device=dev, dtype=torch.bfloat16)
     xh = torch.randn(256, d0.shape[1], device=dev, dtype=torch.bfloat16)
@@ -690,46 +628,24 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     del rec; gc.collect()
     ppl("recovered-dense-bf16-via-patch")  # if this is garbage, the patch mechanism/full-forward is the bug
 
-    # BISECTION: weight-only fp4 quant (use the dequantized Wdq the kernel represents) with FULL-PRECISION
-    # activations + plain silu. Isolates weight-quant from ACTIVATION-quant. If this is ~9 and full-sparse
-    # is 121k, the activation quantizer chokes on real outlier activations (Gaussian probe missed them).
-    for li, layer in enumerate(model.model.layers):
-        mlp = layer.mlp
-        mlp.forward = (lambda gw, dw, iw: (lambda x: torch.nn.functional.linear(
+    # K-SWEEP: patch down-sparse for the FIRST K layers only, dense-Wdq for the rest. Reveals whether the
+    # 121k is accumulation (PPL grows smoothly with K) or divergence/instability (explodes past some K),
+    # or per-layer catastrophic (already bad at K=1, which would contradict the cos-0.995 probe).
+    def dense_fwd(mlp):
+        gw, dw, iw = mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f
+        return lambda x: torch.nn.functional.linear(
             torch.nn.functional.silu((x.float() @ gw.t())[..., :iw]) * (x.float() @ gw.t())[..., iw:],
-            dw).to(x.dtype)))(mlp._qb_gu.Wdq, mlp._qb_dn.Wdq, mlp._qb_dn.in_f)
-    torch.cuda.empty_cache()
-    ppl("recovered-WEIGHT-only-fp4-fullprec-act")
+            dw).to(x.dtype)
 
-    # BISECT gate_up-path vs down-path: which quantized-ACTIVATION input kills it? down-proj input is
-    # h=silu(gate)*up (SwiGLU intermediate, outlier-heavy - NOT Gaussian like the probes used).
-    for li, layer in enumerate(model.model.layers):  # gate_up SPARSE, down DENSE (h full-precision)
-        mlp = layer.mlp
-        mlp.forward = (lambda gu, dw, iw: (lambda x: torch.nn.functional.linear(
-            (lambda y: torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])(gu.forward(x)).float(),
-            dw).to(x.dtype)))(mlp._qb_gu, mlp._qb_dn.Wdq, mlp._qb_dn.in_f)
-    torch.cuda.empty_cache()
-    ppl("gu-SPARSE_dn-DENSE (h full-prec)")
-
-    for li, layer in enumerate(model.model.layers):  # gate_up DENSE, down SPARSE (h fp4-quantized)
-        mlp = layer.mlp
-        mlp.forward = (lambda guw, dn, iw: (lambda x: dn.forward(
-            (lambda y: torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])(x.float() @ guw.t()).to(torch.bfloat16)
-        )))(mlp._qb_gu.Wdq, mlp._qb_dn, mlp._qb_dn.in_f)
-    torch.cuda.empty_cache()
-    ppl("gu-DENSE_dn-SPARSE (h fp4-quant)")
-
-    for li, layer in enumerate(model.model.layers):  # now the real sparse path
-        mlp = layer.mlp
-        if fused:
-            _fused_mlp_fwd(mlp, torch, lib, dev)
-        else:
-            def unf(x, g_=mlp._qb_gu, d_=mlp._qb_dn, iw=mlp._qb_dn.in_f):
-                y = g_.forward(x)
-                return d_.forward(torch.nn.functional.silu(y[..., :iw]) * y[..., iw:])
-            mlp.forward = unf
-    torch.cuda.empty_cache()
-    ppl(f"recovered-{'fused-1lvl' if fused else 'unfused-2lvl'}-sparse")
+    for K in (1, 4, 16, 32):
+        for li, layer in enumerate(model.model.layers):
+            mlp = layer.mlp
+            if li < K:
+                _fused_mlp_fwd(mlp, torch, lib, dev)  # sparse fused
+            else:
+                mlp.forward = dense_fwd(mlp)  # dense Wdq
+        torch.cuda.empty_cache()
+        ppl(f"down-sparse first K={K:2d} layers (rest dense-Wdq)")
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
