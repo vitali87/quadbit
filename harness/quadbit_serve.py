@@ -329,7 +329,7 @@ BF16_CKPT = "meta-llama/Llama-3.1-8B-Instruct"
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def serve_hybrid(do_ppl: bool = True, util: float = 0.8) -> None:
+def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False) -> None:
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -388,6 +388,44 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8) -> None:
     print(f"patched {len(model.model.layers)} MLPs to sparse (all M); device MiB load={mem_load} "
           f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
 
+    if instrument:  # Option 3: explain the parity - is per-call overhead eating the GEMM win?
+        import torch.nn.functional as F
+        gu = model.model.layers[0].mlp._qb_gu  # gate_up: out=28672 in=4096
+        Wb = torch.randn(gu.out_f, gu.in_f, device=dev, dtype=torch.bfloat16)  # dense bf16 proxy
+
+        def ev(fn, it=50):
+            for _ in range(8):
+                fn()
+            torch.cuda.synchronize(); s = torch.cuda.Event(True); e = torch.cuda.Event(True)
+            s.record()
+            for _ in range(it):
+                fn()
+            e.record(); torch.cuda.synchronize(); return s.elapsed_time(e) / it
+
+        print("INSTRUMENT gate_up MLP (out=28672,in=4096) full sparse fwd vs mma-only vs bf16 dense:", flush=True)
+        for M in (256, 2048, 8192):
+            x = torch.randn(M, gu.in_f, device=dev, dtype=torch.bfloat16)
+            # mma-only: prepack activations once, time just the kernel
+            xp = x.contiguous(); Bb = torch.empty((M, gu.in_f // 2), dtype=torch.uint8, device=dev)
+            sB = torch.empty((gu.ks, M, 4), dtype=torch.uint8, device=dev); gB = torch.empty((M,), dtype=torch.float32, device=dev)
+            lib.quantize_act_nvfp4_2lvl(xp.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), M, gu.in_f)
+            Cc = torch.empty((gu.out_f, M), dtype=torch.bfloat16, device=dev)
+
+            def mma_only():
+                lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(),
+                                       sB.data_ptr(), gu.meta.data_ptr(), Cc.data_ptr(),
+                                       gu.out_f, M, gu.in_f, gu.gA.data_ptr(), gB.data_ptr())
+
+            def quant_only():
+                lib.quantize_act_nvfp4_2lvl(xp.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), M, gu.in_f)
+
+            t_full = ev(lambda: gu.forward(x)); t_mma = ev(mma_only); t_q = ev(quant_only)
+            t_bf16 = ev(lambda: torch.matmul(x, Wb.t()))
+            print(f"  M={M:5d}: full {t_full:.3f}ms  mma {t_mma:.3f}  quant {t_q:.3f}  "
+                  f"alloc/py {t_full - t_mma - t_q:.3f}  | bf16-dense {t_bf16:.3f}  "
+                  f"(full/bf16 {t_full / t_bf16:.2f}x, mma/bf16 {t_mma / t_bf16:.2f}x)", flush=True)
+        print("INSTRUMENT_DONE", flush=True); return
+
     def distinct_ids(i):
         return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
 
@@ -435,11 +473,11 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8) -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
-         util: float = 0.8) -> None:
+         util: float = 0.8, instrument: bool = False) -> None:
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util)
+        call = serve_hybrid.spawn(do_ppl, util, instrument)
     else:
         call = {"store_so": store_so, "smoke": smoke}.get(mode, smoke).spawn()
     print(f"SPAWN_ID {call.object_id}", flush=True)
