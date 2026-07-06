@@ -353,50 +353,60 @@ extern "C" void fused_swiglu_quant(const void *g, const void *u, void *Hbytes, v
                                                    (uint32_t *)Hbytes, (uint8_t *)scaleH, batch, hidden);
 }
 
-// TWO-LEVEL fused SwiGLU: same silu(g)*u + NVFP4 quant, but CTA-per-token (like quant_act_2lvl_k) so it
-// can reduce the per-token amax over the FULL hidden row -> per-token fp32 global gH, and encode the
-// per-32 ue4m3 codes RELATIVE to gH. Emitting gH lets the down GEMM run two-level (gB=gH) instead of
-// single-level (gB=1) -- closing the ~11 vs 8.95 fused-path accuracy gap. blockDim == hidden/32: each
-// thread owns ONE 32-block and keeps its 32 silu(g)*u values in REGISTERS across the amax reduction
-// and the requantize -- no smem staging (the 56KB float-staging version capped occupancy at 1 CTA/SM),
-// no recompute, single g/u read. ponytail: assumes hidden/32 <= 1024 (14336/32=448 for Llama-3 8B).
-__global__ void swiglu_quant_2lvl(const __nv_bfloat16 *g, const __nv_bfloat16 *u, uint32_t *Hwords,
-                                  uint8_t *scaleH, float *gH, int batch, int hidden) {
-    __shared__ float red[32];
-    int b = blockIdx.x, blk = threadIdx.x;                 // one thread per 32-block; blockDim == hidden/32
-    float v[32], amax = 0.f;
+// TWO-LEVEL fused SwiGLU (emits per-token global gH so the down GEMM runs two-level, gB=gH, not
+// single-level gB=1 -- closes the ~11 vs 8.95 fused-path accuracy gap). Two COALESCED passes over
+// Cgu[hidden,batch] (consecutive threads = consecutive tokens b, so each e-step's loads coalesce -- the
+// CTA-per-token layout reads strided-by-batch and is ~25% slower). Pass 1 = per-token amax: one thread
+// owns one token, loops the hidden dim, reduces its OWN token's amax in a register (no atomics, no
+// cross-thread reduce) -> gH. Pass 2 = the fast single-level quantizer, but encoded RELATIVE to gH.
+__global__ void swiglu_rowamax(const __nv_bfloat16 *g, const __nv_bfloat16 *u, float *gH, int batch, int hidden) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x;         // one token per thread; consecutive threads coalesce
+    if (b >= batch) return;
+    float amax = 0.f;
+    for (int e = 0; e < hidden; e++) {
+        float gv = __bfloat162float(g[(long)e * batch + b]);
+        float uv = __bfloat162float(u[(long)e * batch + b]);
+        float h = (gv / (1.f + __expf(-gv))) * uv;
+        amax = fmaxf(amax, fabsf(h));
+    }
+    gH[b] = amax > 0.f ? amax / 2688.f : 1.f;              // per-token global (2688 = e4m3max * e2m1max)
+}
+__global__ void swiglu_quant_g(const __nv_bfloat16 *g, const __nv_bfloat16 *u, uint32_t *Hwords,
+                               uint8_t *scaleH, const float *gH, int batch, int hidden) {
+    int hb = hidden / 32;
+    long t = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= (long)batch * hb) return;
+    int hblock = (int)(t / batch), b = (int)(t % batch);   // b fastest -> coalesced g/u reads
+    int step = hblock / 4, kb = hblock % 4;
+    long base = (long)(hblock * 32) * batch + b;
+    float gg = gH[b];
+    float val[32], amax = 0.f;
 #pragma unroll
     for (int i = 0; i < 32; i++) {
-        float gv = __bfloat162float(g[(long)(blk * 32 + i) * batch + b]);
-        float uv = __bfloat162float(u[(long)(blk * 32 + i) * batch + b]);
-        v[i] = (gv / (1.f + __expf(-gv))) * uv;            // silu(g)*u, kept in registers
-        amax = fmaxf(amax, fabsf(v[i]));
+        float gv = __bfloat162float(g[base + (long)i * batch]);
+        float uv = __bfloat162float(u[base + (long)i * batch]);
+        float h = (gv / (1.f + __expf(-gv))) * uv;
+        val[i] = h; amax = fmaxf(amax, fabsf(h));
     }
-    float la = amax;
-#pragma unroll
-    for (int o = 16; o; o >>= 1) la = fmaxf(la, __shfl_down_sync(0xffffffffu, la, o));
-    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = la;
-    __syncthreads();
-    if (threadIdx.x == 0) { float t = 0.f; int nw = (blockDim.x + 31) >> 5; for (int i = 0; i < nw; i++) t = fmaxf(t, red[i]); red[0] = t; }
-    __syncthreads();
-    float gg = red[0] > 0.f ? red[0] / 2688.f : 1.f;       // per-token global (2688 = e4m3max * e2m1max)
-    if (threadIdx.x == 0) gH[b] = gg;
-    int step = blk / 4, kb = blk % 4;
-    uint8_t code = enc_ue4m3((amax / 6.f) / gg);           // local relative to global
+    uint8_t code = enc_ue4m3((amax / 6.f) / gg);           // local relative to per-token global
     scaleH[((long)step * batch + b) * 4 + kb] = code;
     float inv = 1.f / (dec_ue4m3(code) * gg);
     uint32_t w[4] = {0, 0, 0, 0};
 #pragma unroll
     for (int i = 0; i < 16; i++) {
-        uint32_t byte = q_fp4(v[2 * i] * inv) | (q_fp4(v[2 * i + 1] * inv) << 4);
+        uint32_t byte = q_fp4(val[2 * i] * inv) | (q_fp4(val[2 * i + 1] * inv) << 4);
         w[i >> 2] |= byte << ((i & 3) * 8);
     }
-    *reinterpret_cast<uint4 *>(Hwords + (long)b * (hidden / 8) + blk * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+    *reinterpret_cast<uint4 *>(Hwords + (long)b * (hidden / 8) + hblock * 4) = make_uint4(w[0], w[1], w[2], w[3]);
 }
 extern "C" void fused_swiglu_quant_2lvl(const void *g, const void *u, void *Hbytes, void *scaleH,
                                         void *gH, int batch, int hidden) {
-    swiglu_quant_2lvl<<<batch, hidden / 32>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
-                                              (uint32_t *)Hbytes, (uint8_t *)scaleH, (float *)gH, batch, hidden);
+    int tpb = 256;
+    swiglu_rowamax<<<(batch + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
+                                                     (float *)gH, batch, hidden);
+    int total = batch * (hidden / 32);
+    swiglu_quant_g<<<(total + tpb - 1) / tpb, tpb>>>((const __nv_bfloat16 *)g, (const __nv_bfloat16 *)u,
+                                                     (uint32_t *)Hbytes, (uint8_t *)scaleH, (const float *)gH, batch, hidden);
 }
 
 // ---- Fused RMSNorm + NVFP4 quantize: the transformer block entry. Reads the residual-stream row
