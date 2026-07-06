@@ -367,7 +367,7 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
         Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
         sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
-        gB1 = torch.ones((tp,), dtype=torch.float32, device=dev)
+        gH = torch.empty((tp,), dtype=torch.float32, device=dev)   # per-token global for the down activation (two-level)
         # ZERO-COPY: down GEMM writes [tp, out_f] token-major (outT=1 epilogue) -> Cout[:t] is a
         # CONTIGUOUS, storage_offset-0 tensor returnable to vLLM with no transpose+copy pass.
         Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
@@ -376,10 +376,13 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
         lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
                                gu.meta.data_ptr(), Cgu.data_ptr(), gu.out_f, tp, H,
                                gu.gA.data_ptr(), gBg.data_ptr())
-        lib.fused_swiglu_quant(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(), sH.data_ptr(), tp, Iw)
+        # TWO-LEVEL fused swiglu: emits per-token global gH so the down GEMM is two-level (gB=gH), not
+        # single-level (gB=1) -- closes the ~11 vs 8.95 fused-path accuracy gap.
+        lib.fused_swiglu_quant_2lvl(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(),
+                                    sH.data_ptr(), gH.data_ptr(), tp, Iw)
         lib.sparse_fp4_mm_2lvl_t(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
                                  dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
-                                 dn.gA.data_ptr(), gB1.data_ptr())
+                                 dn.gA.data_ptr(), gH.data_ptr())
         return Cout[:t].reshape(*lead, dn.out_f)
     mlp.forward = fwd
 
@@ -436,6 +439,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -684,6 +688,7 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
 
@@ -835,6 +840,7 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
     lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
     QBSparse = _qbsparse_factory(torch, lib, dev)
     qb_gu = QBSparse(gu0.to(dev), keep_wdq=verify)
     qb_dn = QBSparse(dn0.to(dev), keep_wdq=verify)
