@@ -18,3 +18,4 @@ k
 scratch_*
 .ruff_cache/
 .DS_Store
+scratchpad/

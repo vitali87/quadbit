@@ -104,6 +104,43 @@ machine and the advantage fades. So sparse FP4 is most attractive for **low-M la
 with the crossover map (sparse dominates B=1-8; the batch-heavy corner is NVFP4's). Data:
 `/cache/versweep_{nvfp4,sparse}.csv`.
 
+## Track 4C addendum: phase-adaptive same-weight (dense-prefill / sparse-decode). REFUTED.
+Hypothesis: keep the SAME recovered pruned weights but run them in two layouts by effective token count.
+Prefill/large M uses a production dense NVFP4 GEMM (flashinfer cutlass) over the recovered weights
+materialized dense (zeros in pruned slots); decode/small M uses the sparse split-K path. Goal: erase the
+batch-prefill corner NVFP4 keeps, without changing model semantics.
+
+**Semantics hold, speed does not.** The dense NVFP4 path over the recovered weights is correct: PPL through
+serving is 10.30 (vs the all-sparse 10.27, a 0.03 numerical drift), so dense-zero-NVFP4 and sparse-FP4 of
+the same recovered weights are interchangeable and the phase boundary is seamless. But the phase-adaptive
+row LOSES: **39 win / 66 loss of 105 cells vs NVFP4, against all-sparse's 81 / 29.** It flips none of the
+cells all-sparse lost (each goes from about 0.99 to about 0.65, i.e. loses harder) and turns many all-sparse
+wins into losses (B=64: 0 win / 21 loss).
+
+Root cause (measured, `--mode phase_bench`, us per MLP layer at prefill M):
+
+| M | dense flashinfer (5 op) | native NVFP4 MLP | sparse (1 fused call) |
+|---|---|---|---|
+| 2048 | 1387 | 661 | 618 |
+| 8192 | 5779 | 2741 | 2477 |
+| 16384 | 11530 | 5456 | 4926 |
+
+Two facts sink the idea. First, the hand-rolled dense path is about 2x native NVFP4, dominated by
+flashinfer's activation `nvfp4_quantize` (the down-input quant alone is 517 us at M=2048, more than both
+GEMMs combined); vLLM's native path fuses that quant into the preceding norm and the SwiGLU via compiled
+`fuse_norm_quant`/`fuse_act_quant`, which an opaque custom op cannot reproduce. Second, and decisive: the
+sparse fused MLP is already about 7 to 10 percent FASTER per layer than the native NVFP4 MLP, so there is no
+faster dense MLP to swap in. The corner where all-sparse loses total latency (at most 5 percent, B=64 long
+prompt short gen) is therefore not MLP-bound; it is attention and Amdahl bound, and swapping the MLP cannot
+recover it. The all-sparse split-K row (81/112) stands as the serving result.
+
+SM120 dense NVFP4 recipe (recorded, since it is not obvious): flashinfer
+`nvfp4_quantize(t, (448*6)/amax, sfLayout=layout_128x4, do_shuffle=False)` on BOTH operands, then
+`mm_fp4(a, b.T, a_sf, b_sf.T, 1/(gsa*gsw), backend="cutlass")`. `do_shuffle=True` (the flashinfer docstring
+default paired with trtllm) is trtllm-only; trtllm refuses sm_120, so cutlass with `do_shuffle=False` is the
+viable pairing. Code + microbench: `serve_hybrid --phase-adaptive`, `--mode phase_bench`. Partial matrix:
+`/cache/crossover_phaseadaptive.csv`.
+
 ## Provenance
 - Commit `6ea58d7` on branch `track4-crossover`. Recovered-Instruct ckpt
   `/cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_2sh_lr3e-05.pt`. NVFP4 `nvidia/Llama-3.1-8B-Instruct-NVFP4`.
