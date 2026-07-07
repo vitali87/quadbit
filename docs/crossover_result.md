@@ -84,6 +84,22 @@ deficit as the workload becomes more prefill-bound. Single-stream serving wins u
   sparse's down-projection sparsity cannot pay for its prefill deficit.
 - Accuracy tax is constant at +2.3 PPL (10.27 vs 7.97) everywhere; the crossover is purely a speed map.
 
+## Track 4B addendum — verification / multi-token shapes (M = B*k)
+Speculative/verification decoding processes k candidate tokens per sequence, so the MLP sees effective
+M = B*k rows per decode step. Hypothesis: larger M favors sparse tensor-core work. **Refuted.** The sparse
+decode margin over NVFP4 *shrinks* with M in the clean regime and never expands:
+
+| effective M | 1 | 8 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|---|
+| sparse/NVFP4 decode tok/s | 1.092 | 1.066 | 1.054 | 1.019 | 0.998 | 1.040 |
+
+(M >= 256 is scheduling/BW-bound in full-forward decode, noisy and NVFP4-favorable, not a clean MLP shape.)
+The split-K decode win is a **small-M GPU-underfill fix**: as M grows, NVFP4's own dense GEMM fills the
+machine and the advantage fades. So sparse FP4 is most attractive for **low-M latency-sensitive decode
+(single/low-batch single-token)**, NOT for throughput-oriented multi-token verification. This is consistent
+with the crossover map (sparse dominates B=1-8; the batch-heavy corner is NVFP4's). Data:
+`/cache/versweep_{nvfp4,sparse}.csv`.
+
 ## Provenance
 - Commit `6ea58d7` on branch `track4-crossover`. Recovered-Instruct ckpt
   `/cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_2sh_lr3e-05.pt`. NVFP4 `nvidia/Llama-3.1-8B-Instruct-NVFP4`.
