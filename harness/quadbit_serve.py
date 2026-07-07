@@ -556,8 +556,9 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         for w, o in zip(wins, outs):
             plp = o.prompt_logprobs
             nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
-        print(f"PPL_THROUGH_SERVING {math.exp(nll / n):.4f} (magnitude pair-2:4 MLP, no recovery; "
-              f"non-MLP NVFP4; {'fused single-level' if fused else 'unfused two-level'}; {len(wins)}x{S})", flush=True)
+        wtag = f"recovered ({recovered_ckpt.split('/')[-1]})" if recovered_ckpt else "magnitude pair-2:4, no recovery"
+        print(f"PPL_THROUGH_SERVING {math.exp(nll / n):.4f} (MLP={wtag}; non-MLP NVFP4; "
+              f"{'fused two-level' if fused else 'unfused two-level'}; {len(wins)}x{S})", flush=True)
     if ppl_only:
         print("PPL_ONLY_DONE", flush=True); return
 

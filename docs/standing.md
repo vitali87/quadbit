@@ -108,7 +108,7 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 | Decode small-M beats bf16 | `[measured, marginal]` | 1.27× attn-qkv, 4.53× ffn-up; real-scale decode ties bf16 in the small-N corner (router falls back to bf16) |
 | Sparse decode is a win | `[measured, negative]` | `sparse_sk_lib.cu` marginal; reverted |
 | **End-to-end serving baselines measured** (vLLM bf16 / vLLM NVFP4 / SGLang NVFP4, distinct-prompt, CUDA-graphs) | `[measured]` | `harness/vllm_nvfp4.py`, `harness/sglang_fp4.py`; serving table below + `docs/paper.md` §9 |
-| **quadbit *inside* vLLM (two-level sparse MLP, NVFP4 non-MLP) beats NVFP4 prefill at batch** | **`[measured]`** | `harness/quadbit_serve.py`; correct-accuracy fused sparse MLP B=8/32/64 = 63454/79116/116421 vs NVFP4 61118/74916/110600 = +3.8%/+5.6%/+5.3%, through-serving PPL 8.95; zero-copy epilogue + two-level fused swiglu + single no-sync `fused_mlp_2lvl` (removed 64 syncs/forward). Decode still NVFP4-favored (sparse M=B underfills, no CUDA graphs) |
+| **quadbit *inside* vLLM (recovered-Instruct sparse MLP + NVFP4 non-MLP) beats NVFP4 at batch, ONE checkpoint** | **`[measured]`** | `harness/quadbit_serve.py --recovered-ckpt`; same eager harness vs NVFP4: PPL 10.27 vs 7.97 (+2.3 sparse tax); prefill B=8/32/64 63409/79051/116748 vs 61118/74916/110600 = +3.7%/+5.5%/+5.6%; decode 282/1102/2157 vs 228/897/1750 = +23%. Enablers: zero-copy epilogue + two-level fused swiglu + single no-sync `fused_mlp_2lvl` (removed 64 syncs/forward). Eager-vs-eager; NVFP4 production uses CUDA graphs (decode 8465@B64) — sparse graph-capture is the last lever |
 
 ### Serving table (RTX PRO 6000, Llama-3.1-8B-Instruct family, CUDA graphs on, distinct prompts, S=2048 prefill / GEN=128 decode)
 
@@ -200,8 +200,11 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    110600 = +3.8%/+5.6%/+5.3%, through-serving WT-2 PPL 8.95 (recovered base). Enablers: zero-copy
    transposed epilogue (contiguous output, no copy) + two-level fused swiglu (correct accuracy) +
    single no-sync `fused_mlp_2lvl` (removed the 64-`cudaDeviceSynchronize`/forward launch overhead,
-   the +7.7%/+8.3%@B32/64 that flipped parity to a win). Cleared >=5% WITHOUT CUDA graphs. **Remaining:**
-   recovered-INSTRUCT ckpt to put accuracy + speed on ONE checkpoint; decode (sparse M=B underfills).
+   the +7.7%/+8.3%@B32/64 that flipped parity to a win). Cleared >=5% WITHOUT CUDA graphs. **UNIFIED ROW
+   DONE (recovered-Instruct, ONE checkpoint):** vs full NVFP4, same eager harness — PPL 10.27 vs 7.97
+   (+2.3 sparse tax), prefill +3.7/+5.5/+5.6% (B=8/32/64), decode +23% (sparse wins decode in eager too).
+   Speed-Pareto point. **Remaining:** eager-vs-eager only — NVFP4 production uses CUDA graphs (decode 8465
+   @B64); CUDA-graph capture of the sparse ctypes path is the last lever for a production-vs-production claim.
 4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
    "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
 5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The
