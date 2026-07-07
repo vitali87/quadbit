@@ -753,7 +753,10 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
                 # TTFT (prefill + 1st token) is gen-independent, so measure it ONCE per (B,P). With prefix
                 # caching off, each total-latency call below re-prefills the same prompt cold, so
                 # decode = total - ttft isolates the (G-1) decode steps against a consistent prefill.
+                # Warm THIS (B,P) shape first (graph replay / lazy init) so the cold-vs-warm mismatch does
+                # not inflate ttft and understate decode for the first gen in the block.
                 try:
+                    llm.generate(prompts, SamplingParams(temperature=0, max_tokens=2), use_tqdm=False)
                     _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
                 except Exception as e:
                     print(f"CX {B},{P},*,SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
