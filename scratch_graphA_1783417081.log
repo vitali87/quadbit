@@ -1,0 +1,19 @@
+Note that running a local entrypoint in detached mode only keeps the last triggered Modal function alive after the parent process has been killed or disconnected.
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-Bi7iyHySlg8cti2MOmm7Vj
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/quadbit_serve.py
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/cuda
+├── 🔨 Created function store_so.
+├── 🔨 Created function smoke.
+├── 🔨 Created function serve.
+├── 🔨 Created function serve_hybrid.
+├── 🔨 Created function serve_gu_sparse.
+├── 🔨 Created function serve_recovered.
+├── 🔨 Created function bench_mlp.
+└── 🔨 Created function graph_probe.
+SPAWN_ID fc-01KWXZ29QTA5DT8H2BT8Y9VNJ0
+[modal-client] 2026-07-07T13:38:18+0400 Timed out waiting for final app logs.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-Bi7iyHySlg8cti2MOmm7Vj

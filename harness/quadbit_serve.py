@@ -347,26 +347,65 @@ def _qbsparse_factory(torch, lib, dev):
     return QBSparse
 
 
-def _install_graph_class_patch(torch):
-    """Option A: patch LlamaMLP.forward at the CLASS level (compile-visible) with a HARD Dynamo graph
-    break, so vLLM's compiled/captured forward runs the sparse MLP EAGERLY every step and picks up the
-    per-instance _qb_run closure set post-init. Must be called BEFORE LLM() so the break is present at
-    compile/capture time (a patch applied after init is invisible to the already-frozen graph). Falls
-    back to the original class forward when _qb_run is absent (e.g. vLLM's init profile/capture run)."""
-    from vllm.model_executor.models.llama import LlamaMLP
-    if getattr(LlamaMLP, "_qb_orig_forward", None) is not None:
-        return LlamaMLP
-    orig = LlamaMLP.forward
-    LlamaMLP._qb_orig_forward = orig
-    LlamaMLP._qb_calls = 0
+# Route B proof-of-life. Option A (Dynamo graph break) is IMPOSSIBLE under vLLM V1: it compiles the
+# model with aot_compile_fullgraph, which forbids graph breaks (`torch.compiler.disable` -> Unsupported).
+# The sanctioned way to put an opaque ctypes kernel into a fullgraph is a torch.library custom op: Dynamo
+# emits it as an op NODE (no inline, no break) and cudagraph bakes the kernel launches the op makes AT
+# CAPTURE TIME. So the sparse weights MUST be registered BEFORE LLM() (vLLM captures once during init;
+# a post-init patch is invisible to the frozen graph -> the 7.97-dense trap). Layer is resolved by a
+# call-order counter (vLLM runs layers 0..31 in order every forward, and the op body only executes at
+# real/capture time -- trace uses register_fake, replay reuses captured kernels -- so the counter stays
+# aligned modulo NL as long as every forward is a complete 32-call sweep).
+_QB_OP = {"reg": None, "lib": None, "call": 0, "nl": 0, "registered": False}
 
-    @torch._dynamo.disable(recursive=True)  # graph break: this call is NOT traced/captured -> runs eager
+
+def _install_graph_customop(torch, lib, reg):
+    """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp and
+    class-patches LlamaMLP.forward to call it. Returns the class (for the _qb_calls proof counter)."""
+    from vllm.model_executor.models.llama import LlamaMLP
+    g = _QB_OP
+    g["reg"], g["lib"], g["call"], g["nl"] = reg, lib, 0, len(reg)
+    out_f = reg[0][1].out_f
+
+    if not g["registered"]:
+        @torch.library.custom_op("quadbit::fused_mlp", mutates_args=())
+        def qb_fused_mlp(x: torch.Tensor, out_f: int) -> torch.Tensor:
+            lead = x.shape[:-1]
+            x2f = x.reshape(-1, x.shape[-1])
+            t = x2f.shape[0]
+            tp = t + (-t) % 128
+            gu, dn = g["reg"][g["call"] % g["nl"]]
+            g["call"] += 1
+            dev = x.device
+            H, Iw = gu.in_f, dn.in_f
+            x2 = x2f.to(torch.bfloat16)
+            if tp != t:
+                x2 = torch.cat([x2, x2.new_zeros(tp - t, H)], 0)
+            x2 = x2.contiguous()
+            Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+            sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
+            gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+            Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
+            Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+            sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+            gH = torch.empty((tp,), dtype=torch.float32, device=dev)
+            Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
+            g["lib"].fused_mlp_2lvl(
+                x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
+            return Cout[:t].reshape(*lead, dn.out_f).contiguous()
+
+        @qb_fused_mlp.register_fake
+        def _(x, out_f):
+            return x.new_empty((*x.shape[:-1], out_f))
+
+        g["registered"] = True
+
     def _forward(self, x):
-        run = getattr(self, "_qb_run", None)
-        if run is None:
-            return orig(self, x)
-        LlamaMLP._qb_calls += 1
-        return run(x)
+        return torch.ops.quadbit.fused_mlp(x, out_f)
 
     LlamaMLP.forward = _forward
     return LlamaMLP
@@ -514,12 +553,31 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # patched MLP is capture-safe (persistent workspaces, explicit-stream kernels). Whether vLLM's V1
     # compile/piecewise-cudagraph path admits the ctypes MLP is the open question this measures.
     S, GEN = 2048, 128
-    if graph:  # install the class-level graph-break patch BEFORE the model is built/compiled/captured
-        _install_graph_class_patch(torch)
+    if graph and fused and not baseline:
+        # Build QBSparse for all layers and register the custom op BEFORE LLM() so vLLM's one-shot init
+        # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
+        lib = ctypes.CDLL(SO_PATH)
+        lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+        dev = torch.device("cuda")
+        QBSparse = _qbsparse_factory(torch, lib, dev)
+        reg = []
+        for li in range(len(mlpw)):
+            gu, dn = mlpw[li]
+            reg.append((QBSparse(gu.to(dev)), QBSparse(dn.to(dev))))
+            mlpw[li] = None
+        _install_graph_customop(torch, lib, reg)
+        gc.collect(); torch.cuda.empty_cache()
+        print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture)", flush=True)
     llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
               kv_cache_dtype="auto", gpu_memory_utilization=util)
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
+    if graph and fused and not baseline:  # custom op already registered pre-LLM; skip the eager patch loop
+        mem_patched = mem_load
+        print(f"graph mode: {_QB_OP['nl']} MLPs via quadbit::fused_mlp custom op (captured in cudagraph)", flush=True)
+        _graph_customop = True
+    else:
+        _graph_customop = False
 
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
@@ -550,17 +608,18 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         else:
             mlp.forward = fwd_unf
 
-    for li, layer in enumerate(model.model.layers if not baseline else []):
+    for li, layer in enumerate([] if _graph_customop else (model.model.layers if not baseline else [])):
         gu, dn = mlpw[li]
         mlp = layer.mlp
         mlp._qb_gu = QBSparse(gu.to(dev)); mlp._qb_dn = QBSparse(dn.to(dev))
         mlpw[li] = None  # free CPU copy as we go
         patch(mlp)
-    del mlpw; gc.collect(); torch.cuda.empty_cache()
-    mem_patched = gpu_mib()
-    npatched = 0 if baseline else len(model.model.layers)
-    print(f"patched {npatched} MLPs to sparse (all M); device MiB load={mem_load} "
-          f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
+    if not _graph_customop:
+        del mlpw; gc.collect(); torch.cuda.empty_cache()
+        mem_patched = gpu_mib()
+        npatched = 0 if baseline else len(model.model.layers)
+        print(f"patched {npatched} MLPs to sparse (all M); device MiB load={mem_load} "
+              f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
 
     if instrument:  # Option 3: explain the parity - is per-call overhead eating the GEMM win?
         import torch.nn.functional as F
@@ -647,9 +706,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     print(f"RESULT [{tag}] util={util} device_MiB load={mem_load} "
           f"post-patch={mem_patched} peak={mem_peak} (nvidia-smi, incl KV pool).",
           flush=True)
-    if graph and not baseline:  # HARD proof the sparse graph-break path ran (not silently bypassed to dense)
-        from vllm.model_executor.models.llama import LlamaMLP
-        print(f"SPARSE_CALLS = {LlamaMLP._qb_calls} (>0 proves the class-patch graph-break MLP executed; "
+    if _graph_customop:  # HARD proof the sparse custom op executed (not silently bypassed to dense NVFP4)
+        print(f"SPARSE_CALLS = {_QB_OP['call']} (>0 proves quadbit::fused_mlp ran; "
               f"PPL must read ~10.27 sparse, NOT ~7.97 dense)", flush=True)
 
 
