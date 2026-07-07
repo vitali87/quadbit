@@ -887,6 +887,150 @@ def serve_gu_sparse(util: float = 0.8, do_ppl: bool = True) -> None:
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
+def serve_densify(policy: str = "none", recovered_ckpt: str = "", util: float = 0.8,
+                  do_ppl: bool = True, speed: bool = False) -> None:
+    # TRACK 3: reverse hybrid densification accuracy Pareto. Start from the all-MLP sparse recovered
+    # Instruct ckpt (PPL 10.2709) and REVERT selected projections to the model's stock dense NVFP4
+    # weights (accuracy back toward 7.97), keeping the rest sparse. Measures PPL through the deployed
+    # serving path (+ optional tok/s) for a densification policy. PPL is fusion/graph-invariant, so
+    # this eager unfused mixed path reports the deployed accuracy.
+    #   policy grammar (comma-separated tokens; a projection is DENSE if any token selects it):
+    #     none                -> all sparse (reproduces 10.2709 baseline)
+    #     all                 -> all dense NVFP4 (reproduces ~7.97 sanity)
+    #     down                -> down_proj dense (all layers), gate_up sparse
+    #     gateup              -> gate_up dense (all layers), down sparse
+    #     L<a>-<b>            -> whole MLP dense for layers a..b inclusive (rest sparse)
+    #   e.g. "down,L22-31" = dense down everywhere + fully dense late layers.
+    import ctypes
+    import gc
+    import math
+    import subprocess
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    def gpu_mib():
+        return int(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                                  capture_output=True, text=True).stdout.strip().splitlines()[0])
+
+    toks = [t for t in policy.split(",") if t]
+
+    def is_dense(li: int, proj: str) -> bool:
+        for t in toks:
+            if t == "all":
+                return True
+            if t == "down" and proj == "dn":
+                return True
+            if t == "gateup" and proj == "gu":
+                return True
+            if t.startswith("L") and "-" in t:
+                a, b = t[1:].split("-")
+                if int(a) <= li <= int(b):
+                    return True
+        return False
+
+    # sparse projections use recovered (pruned+QAT) weights; dense projections use vLLM's stock NVFP4.
+    ckpt = recovered_ckpt or RECOVERED_CKPT
+    rec = torch.load(ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32
+    nl = len(rec) // 3
+    guw = [torch.cat([rec[3 * li], rec[3 * li + 1]], 0).clone() for li in range(nl)]
+    dnw = [rec[3 * li + 2].clone() for li in range(nl)]
+    del rec; gc.collect()
+    print(f"loaded recovered MLP weights for {nl} layers from {ckpt}; policy='{policy}'", flush=True)
+
+    S, GEN = 2048, 128
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=S + GEN + 16,
+              kv_cache_dtype="auto", gpu_memory_utilization=util)
+    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}", flush=True)
+    mem_load = gpu_mib()
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    dev = torch.device("cuda")
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    I = 14336
+    n_gu_dense = n_dn_dense = 0
+    for li, layer in enumerate(model.model.layers):
+        mlp = layer.mlp
+        gu_dense = is_dense(li, "gu")
+        dn_dense = is_dense(li, "dn")
+        n_gu_dense += gu_dense
+        n_dn_dense += dn_dense
+        gu_sp = None if gu_dense else QBSparse(guw[li].to(dev))
+        dn_sp = None if dn_dense else QBSparse(dnw[li].to(dev))
+        guw[li] = dnw[li] = None
+        native_gu, native_dn = mlp.gate_up_proj, mlp.down_proj  # vLLM modelopt_fp4 (stock dense NVFP4)
+
+        def make_fwd(m, gu_sp, dn_sp, ngu, ndn):
+            def fwd(x):
+                if gu_sp is not None:
+                    y = gu_sp.forward(x)
+                else:
+                    y = ngu(x)
+                    y = y[0] if isinstance(y, tuple) else y
+                h = torch.nn.functional.silu(y[..., :I]) * y[..., I:]
+                if dn_sp is not None:
+                    return dn_sp.forward(h)
+                out = ndn(h)
+                return out[0] if isinstance(out, tuple) else out
+            return fwd
+        mlp.forward = make_fwd(mlp, gu_sp, dn_sp, native_gu, native_dn)
+    del guw, dnw; gc.collect(); torch.cuda.empty_cache()
+    mem_patched = gpu_mib()
+    print(f"policy='{policy}': {n_gu_dense}/{nl} gate_up dense, {n_dn_dense}/{nl} down dense "
+          f"(rest sparse); MiB load={mem_load} post-patch={mem_patched}", flush=True)
+
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
+
+    def distinct_short(i):
+        return f"Explain concept {i}: how does mechanism {i * 7 + 3} operate in practice, step by step?"
+
+    def tps(prompts, sp):
+        torch.cuda.synchronize(); t = time.perf_counter()
+        outs = llm.generate(prompts, sp, use_tqdm=False)
+        return outs, time.perf_counter() - t
+
+    if do_ppl:
+        import pyarrow.parquet as pq
+        from huggingface_hub import hf_hub_download
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(BF16_CKPT)
+        ids = tok("\n\n".join(pq.read_table(hf_hub_download(
+            "Salesforce/wikitext", "wikitext-2-raw-v1/test-00000-of-00001.parquet",
+            repo_type="dataset")).column("text").to_pylist())).input_ids
+        wins = [ids[i:i + S] for i in range(0, min(len(ids), 16 * S) - S, S)]
+        outs = llm.generate([{"prompt_token_ids": w} for w in wins],
+                            SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1), use_tqdm=False)
+        nll = n = 0
+        for w, o in zip(wins, outs):
+            plp = o.prompt_logprobs
+            nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
+        print(f"DENSIFY_PPL policy='{policy}' PPL={math.exp(nll / n):.4f} "
+              f"(gu_dense={n_gu_dense}/{nl} dn_dense={n_dn_dense}/{nl})", flush=True)
+
+    if speed:
+        llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
+        mem_peak = gpu_mib()
+        print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
+        for B in (1, 8, 32, 64):
+            _, pf_dt = tps([{"prompt_token_ids": distinct_ids(i)} for i in range(B)],
+                           SamplingParams(temperature=0, max_tokens=1))
+            outs, dc_dt = tps([distinct_short(i) for i in range(B)],
+                              SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True))
+            gen = sum(len(o.outputs[0].token_ids) for o in outs)
+            mem_peak = max(mem_peak, gpu_mib())
+            print(f"{B:>4} | {B * S / pf_dt:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
+        print(f"DENSIFY_SPEED policy='{policy}' util={util} MiB load={mem_load} "
+              f"post-patch={mem_patched} peak={mem_peak}", flush=True)
+    print(f"DENSIFY_DONE policy='{policy}'", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
 def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool = True,
                     diag: bool = False) -> None:
     # Deliverable #5: RECOVERED-weight PPL through the FUSED serving path. The recovered checkpoint is
@@ -1492,7 +1636,7 @@ def profile_decode() -> None:
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
          baseline: bool = False, recovered_ckpt: str = "", graph: bool = False,
-         splits: int = 8, crossover: bool = False) -> None:
+         splits: int = 8, crossover: bool = False, policy: str = "none", speed: bool = False) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
@@ -1507,6 +1651,8 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
         call = serve_gu_sparse.spawn(util, do_ppl)
+    elif mode == "densify":
+        call = serve_densify.spawn(policy, recovered_ckpt, util, do_ppl, speed)
     elif mode == "bench":
         call = bench_mlp.spawn(util, instrument)  # reuse --instrument flag as the verify gate
     else:
