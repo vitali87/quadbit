@@ -46,7 +46,7 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
-    from lm_eval import simple_evaluate
+    from lm_eval.evaluator import simple_evaluate
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
