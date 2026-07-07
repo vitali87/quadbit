@@ -410,6 +410,25 @@ Instruct one-checkpoint setup with `enforce_eager=True`: PPL 10.27 vs 7.97; pref
 explain the kernel optimization path. The recovered-Instruct ckpt is `/cache/recovered_Llama-3.1-8B-Instruct_
 P30000_p25000_2sh_lr3e-05.pt`.
 
+**PRODUCTION-WORKLOAD CROSSOVER (Track 4, the request-level serving headline, 2026-07-07;
+`docs/crossover_result.md`).** Table C splits prefill vs decode, but a real request pays both, so the
+end-to-end winner depends on the decode fraction. Swept a batch x prompt-length x generation-length request
+matrix, BOTH paths CUDA-graph captured, scoring total request latency per (B, prompt P, gen G) cell (TTFT =
+`generate(max_tokens=1)`, total = `generate(max_tokens=G, ignore_eos=True)`, decode = total − TTFT). Grid B in
+{1,8,32,64}, P in {128,512,2048,8192}, G in {16..1024}, util 0.8, commit `6ea58d7` on branch `track4-crossover`.
+**METHODOLOGY POINT — PREFIX CACHING MUST BE OFF:** with it on, vLLM V1 reuses the TTFT call's prompt KV in the
+total call, skips the real prefill, and hides sparse's prefill deficit — a first pass with caching ON spuriously
+showed sparse winning 112/112. With it OFF (each request pays a real prefill): **sparse split-K FP4 MLP wins
+end-to-end total request latency outright in 81 of 112 regimes and ties 2 more (83/112 at least as fast)** vs
+production dense NVFP4. **B=1 single-stream wins EVERY regime (+3.5% to +11.6%)**; sparse wins at any batch
+once gen clears a batch/prompt-dependent boundary; NVFP4 keeps only the prefill-bound corner (high B x long P x
+short G, loses <=3%). Crossover boundary (min gen for sparse to win): B=1 all=16; B=8 = 16/16/32/128; B=32 =
+16/32/128/128; B=64 = 16/never(tie@256)/1024/never (for P=128/512/2048/8192). The two 1.0001 near-ties are
+counted as ties, not wins. The boundary rises with batch and prompt length as the workload becomes more
+prefill-bound. Accuracy is a **constant +2.3 PPL (10.27 vs 7.97) across the whole map** — the crossover is
+purely a speed map. **Serving claim: for interactive/low-batch and long-generation regimes, sparse FP4 wins
+end-to-end; the batch-prefill corner stays NVFP4's.**
+
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
 
 - mma peaks (register-only, DCE-defeated): sparse `mma.sp` m16n8k128 = **3626k**, dense
@@ -534,6 +553,27 @@ P30000_p25000_2sh_lr3e-05.pt`.
   upside is capped there; a useful hybrid needs per-mask QAT and is still bounded by 1.33×. The
   free-lunch dense-model hybrid does not exist; the sparse Pareto (deployed sparse beats FlashInfer
   dense on prunable weights) is a whole-matrix prunability result, not a hybrid.
+- **Multi-token / verification decode favoring sparse (Track 4B, 2026-07-07): REFUTED.** Speculative/
+  verification decode processes k candidates per sequence, so the MLP sees effective M = B·k rows/step;
+  hypothesis was that larger M favors sparse tensor-core work. It does NOT — the sparse/NVFP4 decode-tok/s
+  margin SHRINKS with M and never expands: M=1 **+13%** (1.134), M=8 1.083, M=16 1.066, M=32 1.051, M=64
+  **+2%** (1.020), M≥256 noisy/BW-bound/NVFP4-favorable. The split-K decode win is a **small-M
+  GPU-underfill fix**: as M grows NVFP4's own dense GEMM fills the machine and the advantage fades. So
+  sparse FP4 is for **low-M latency-sensitive decode (single/low-batch single-token), NOT throughput
+  verification** — consistent with the crossover map (sparse owns B=1-8, NVFP4 owns the batch-heavy corner).
+  Data `/cache/versweep_{nvfp4,sparse}.csv`, `docs/crossover_result.md`.
+- **Training-free REVERSE densification for a free accuracy Pareto (Track 3, 2026-07-07): NEGATIVE, no
+  free knee.** To attack the constant +2.3 PPL tax we reverted selected MLP projections from
+  recovered-sparse back to stock dense NVFP4 through the serving path (`serve_densify`, `docs/accuracy_pareto.md`).
+  All-sparse **10.256** → all-dense **7.974**. Findings: (1) `down_proj` densification recovers ~0 PPL
+  (10.256→10.282) — down-sparsity is accuracy-free AND is exactly where the split-K decode win lives; (2)
+  `gate_up` carries the recoverable tax (all `gate_up` dense → **9.750**, −0.51; late L22-31 cost ~2× early);
+  (3) the "keep down sparse" frontier (preserves the whole decode win) tops out at 9.750. But densifying
+  `gate_up` **HURTS decode 7-9%** (sparse `gate_up` was already the fast SM120 component, beats NVFP4 gate_up
+  1.08-1.14×), so reverse densification trades speed for accuracy **~1:1 with no free Pareto point better than
+  the two endpoints**. Closing the tax requires **QAT repair of the `gate_up`-dense/`down`-sparse hybrid
+  (9.750)**, not placement alone — the natural phase-split (dense gate_up for prefill, sparse down for decode).
+  Consistent with the training-free hybrid-placement negative above.
 
 ## Reproducibility
 

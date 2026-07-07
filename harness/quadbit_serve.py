@@ -524,14 +524,17 @@ def _fused_mlp_fwd(mlp, torch, lib, dev, graph=False):
 
 NVFP4_CKPT = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
 BF16_CKPT = "meta-llama/Llama-3.1-8B-Instruct"
-RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
+RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"  # base (bf16 non-MLP) for serve_recovered
+# recovered-Instruct MLP weights, matched to the NVFP4 Instruct model serve_densify/serve_hybrid load
+RECOVERED_INSTRUCT_CKPT = "/cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_2sh_lr3e-05.pt"
 
 
-@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+@app.function(gpu="RTX-PRO-6000", timeout=7200, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
-                 recovered_ckpt: str = "", graph: bool = False, splits: int = 8) -> None:
+                 recovered_ckpt: str = "", graph: bool = False, splits: int = 8,
+                 crossover: bool = False, versweep: bool = False) -> None:
     import os
     os.environ["QB_SK_SPLITS"] = str(splits)  # sk-down split factor read by _install_graph_customop
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
@@ -578,6 +581,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # patched MLP is capture-safe (persistent workspaces, explicit-stream kernels). Whether vLLM's V1
     # compile/piecewise-cudagraph path admits the ctypes MLP is the open question this measures.
     S, GEN = 2048, 128
+    # crossover (Track 4) sweeps prompt up to 8192 + gen up to 1024; size the context window for it.
+    mm_len = (8192 + 1024 + 16) if crossover else (S + GEN + 16)
     if graph and fused and not baseline:
         # Build QBSparse for all layers and register the custom op BEFORE LLM() so vLLM's one-shot init
         # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
@@ -599,8 +604,12 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         gc.collect(); torch.cuda.empty_cache()
         print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture); "
               f"QB_SK_SPLITS={_QB_OP['splits']}", flush=True)
-    llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
-              kv_cache_dtype="auto", gpu_memory_utilization=util)
+    # crossover measures per-request prefill+decode latency, so prefix caching MUST be off: otherwise
+    # the second (max_tokens=G) generate reuses the first's (max_tokens=1) prompt KV and skips the real
+    # prefill, corrupting the decode = total - ttft decomposition (and hiding sparse's prefill deficit).
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=mm_len,
+              kv_cache_dtype="auto", gpu_memory_utilization=util,
+              enable_prefix_caching=not (crossover or versweep))
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
     if graph and fused and not baseline:  # custom op already registered pre-LLM; skip the eager patch loop
@@ -721,6 +730,98 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
               f"{'fused two-level' if fused else 'unfused two-level'}; {len(wins)}x{S})", flush=True)
     if ppl_only:
         print("PPL_ONLY_DONE", flush=True); return
+
+    if crossover:  # Track 4: end-to-end request-regime crossover matrix (this row = NVFP4 baseline
+        # or sparse+split-K, decided by how the harness was launched). Per (B, prompt, gen) cell:
+        # TTFT (prefill+1st tok), total request latency, decode time, TPOT, and throughputs. TTFT is
+        # a separate max_tokens=1 pass; total is the full ignore_eos generation. Infeasible cells
+        # (KV pool can't hold B*(prompt+gen)) are caught and skipped so the matrix completes.
+        llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
+        mem_peak = gpu_mib()
+
+        def ids_len(i, P):  # P-dependent so different prompt lengths are NOT prefixes of each other
+            return [((j * 131 + i * 7919 + P * 104729) % 128000) + 1 for j in range(P)]
+
+        # persist every cell to the shared volume too: Modal log retention keeps only the tail, so the
+        # early (small-B) cells scroll off. The CSV on /cache is the authoritative complete matrix.
+        csv_path = f"/cache/crossover_{'nvfp4' if baseline else 'sparse'}.csv"
+        hdr = "B,prompt,gen,ttft_s,total_s,decode_s,tpot_ms,prefill_tps,decode_tps,out_tps,total_tps"
+        csv = open(csv_path, "w")
+        csv.write(hdr + "\n"); csv.flush()
+        print("CX_HDR " + hdr, flush=True)
+        for B in (1, 8, 32, 64):
+            for P in (128, 512, 2048, 8192):
+                prompts = [{"prompt_token_ids": ids_len(i, P)} for i in range(B)]
+                # TTFT (prefill + 1st token) is gen-independent, so measure it ONCE per (B,P). With prefix
+                # caching off, each total-latency call below re-prefills the same prompt cold, so
+                # decode = total - ttft isolates the (G-1) decode steps against a consistent prefill.
+                # Warm THIS (B,P) shape first (graph replay / lazy init) so the cold-vs-warm mismatch does
+                # not inflate ttft and understate decode for the first gen in the block.
+                try:
+                    llm.generate(prompts, SamplingParams(temperature=0, max_tokens=2), use_tqdm=False)
+                    _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
+                except Exception as e:
+                    print(f"CX {B},{P},*,SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                    csv.write(f"{B},{P},all,SKIP\n"); csv.flush()
+                    torch.cuda.empty_cache(); continue
+                for G in (16, 32, 64, 128, 256, 512, 1024):
+                    try:
+                        outs, total = tps(prompts, SamplingParams(temperature=0, max_tokens=G, ignore_eos=True))
+                        gen = sum(len(o.outputs[0].token_ids) for o in outs)
+                        mem_peak = max(mem_peak, gpu_mib())
+                        decode = max(total - ttft, 1e-6)
+                        tpot = decode / max(gen / B - 1, 1) * 1000  # avg per-token decode latency (ms)
+                        row = (f"{B},{P},{G},{ttft:.4f},{total:.4f},{decode:.4f},{tpot:.3f},"
+                               f"{B * P / ttft:.0f},{gen / decode:.0f},{gen / total:.0f},{B * (P + G) / total:.0f}")
+                        print("CX " + row, flush=True)
+                        csv.write(row + "\n"); csv.flush()
+                    except Exception as e:
+                        print(f"CX {B},{P},{G},SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                        csv.write(f"{B},{P},{G},SKIP\n"); csv.flush()
+                        torch.cuda.empty_cache()
+        csv.close()
+        tag = "full-NVFP4-baseline" if baseline else ("nvfp4-base+sparse-MLP" + ("" if fused else "-unfused2lvl"))
+        print(f"CROSSOVER_DONE [{tag}] util={util} device_MiB load={mem_load} peak={mem_peak}", flush=True)
+        if _graph_customop:
+            print(f"SPARSE_CALLS = {_QB_OP['call']} (>0 proves quadbit::fused_mlp ran)", flush=True)
+        return
+
+    if versweep:  # Track 4B: decode throughput vs effective M (verification/multi-token shape M = B*k).
+        # A speculative step verifies k candidate tokens per sequence, so the MLP sees M = B*k rows in one
+        # decode forward. Sweeping the decode batch is exactly that shape. Tests whether the sparse split-K
+        # decode margin over NVFP4 EXPANDS with M (the hypothesis) or shrinks (the small-M underfill fix
+        # fading as NVFP4 also fills the GPU). Fixed short prompt, gen=256; decode isolated via ttft.
+        P, G = 128, 256
+        llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
+        mem_peak = gpu_mib()
+
+        def ids_v(i):
+            return [((j * 131 + i * 7919 + 7) % 128000) + 1 for j in range(P)]
+
+        csv_path = f"/cache/versweep_{'nvfp4' if baseline else 'sparse'}.csv"
+        vc = open(csv_path, "w"); vc.write("M,ttft_s,total_s,decode_s,decode_tps,tpot_ms\n"); vc.flush()
+        print("VS_HDR M,ttft_s,total_s,decode_s,decode_tps,tpot_ms", flush=True)
+        for M in (1, 8, 16, 32, 64, 128, 256, 512, 1024):
+            prompts = [{"prompt_token_ids": ids_v(i)} for i in range(M)]
+            try:
+                llm.generate(prompts, SamplingParams(temperature=0, max_tokens=2), use_tqdm=False)  # warm shape
+                _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
+                outs, total = tps(prompts, SamplingParams(temperature=0, max_tokens=G, ignore_eos=True))
+                gen = sum(len(o.outputs[0].token_ids) for o in outs)
+                mem_peak = max(mem_peak, gpu_mib())
+                decode = max(total - ttft, 1e-6)
+                tpot = decode / max(gen / M - 1, 1) * 1000
+                row = f"{M},{ttft:.4f},{total:.4f},{decode:.4f},{gen / decode:.0f},{tpot:.3f}"
+                print("VS " + row, flush=True); vc.write(row + "\n"); vc.flush()
+            except Exception as e:
+                print(f"VS {M},SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                vc.write(f"{M},SKIP\n"); vc.flush(); torch.cuda.empty_cache()
+        vc.close()
+        tag = "full-NVFP4-baseline" if baseline else "nvfp4-base+sparse-MLP"
+        print(f"VERSWEEP_DONE [{tag}] util={util} peak={mem_peak}", flush=True)
+        if _graph_customop:
+            print(f"SPARSE_CALLS = {_QB_OP['call']}", flush=True)
+        return
 
     llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
     mem_peak = gpu_mib()
@@ -845,6 +946,161 @@ def serve_gu_sparse(util: float = 0.8, do_ppl: bool = True) -> None:
         print(f"{B:>4} | {B * S / pf_dt:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
     print(f"RESULT [gu-sparse+native-down] util={util} MiB load={mem_load} post-patch={mem_patched} "
           f"peak={mem_peak}. Sparse gate/up (2/3 of MLP matmul FLOPs), native NVFP4 down.", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def serve_densify(policy: str = "none", recovered_ckpt: str = "", util: float = 0.8,
+                  do_ppl: bool = True, speed: bool = False) -> None:
+    # TRACK 3: reverse hybrid densification accuracy Pareto. Start from the all-MLP sparse recovered
+    # Instruct ckpt (PPL 10.2709) and REVERT selected projections to the model's stock dense NVFP4
+    # weights (accuracy back toward 7.97), keeping the rest sparse. Measures PPL through the deployed
+    # serving path (+ optional tok/s) for a densification policy. PPL is fusion/graph-invariant, so
+    # this eager unfused mixed path reports the deployed accuracy.
+    #   policy grammar (comma-separated tokens; a projection is DENSE if any token selects it):
+    #     none                -> all sparse (reproduces 10.2709 baseline)
+    #     all                 -> all dense NVFP4 (reproduces ~7.97 sanity)
+    #     down                -> down_proj dense (all layers), gate_up sparse
+    #     gateup              -> gate_up dense (all layers), down sparse
+    #     L<a>-<b>            -> whole MLP dense for layers a..b inclusive (rest sparse)
+    #     gu:<a>-<b>          -> gate_up dense only for layers a..b (down stays sparse)
+    #     dn:<a>-<b>          -> down dense only for layers a..b (gate_up stays sparse)
+    #   e.g. "down,L22-31" = dense down everywhere + fully dense late layers;
+    #        "gu:22-31" = dense gate_up in the late layers only, everything else sparse.
+    import ctypes
+    import gc
+    import math
+    import subprocess
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    def gpu_mib():
+        return int(subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                                  capture_output=True, text=True).stdout.strip().splitlines()[0])
+
+    toks = [t for t in policy.split(",") if t]
+
+    def is_dense(li: int, proj: str) -> bool:
+        for t in toks:
+            if t == "all":
+                return True
+            if t == "down" and proj == "dn":
+                return True
+            if t == "gateup" and proj == "gu":
+                return True
+            if t.startswith("gu:") and proj == "gu":
+                a, b = t[3:].split("-")
+                if int(a) <= li <= int(b):
+                    return True
+            if t.startswith("dn:") and proj == "dn":
+                a, b = t[3:].split("-")
+                if int(a) <= li <= int(b):
+                    return True
+            if t.startswith("L") and "-" in t and ":" not in t:
+                a, b = t[1:].split("-")
+                if int(a) <= li <= int(b):
+                    return True
+        return False
+
+    # sparse projections use recovered (pruned+QAT) weights; dense projections use vLLM's stock NVFP4.
+    ckpt = recovered_ckpt or RECOVERED_INSTRUCT_CKPT  # Instruct-matched: this fn loads NVFP4_CKPT (Instruct)
+    rec = torch.load(ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32
+    nl = len(rec) // 3
+    guw = [torch.cat([rec[3 * li], rec[3 * li + 1]], 0).clone() for li in range(nl)]
+    dnw = [rec[3 * li + 2].clone() for li in range(nl)]
+    del rec; gc.collect()
+    print(f"loaded recovered MLP weights for {nl} layers from {ckpt}; policy='{policy}'", flush=True)
+
+    S, GEN = 2048, 128
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=S + GEN + 16,
+              kv_cache_dtype="auto", gpu_memory_utilization=util)
+    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}", flush=True)
+    mem_load = gpu_mib()
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    dev = torch.device("cuda")
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    I = 14336
+    n_gu_dense = n_dn_dense = 0
+    for li, layer in enumerate(model.model.layers):
+        mlp = layer.mlp
+        gu_dense = is_dense(li, "gu")
+        dn_dense = is_dense(li, "dn")
+        n_gu_dense += gu_dense
+        n_dn_dense += dn_dense
+        gu_sp = None if gu_dense else QBSparse(guw[li].to(dev))
+        dn_sp = None if dn_dense else QBSparse(dnw[li].to(dev))
+        guw[li] = dnw[li] = None
+        native_gu, native_dn = mlp.gate_up_proj, mlp.down_proj  # vLLM modelopt_fp4 (stock dense NVFP4)
+
+        def make_fwd(m, gu_sp, dn_sp, ngu, ndn):
+            def fwd(x):
+                if gu_sp is not None:
+                    y = gu_sp.forward(x)
+                else:
+                    y = ngu(x)
+                    y = y[0] if isinstance(y, tuple) else y
+                h = torch.nn.functional.silu(y[..., :I]) * y[..., I:]
+                if dn_sp is not None:
+                    return dn_sp.forward(h)
+                out = ndn(h)
+                return out[0] if isinstance(out, tuple) else out
+            return fwd
+        mlp.forward = make_fwd(mlp, gu_sp, dn_sp, native_gu, native_dn)
+    del guw, dnw; gc.collect(); torch.cuda.empty_cache()
+    mem_patched = gpu_mib()
+    print(f"policy='{policy}': {n_gu_dense}/{nl} gate_up dense, {n_dn_dense}/{nl} down dense "
+          f"(rest sparse); MiB load={mem_load} post-patch={mem_patched}", flush=True)
+
+    def distinct_ids(i):
+        return [((j * 131 + i * 7919) % 128000) + 1 for j in range(S)]
+
+    def distinct_short(i):
+        return f"Explain concept {i}: how does mechanism {i * 7 + 3} operate in practice, step by step?"
+
+    def tps(prompts, sp):
+        torch.cuda.synchronize(); t = time.perf_counter()
+        outs = llm.generate(prompts, sp, use_tqdm=False)
+        return outs, time.perf_counter() - t
+
+    if do_ppl:
+        import pyarrow.parquet as pq
+        from huggingface_hub import hf_hub_download
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(BF16_CKPT)
+        ids = tok("\n\n".join(pq.read_table(hf_hub_download(
+            "Salesforce/wikitext", "wikitext-2-raw-v1/test-00000-of-00001.parquet",
+            repo_type="dataset")).column("text").to_pylist())).input_ids
+        wins = [ids[i:i + S] for i in range(0, min(len(ids), 16 * S) - S, S)]
+        outs = llm.generate([{"prompt_token_ids": w} for w in wins],
+                            SamplingParams(temperature=0, max_tokens=1, prompt_logprobs=1), use_tqdm=False)
+        nll = n = 0
+        for w, o in zip(wins, outs):
+            plp = o.prompt_logprobs
+            nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
+        print(f"DENSIFY_PPL policy='{policy}' PPL={math.exp(nll / n):.4f} "
+              f"(gu_dense={n_gu_dense}/{nl} dn_dense={n_dn_dense}/{nl})", flush=True)
+
+    if speed:
+        llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
+        mem_peak = gpu_mib()
+        print(f"{'B':>4} | {'prefill tok/s':>14} | {'decode tok/s':>13}", flush=True)
+        for B in (1, 8, 32, 64):
+            _, pf_dt = tps([{"prompt_token_ids": distinct_ids(i)} for i in range(B)],
+                           SamplingParams(temperature=0, max_tokens=1))
+            outs, dc_dt = tps([distinct_short(i) for i in range(B)],
+                              SamplingParams(temperature=0, max_tokens=GEN, ignore_eos=True))
+            gen = sum(len(o.outputs[0].token_ids) for o in outs)
+            mem_peak = max(mem_peak, gpu_mib())
+            print(f"{B:>4} | {B * S / pf_dt:>14.0f} | {gen / dc_dt:>13.0f}", flush=True)
+        print(f"DENSIFY_SPEED policy='{policy}' util={util} MiB load={mem_load} "
+              f"post-patch={mem_patched} peak={mem_peak}", flush=True)
+    print(f"DENSIFY_DONE policy='{policy}'", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
@@ -1454,7 +1710,8 @@ def profile_decode() -> None:
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
          baseline: bool = False, recovered_ckpt: str = "", graph: bool = False,
-         splits: int = 8) -> None:
+         splits: int = 8, crossover: bool = False, policy: str = "none", speed: bool = False,
+         versweep: bool = False) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
@@ -1464,11 +1721,13 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits, crossover, versweep)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
         call = serve_gu_sparse.spawn(util, do_ppl)
+    elif mode == "densify":
+        call = serve_densify.spawn(policy, recovered_ckpt, util, do_ppl, speed)
     elif mode == "bench":
         call = bench_mlp.spawn(util, instrument)  # reuse --instrument flag as the verify gate
     else:

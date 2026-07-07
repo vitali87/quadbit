@@ -497,6 +497,52 @@ prefill and +23% decode vs *eager* NVFP4 (Table D-eager / `docs/frozen_serving_r
 **launch-overhead only** and does not survive once both paths are CUDA-graphed — hence Table C above, not
 the eager numbers, is the serving result.
 
+**Table C decode/prefill split hides the request-level answer, so we measured the crossover directly.** Table C
+reports prefill and decode as separate throughputs; a real request pays both, so which path wins *end-to-end*
+depends on the decode fraction. We swept a batch x prompt-length x generation-length request matrix, both paths
+CUDA-graph captured, scoring total request latency per cell (TTFT from `generate(max_tokens=1)`, total from
+`generate(max_tokens=G, ignore_eos=True)`). **Prefix caching must be OFF**: with it on, vLLM V1 reuses the TTFT
+call's prompt KV in the total call, skips the real prefill, and hides sparse's prefill deficit — a first pass
+with caching on spuriously showed sparse winning all 112 cells. With it off (each request pays a real prefill),
+quadbit's sparse split-K FP4 MLP **wins end-to-end total request latency outright in 81 of 112 regimes and
+ties 2 more (83/112 where it is at least as fast)** vs production dense NVFP4. B=1 single-stream wins *every*
+regime (+3.5% to +11.6%); sparse wins at any batch once generation clears a batch/prompt-dependent boundary;
+NVFP4 keeps only the prefill-bound corner (high batch x long prompt x short generation, where it wins by <=3%).
+
+*Crossover boundary — min generation length for sparse to win total latency:*
+
+| B | prompt=128 | 512 | 2048 | 8192 |
+|---|---|---|---|---|
+| 1 | 16 | 16 | 16 | 16 |
+| 8 | 16 | 16 | 32 | 128 |
+| 32 | 16 | 32 | 128 | 128 |
+| 64 | 16 | never (tie at 256) | 1024 | never (<=1024) |
+
+The boundary rises with batch and prompt length: as the workload becomes more prefill-bound, sparse needs a
+longer generation to amortize its prefill deficit. Accuracy is a constant +2.3 PPL (10.27 vs 7.97) across the
+whole map, so the crossover is purely a speed map. **The serving claim: for interactive / low-batch and
+long-generation regimes, sparse FP4 wins end-to-end**; the batch-prefill corner stays NVFP4's. Full matrix in
+`docs/crossover_result.md`.
+
+**Verification / multi-token decode does *not* favor sparse (refuted).** Speculative/verification decoding
+processes k candidate tokens per sequence, so the MLP sees effective M = B*k rows per decode step; the natural
+hypothesis is that larger M favors sparse tensor-core work. We measured it and it is false: the sparse/NVFP4
+decode-throughput margin *shrinks* with M (M=1: +13%, M=64: +2%, noisy and NVFP4-favorable beyond) and never
+expands. The split-K decode win is a **small-M GPU-underfill fix** that fades as M grows and NVFP4's own dense
+GEMM fills the machine. So sparse FP4 is best for **low-M latency-sensitive decode**, not throughput-oriented
+multi-token verification — consistent with the crossover map (sparse dominates B=1-8; the batch-heavy corner is
+NVFP4's).
+
+**Attacking the +2.3 PPL tax by reverse densification: no free Pareto point (Section 8 confirmed at serving
+scale).** To close the constant tax we reverted selected MLP projections from recovered-sparse back to stock
+dense NVFP4, measured through the serving path. All-sparse 10.256 PPL, all-dense 7.974. Densifying `down_proj`
+recovers ~0 PPL (down-sparsity is accuracy-free *and* is exactly where the split-K decode win lives), while
+`gate_up` carries the recoverable tax (all `gate_up` dense → 9.750, -0.51, late layers cost most). But
+densifying `gate_up` *hurts* decode by 7 to 9%, because sparse `gate_up` was already the fast component.
+Reverse densification therefore trades speed for accuracy roughly 1:1 with no free knee; closing the tax needs
+QAT repair of the `gate_up`-dense/`down`-sparse hybrid (9.750), not placement alone. This is consistent with the
+training-free hybrid-placement negative result (Section 8). Full Pareto in `docs/accuracy_pareto.md`.
+
 ---
 
 ## 10. Related work
