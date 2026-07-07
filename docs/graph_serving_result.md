@@ -21,7 +21,7 @@ underfilled the GPU** (16 CTAs on ~188 SMs). Track 1 wires a **split-K down kern
 serving path for the decode shape (tp ≤ 128), which fills the machine and flips the result.
 
 ## Environment / provenance
-- **Branch:** `decode-downproj-schedule` (HEAD `<HASH>`); **main frozen** at the eager fallback.
+- **Branch:** `decode-downproj-schedule` (HEAD `f684da3`); **main frozen** at the eager fallback.
 - **NVFP4 model:** `nvidia/Llama-3.1-8B-Instruct-NVFP4` (vLLM binds `modelopt_fp4` CUTLASS; non-MLP 4-bit).
 - **Recovered-Instruct ckpt:** `/cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_2sh_lr3e-05.pt`
   (through-2:4-sparse-FP4-kernel PPL 10.029 offline).
