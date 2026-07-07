@@ -1706,6 +1706,106 @@ def profile_decode() -> None:
           "sk << plain 111us => split-K fixes the down underfill.", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def phase_probe() -> None:
+    # TRACK 4C de-risk: can we run a PRODUCTION NVFP4 dense GEMM over ARBITRARY (recovered pruned,
+    # dense-zero) weights, matching baseline speed + correct math? Enumerate the NVFP4 quantize/mm APIs
+    # vLLM ships (vllm._custom_ops, flashinfer), numerically validate a dense-zero NVFP4 GEMM vs bf16 ref
+    # (cos>0.99), and confirm dense-zero-NVFP4(W) ~= sparse-FP4(W) for the SAME recovered W (the phase
+    # boundary must not switch weight semantics). If this passes, the dense-prefill branch is buildable
+    # inside the custom op with the production kernel; if not, 4C hits the "toolchain research" stop-cond.
+    import ctypes
+
+    import torch
+
+    dev = torch.device("cuda")
+
+    def cos(a, b):
+        a, b = a.float().reshape(-1), b.float().reshape(-1)
+        return (a @ b / (a.norm() * b.norm()).clamp_min(1e-12)).item()
+
+    # 1) enumerate available production NVFP4 GEMM APIs
+    ops = fi = None
+    try:
+        import vllm._custom_ops as ops
+        print("VLLM_OPS", [n for n in ("scaled_fp4_quant", "cutlass_scaled_fp4_mm") if hasattr(ops, n)], flush=True)
+    except Exception as e:
+        print("VLLM_OPS_IMPORT_FAIL", repr(e), flush=True)
+    try:
+        import flashinfer as fi
+        print("FLASHINFER", getattr(fi, "__version__", "?"),
+              [n for n in ("mm_fp4", "nvfp4_quantize", "fp4_quantize") if hasattr(fi, n)], flush=True)
+    except Exception as e:
+        print("FLASHINFER_IMPORT_FAIL", repr(e), flush=True)
+
+    FP4_MAX, FP8_MAX = 6.0, 448.0
+
+    def gscale(w):  # modelopt/NVFP4 per-tensor global scale = FP8_MAX*FP4_MAX / amax
+        return (FP8_MAX * FP4_MAX) / w.abs().max().clamp_min(1e-9)
+
+    # 2) vLLM _custom_ops recipe: quantize both operands, cutlass mm with alpha = 1/(a_gs*w_gs).
+    #    orientation: cutlass_scaled_fp4_mm(a[M,K], b[N,K]) -> [M,N] (b row-major = weight [out,in]).
+    def nvfp4_mm_vllm(x, w):
+        ags, wgs = gscale(x), gscale(w)
+        xq, xs = ops.scaled_fp4_quant(x, ags)
+        wq, ws = ops.scaled_fp4_quant(w, wgs)
+        alpha = (1.0 / (ags * wgs)).to(torch.float32)
+        return ops.cutlass_scaled_fp4_mm(xq, wq, xs, ws, alpha, torch.bfloat16)
+
+    torch.manual_seed(0)
+    H, N, M = 4096, 512, 256
+    # dense-zero weight: 2:4-pruned random (mimics a recovered pruned matrix's zero pattern)
+    Wd = (torch.randn(N, H, device=dev) * 0.02).bfloat16()
+    Wz = Wd.view(N, H // 4, 4).clone()
+    idx = Wz.abs().topk(2, dim=-1, largest=False).indices  # zero the 2 smallest of every 4 (2:4)
+    Wz.scatter_(-1, idx, 0.0); Wz = Wz.view(N, H)
+    x = (torch.randn(M, H, device=dev) * 0.1).bfloat16()
+    ref = (x.float() @ Wz.float().t())
+
+    if ops is not None and hasattr(ops, "scaled_fp4_quant") and hasattr(ops, "cutlass_scaled_fp4_mm"):
+        try:
+            out = nvfp4_mm_vllm(x, Wz)
+            print(f"VLLM_NVFP4_MM cos_vs_bf16={cos(out, ref):.5f} shape={tuple(out.shape)}", flush=True)
+        except Exception as e:
+            print("VLLM_NVFP4_MM_FAIL", repr(e), flush=True)
+
+    # 3) same test through flashinfer mm_fp4 (fallback path if vLLM ops missing/broken)
+    if fi is not None and hasattr(fi, "mm_fp4") and hasattr(fi, "fp4_quantize"):
+        try:
+            ags, wgs = gscale(x), gscale(Wz)
+            xq, xs = fi.fp4_quantize(x, ags)
+            wq, ws = fi.fp4_quantize(Wz, wgs)
+            alpha = (1.0 / (ags * wgs)).to(torch.float32)
+            out = fi.mm_fp4(xq, wq.T, xs, ws.T, alpha, torch.bfloat16, block_size=16)
+            print(f"FI_NVFP4_MM cos_vs_bf16={cos(out, ref):.5f} shape={tuple(out.shape)}", flush=True)
+        except Exception as e:
+            print("FI_NVFP4_MM_FAIL", repr(e), flush=True)
+
+    # 4) the phase-boundary premise: dense-zero-NVFP4(W) ~= sparse-FP4(W) for the SAME recovered W.
+    #    Load real recovered-Instruct layer-0 gate_up + down and compare both quantizations on real-scale x.
+    try:
+        lib = ctypes.CDLL(SO_PATH)
+        lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+        lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+        lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+        QBSparse = _qbsparse_factory(torch, lib, dev)
+        rec = torch.load(RECOVERED_INSTRUCT_CKPT, map_location="cpu", weights_only=True)["weights"]
+        gu_w = torch.cat([rec[0], rec[1]], 0).to(dev)   # [28672, 4096]
+        dn_w = rec[2].to(dev)                            # [4096, 14336]
+        del rec
+        for name, W, mm in (("gate_up", gu_w, 256), ("down", dn_w, 256)):
+            xin = (torch.randn(mm, W.shape[1], device=dev) * 0.1).bfloat16()
+            sp = QBSparse(W).forward(xin)               # sparse-FP4 path (deployed decode/prefill weights)
+            if ops is not None and hasattr(ops, "cutlass_scaled_fp4_mm"):
+                dz = nvfp4_mm_vllm(xin, W)              # dense-zero NVFP4 (production kernel, same W)
+                print(f"SAME_W {name}: sparseFP4 vs denseNVFP4 cos={cos(sp, dz):.5f} "
+                      f"(pruned nnz frac={(W != 0).float().mean().item():.3f})", flush=True)
+    except Exception as e:
+        print("SAME_W_FAIL", repr(e), flush=True)
+    print("PHASE_PROBE_DONE", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
@@ -1717,6 +1817,9 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
         print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "profile_decode":
         call = profile_decode.spawn()
+        print(f"SPAWN_ID {call.object_id}", flush=True); return
+    if mode == "phase_probe":
+        call = phase_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
