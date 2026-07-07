@@ -736,7 +736,13 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         def ids_len(i, P):
             return [((j * 131 + i * 7919) % 128000) + 1 for j in range(P)]
 
-        print("CX_HDR B,prompt,gen,ttft_s,total_s,decode_s,tpot_ms,prefill_tps,decode_tps,out_tps,total_tps", flush=True)
+        # persist every cell to the shared volume too: Modal log retention keeps only the tail, so the
+        # early (small-B) cells scroll off. The CSV on /cache is the authoritative complete matrix.
+        csv_path = f"/cache/crossover_{'nvfp4' if baseline else 'sparse'}.csv"
+        hdr = "B,prompt,gen,ttft_s,total_s,decode_s,tpot_ms,prefill_tps,decode_tps,out_tps,total_tps"
+        csv = open(csv_path, "w")
+        csv.write(hdr + "\n"); csv.flush()
+        print("CX_HDR " + hdr, flush=True)
         for B in (1, 8, 32, 64):
             for P in (128, 512, 2048, 8192):
                 for G in (16, 32, 64, 128, 256, 512, 1024):
@@ -748,12 +754,15 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
                         mem_peak = max(mem_peak, gpu_mib())
                         decode = max(total - ttft, 1e-6)
                         tpot = decode / max(gen / B - 1, 1) * 1000  # avg per-token decode latency (ms)
-                        print(f"CX {B},{P},{G},{ttft:.4f},{total:.4f},{decode:.4f},{tpot:.3f},"
-                              f"{B * P / ttft:.0f},{gen / decode:.0f},{gen / total:.0f},"
-                              f"{B * (P + G) / total:.0f}", flush=True)
+                        row = (f"{B},{P},{G},{ttft:.4f},{total:.4f},{decode:.4f},{tpot:.3f},"
+                               f"{B * P / ttft:.0f},{gen / decode:.0f},{gen / total:.0f},{B * (P + G) / total:.0f}")
+                        print("CX " + row, flush=True)
+                        csv.write(row + "\n"); csv.flush()
                     except Exception as e:
                         print(f"CX {B},{P},{G},SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                        csv.write(f"{B},{P},{G},SKIP\n"); csv.flush()
                         torch.cuda.empty_cache()
+        csv.close()
         tag = "full-NVFP4-baseline" if baseline else ("nvfp4-base+sparse-MLP" + ("" if fused else "-unfused2lvl"))
         print(f"CROSSOVER_DONE [{tag}] util={util} device_MiB load={mem_load} peak={mem_peak}", flush=True)
         if _graph_customop:
