@@ -106,9 +106,9 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 | **Sparse two-level vs CUTLASS 80b, fresh (win every shape 1.01–1.12×)** | **`[measured]`** | `harness/cutlass_sparse.py`; attn 1.08×, ffn-up 1.01×, ffn-down 1.12×, sq8192 1.09× (1973 vs 1807) |
 | **PARETO: sparse two-level beats best FlashInfer DENSE in wall-clock, every prefill shape (1.07–1.38×)** | **`[measured]`** | cross-table: sparse (`cutlass_sparse.py`, CUDA 12.8) vs FI dense best (`leaderboard_fp4.py`, CUDA 13), same card; attn 0.100 vs 0.107 ms, ffn-dn 0.265 vs 0.342, sq8192 0.557 vs 0.767 |
 | Decode small-M beats bf16 | `[measured, marginal]` | 1.27× attn-qkv, 4.53× ffn-up; real-scale decode ties bf16 in the small-N corner (router falls back to bf16) |
-| Sparse decode is a win | `[measured, negative]` | `sparse_sk_lib.cu` marginal; reverted |
+| **Sparse split-K decode down is a win in the fused/graph path** | **`[measured]`** | standalone `sparse_sk_lib.cu` was marginal in isolation, but ported into the fused serving down (`matmul_sp_sk` + `cvt_sp_2lvl_t` → `fused_mlp_2lvl_skdown`) it fixes OUR decode underfill: down 109→56.5 µs (1.94×) at split=8, flipping graph decode to a win (see below) |
 | **End-to-end serving baselines measured** (vLLM bf16 / vLLM NVFP4 / SGLang NVFP4, distinct-prompt, CUDA-graphs) | `[measured]` | `harness/vllm_nvfp4.py`, `harness/sglang_fp4.py`; serving table below + `docs/paper.md` §9 |
-| **quadbit *inside* vLLM as a graph-capturable sparse MLP; production NVFP4 still faster** | **`[measured]`** | `harness/quadbit_serve.py --graph --recovered-ckpt`; sparse MLP is a `torch.library` custom op inside vLLM's fullgraph + CUDA-graph capture (proof: `SPARSE_CALLS=7264`, PPL 10.2709 not dense 7.97). **Graph-vs-graph (production):** prefill B=8/32/64 63274/77896/115334 vs NVFP4 66469/80825/119083 = **−4.8/−3.6/−3.1%**; decode 981/3863/7363 vs 1046/4237/8384 = **−6.2/−8.8/−12.2%**. ~88-97% of NVFP4. Decode loss = down_proj underfills (16 CTAs/188 SMs vs gate_up 112); no split-K where CUTLASS has it. Eager +5.6%/+23% win was launch-overhead only (see `docs/graph_serving_result.md`, `docs/frozen_serving_result.md`) |
+| **quadbit *inside* vLLM as a graph-capturable sparse MLP; BEATS production NVFP4 on decode** | **`[measured]`** | `harness/quadbit_serve.py --graph --splits 8 --recovered-ckpt`; sparse MLP is a `torch.library` custom op inside vLLM's fullgraph + CUDA-graph capture (proof: `SPARSE_CALLS=7264`, PPL 10.2709 not dense 7.97). **Graph-vs-graph (production):** decode B=8/32/64 **1147/4543/8567** vs NVFP4 1046/4237/8384 = **+9.7/+7.2/+2.2%** (split-K down); prefill 62914/77605/115069 vs 66469/80825/119083 = **−5.3/−4.0/−3.4%** (plain down, never underfilled). Decode fix = split-K down `matmul_sp_sk` (16→128 CTAs, 109→56.5 µs). splits=8 beats 4/16 end-to-end. Eager +5.6%/+23% win was launch-overhead only (see `docs/graph_serving_result.md`, `docs/frozen_serving_result.md`) |
 
 ### Serving table (RTX PRO 6000, Llama-3.1-8B-Instruct family, CUDA graphs on, distinct prompts, S=2048 prefill / GEN=128 decode)
 
@@ -199,13 +199,15 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    Llama-3.1-8B-Instruct checkpoint. Enablers: zero-copy transposed epilogue + two-level fused swiglu +
    single no-sync `fused_mlp_2lvl`. **Made it production-graph-capturable** via a `torch.library` custom op
    (`quadbit::fused_mlp`, weights bound pre-LLM) that vLLM's fullgraph compile + CUDA-graph capture include
-   (proof `SPARSE_CALLS=7264`, PPL 10.2709 not dense 7.97). **Graph-vs-graph verdict: production NVFP4 wins**
-   — prefill −3.1 to −4.8%, decode −6.2 to −12.2% (B=8/32/64); ~88-97% of NVFP4. The eager +5.6%/+23% win
-   was launch-overhead only and does not survive graph capture. Decode loss diagnosed: down_proj underfills
-   (16 CTAs/188 SMs vs gate_up 112); `matmul_sp` has no split-K where CUTLASS does. **Future work (not final-
-   paper):** wire the split-K decode kernel (standalone 0.49×→1.40× vs bf16) into the fused/graph path with a
-   graph-friendly reduction + two-level-scale correctness. Artifacts: `docs/graph_serving_result.md` (main
-   serving table + proofs + diagnosis), `docs/frozen_serving_result.md` (eager ablation).
+   (proof `SPARSE_CALLS=7264`, PPL 10.2709 not dense 7.97). **Graph-vs-graph verdict: quadbit BEATS production
+   NVFP4 on decode** — decode +9.7/+7.2/+2.2% (B=8/32/64, 1147/4543/8567 vs 1046/4237/8384); prefill −5.3 to
+   −3.4% (plain down, never underfilled). The earlier decode loss (−6 to −12%) was a diagnosed underfill:
+   down_proj launched only 16 CTAs/188 SMs. **Fixed** by wiring a split-K down kernel (`matmul_sp_sk` +
+   `cvt_sp_2lvl_t` → `fused_mlp_2lvl_skdown`) into the fused/graph path: 16→128 CTAs, down 109→56.5 µs (1.94×),
+   f32 reduction + two-level-scale epilogue, cos 1.0000. splits=8 beats 4/16 end-to-end. The eager +5.6%/+23%
+   win was launch-overhead only; this graph decode win is a separate kernel-scheduling lever. Artifacts:
+   `docs/graph_serving_result.md` (main serving table + sweep + proofs + diagnosis), `docs/frozen_serving_result.md`
+   (eager ablation).
 4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
    "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
 5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The

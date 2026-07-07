@@ -392,15 +392,17 @@ a correct-output batch win, in order of impact:
 MLP is registered as a `torch.library` custom op (`quadbit::fused_mlp`, weights bound pre-LLM) so vLLM's V1
 **fullgraph compile + CUDA-graph capture include it** (Option A / Dynamo graph break is impossible —
 `aot_compile_fullgraph` forbids breaks). Provably sparse under graphs: `SPARSE_CALLS=7264`, PPL **10.2709**
-(not the 7.97 dense value). **Graph-vs-graph (recovered-Instruct, util 0.8, WT-2 15x2048):** prefill B=8/32/64
-= 63274/77896/115334 vs NVFP4 66469/80825/119083 = **−4.8% / −3.6% / −3.1%**; decode = 981/3863/7363 vs
-1046/4237/8384 = **−6.2% / −8.8% / −12.2%**. Honest headline: **quadbit is a correct, graph-capturable
-sparse-FP4 vLLM path on SM120, but production dense NVFP4 is faster end-to-end (~88-97%)** — CUDA graphs +
-CUTLASS small-M scheduling erase the sparse eager advantage. Decode loss diagnosed (`--mode profile_decode`,
-µs/layer, graph-invariant): quant 16, gate_up 53 (**112 CTAs**), swiglu 31, **down 111 (16 CTAs)**, full 173
-vs NVFP4 ≈137 — the sparse **down_proj underfills** (`grid=M/2BM`; M=4096→16 CTAs on ~188 SMs), no split-K
-where CUTLASS has it. Fix (future work, not final-paper): wire the split-K decode kernel (standalone
-0.49×→1.40× vs bf16) into `fused_mlp_2lvl` with a graph-friendly reduction + two-level-scale correctness.
+(not the 7.97 dense value). **Graph-vs-graph (recovered-Instruct, util 0.8, WT-2 15x2048), split-K down @8:**
+decode B=8/32/64 = **1147/4543/8567** vs NVFP4 1046/4237/8384 = **+9.7% / +7.2% / +2.2%**; prefill =
+62914/77605/115069 vs 66469/80825/119083 = **−5.3% / −4.0% / −3.4%**. Honest headline: **quadbit is a correct,
+graph-capturable sparse-FP4 vLLM path on SM120 that BEATS production dense NVFP4 on decode (+2 to +10%)** at
+matched accuracy; prefill trails ~3-5% (plain down, never underfilled). Decode diagnosed + fixed
+(`--mode profile_decode`, µs/layer, graph-invariant): quant 15, gate_up 52 (**112 CTAs**), swiglu 30,
+**plain down 109 (16 CTAs)** → underfill (`grid=M/2BM`; M=4096→16 CTAs on ~188 SMs). Fix: split-K down
+`matmul_sp_sk` (`gridDim.z` K-split → 16×8=128 CTAs, f32 workspace reduction, `cvt_sp_2lvl_t` epilogue applies
+two-level globals post-reduction + transposes to [tok,out_f]) → **down 109→56.5 µs (1.94×)**, cos 1.0000,
+relL2 ≈ 1e-5. splits=8 beats 4/16 end-to-end; deployed via `fused_mlp_2lvl_skdown` at decode (tp≤128), plain
+`fused_mlp_2lvl` at prefill. Prefill parity remains open (needs a prefill-shape stream-K/persistent pass).
 
 **EAGER ABLATION (diagnostic, NOT the serving headline; `docs/frozen_serving_result.md`).** Same recovered-
 Instruct one-checkpoint setup with `enforce_eager=True`: PPL 10.27 vs 7.97; prefill +3.7/+5.5/+5.6%, decode

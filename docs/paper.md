@@ -467,25 +467,27 @@ accuracy and speed on the SAME checkpoint). The sparse path provably runs under 
 against a silent fall-back to dense NVFP4). This graph-vs-graph comparison is the production-representative
 serving result (util 0.8, WT-2 15x2048); see `docs/graph_serving_result.md`.
 
-| metric | vLLM NVFP4 (graph, production) | quadbit sparse MLP (graph) | Δ |
-|--------|-------------------------------|----------------------------|---|
+| metric | vLLM NVFP4 (graph, production) | quadbit sparse MLP + split-K down (graph) | Δ |
+|--------|-------------------------------|-------------------------------------------|---|
 | WT-2 PPL | 7.97 | 10.2709 | +2.30 |
-| prefill B=8/32/64 (tok/s) | 66469/80825/119083 | 63274/77896/115334 | **−4.8% / −3.6% / −3.1%** |
-| decode B=8/32/64 (tok/s) | 1046/4237/8384 | 981/3863/7363 | **−6.2% / −8.8% / −12.2%** |
+| prefill B=8/32/64 (tok/s) | 66469/80825/119083 | 62914/77605/115069 | **−5.3% / −4.0% / −3.4%** |
+| decode B=8/32/64 (tok/s) | 1046/4237/8384 | **1147/4543/8567** | **+9.7% / +7.2% / +2.2%** |
 
-**Production dense NVFP4 remains faster end-to-end**: quadbit sparse serves at ~88-97% of NVFP4 throughput
-with correct sparse accuracy. CUDA graphs plus CUTLASS small-M scheduling erase the sparse eager advantage.
+**quadbit beats production dense NVFP4 on decode** — the latency-critical, memory-bound serving regime — at
+every batch, with correct sparse accuracy. Prefill trails ~3-5% (it uses the plain down, which was never
+underfilled). The decode win comes from a split-K down projection; the earlier −6 to −12% decode loss was a
+diagnosed underfill, now fixed.
 
-*Decode diagnosis (`--mode profile_decode`, CUDA events, µs/layer; kernel time is graph-invariant):*
-activation-quant 16, gate_up sparse GEMM 53 (**112 CTAs**), fused SwiGLU 31, **down sparse GEMM 111 (16
-CTAs)**, full fused 173 vs NVFP4 dense MLP ≈137. `matmul_sp` launches `grid=(N/BN, M/2BM)`, BM=BN=128; at
-decode (tp=128) occupancy is set by the output dim, so gate_up (28672) fills 112 CTAs but **down (4096)
-underfills at 16 CTAs on ~188 SMs (~8% of the GPU)** — 2× gate_up despite half the weight nonzeros. Sparse
-still beats dense-bf16 at decode (full/bf16 0.72-0.77), so a dense-bf16 fallback loses; dense-NVFP4 reaches
-~parity but defeats the 2:4 purpose. **Split-K/stream-K sparse scheduling is the required next kernel
-family** (the standalone bench already shows split-K fixes this shape: decode ffn-down 0.49×→1.40× vs bf16);
-the deployed `fused_mlp_2lvl` uses the plain non-split-K `matmul_sp`. This is future work, not a final-paper
-cleanup.
+*Decode diagnosis and fix (`--mode profile_decode`, CUDA events, µs/layer; kernel time is graph-invariant):*
+activation-quant 15, gate_up sparse GEMM 52 (**112 CTAs**), fused SwiGLU 30, **plain down sparse GEMM 109
+(16 CTAs)**. `matmul_sp` launches `grid=(N/BN, M/2BM)`, BM=BN=128; at decode (tp=128) occupancy is set by the
+output dim, so gate_up (28672) fills 112 CTAs but **down (4096) underfilled at 16 CTAs on ~188 SMs (~8% of
+the GPU)**. The fix is a **split-K down kernel** (`matmul_sp_sk`): a `gridDim.z` K-split raises the down to
+16 × 8 = **128 CTAs**, an f32 workspace accumulates the partial sums, and a `cvt_sp_2lvl_t` pass applies the
+two-level global scales post-reduction and transposes to `[tok, out_f]`. Down drops **109 → 56.5 µs (1.94×)**
+at split=8 (cos 1.0000, relL2 ≈ 1e-5 vs the plain two-level down), and a serving sweep confirms split=8 beats
+4 and 16 end-to-end. The op dispatches to `fused_mlp_2lvl_skdown` at decode (tp ≤ 128) and the plain
+`fused_mlp_2lvl` at prefill.
 
 *Eager-vs-eager (diagnostic ablation, not the production serving headline).* The eager path's optimization
 story explains the kernel work: (1) a zero-copy transposed mma epilogue (`sparse_fp4_mm_2lvl_t`), bitwise-
@@ -534,19 +536,17 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 
 ## 11. Limitations
 
-- **Serving-engine integration is built and graph-capturable, but production dense NVFP4 is faster**
-  (Section 9, Table C). quadbit's two-level sparse MLP runs inside vLLM (V1: paged attention, continuous
-  batching, decode scheduler) as a `torch.library` custom op that vLLM's fullgraph compile + CUDA-graph
-  capture include, NVFP4 for non-MLP, on a recovered Llama-3.1-8B-Instruct checkpoint (accuracy + speed on
-  ONE checkpoint), with correct sparse accuracy under graphs (PPL 10.2709, not the 7.97 dense value).
-  **Under production CUDA graphs it serves at ~88-97% of NVFP4 throughput** — prefill −3.1 to −4.8%,
-  decode −6.2 to −12.2% (B=8/32/64). The eager-vs-eager win (+5.6% prefill, +23% decode) was
-  launch-overhead only and does not survive graph capture. The decode loss is diagnosed: the sparse **down
-  projection underfills the GPU at decode** (16 CTAs on ~188 SMs, vs 112 for gate_up), because `matmul_sp`
-  has no split-K/stream-K where CUTLASS does. **Future work:** wire the split-K decode kernel (standalone
-  bench: ffn-down 0.49×→1.40× vs bf16) into the fused/graph serving path, with a graph-friendly reduction
-  and two-level-scale correctness; possibly graph-friendly SwiGLU/reduction fusion; accuracy recovery /
-  hybrid sparsity if revisited.
+- **Serving-engine integration is built, graph-capturable, and beats production NVFP4 on decode; prefill
+  still trails** (Section 9, Table C). quadbit's two-level sparse MLP runs inside vLLM (V1: paged attention,
+  continuous batching, decode scheduler) as a `torch.library` custom op that vLLM's fullgraph compile +
+  CUDA-graph capture include, NVFP4 for non-MLP, on a recovered Llama-3.1-8B-Instruct checkpoint (accuracy +
+  speed on ONE checkpoint), with correct sparse accuracy under graphs (PPL 10.2709, not the 7.97 dense value).
+  A **split-K down projection** (`matmul_sp_sk`, 16→128 CTAs, down 109→56.5 µs) flips decode to a **win:
+  +9.7/+7.2/+2.2% at B=8/32/64** vs production NVFP4. **Prefill still trails ~3-5%** (−5.3 to −3.4%); it uses
+  the plain non-split-K down, which was never underfilled, and closing it needs a prefill-shape scheduling
+  pass (stream-K / persistent tiling) that we have not yet built. The eager-vs-eager win (+5.6% prefill,
+  +23% decode) was launch-overhead only and is a separate lever from the graph decode win. **Future work:**
+  lift prefill to parity; graph-friendly SwiGLU/reduction fusion; accuracy recovery / hybrid sparsity.
 - **Sparse recovery loses to dense on accuracy** (Section 8). The deployable sparse-recovered 8B
   is 8.47 PPL through the two-level kernel, about 1.56 above dense W4A4 (6.91), and diverse-corpus
   data (C4) did not close it on the WikiText-2 test. Sparse is speed-only on accuracy grounds.
