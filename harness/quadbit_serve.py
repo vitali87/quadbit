@@ -347,7 +347,32 @@ def _qbsparse_factory(torch, lib, dev):
     return QBSparse
 
 
-def _fused_mlp_fwd(mlp, torch, lib, dev):
+def _install_graph_class_patch(torch):
+    """Option A: patch LlamaMLP.forward at the CLASS level (compile-visible) with a HARD Dynamo graph
+    break, so vLLM's compiled/captured forward runs the sparse MLP EAGERLY every step and picks up the
+    per-instance _qb_run closure set post-init. Must be called BEFORE LLM() so the break is present at
+    compile/capture time (a patch applied after init is invisible to the already-frozen graph). Falls
+    back to the original class forward when _qb_run is absent (e.g. vLLM's init profile/capture run)."""
+    from vllm.model_executor.models.llama import LlamaMLP
+    if getattr(LlamaMLP, "_qb_orig_forward", None) is not None:
+        return LlamaMLP
+    orig = LlamaMLP.forward
+    LlamaMLP._qb_orig_forward = orig
+    LlamaMLP._qb_calls = 0
+
+    @torch._dynamo.disable(recursive=True)  # graph break: this call is NOT traced/captured -> runs eager
+    def _forward(self, x):
+        run = getattr(self, "_qb_run", None)
+        if run is None:
+            return orig(self, x)
+        LlamaMLP._qb_calls += 1
+        return run(x)
+
+    LlamaMLP.forward = _forward
+    return LlamaMLP
+
+
+def _fused_mlp_fwd(mlp, torch, lib, dev, graph=False):
     """Assign mlp.forward to the FUSED sparse MLP: gate_up sparse GEMM -> C[28672,tp] (no transpose)
     -> fused_swiglu_quant (silu(g)*u + NVFP4 quant, one pass) -> down sparse GEMM. Correct (cos 0.997
     vs two-level; do NOT reuse the model's SiluAndMul on sparse bf16) and fast (~1.25x vs native NVFP4
@@ -429,7 +454,10 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
                                  dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                  dn.gA.data_ptr(), gH.data_ptr())
         return Cout[:t].reshape(*lead, dn.out_f)
-    mlp.forward = fwd
+    if graph:  # class-level graph-break dispatch reads _qb_run; do NOT set instance .forward
+        mlp._qb_run = fwd
+    else:
+        mlp.forward = fwd
 
 
 NVFP4_CKPT = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
@@ -486,6 +514,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # patched MLP is capture-safe (persistent workspaces, explicit-stream kernels). Whether vLLM's V1
     # compile/piecewise-cudagraph path admits the ctypes MLP is the open question this measures.
     S, GEN = 2048, 128
+    if graph:  # install the class-level graph-break patch BEFORE the model is built/compiled/captured
+        _install_graph_class_patch(torch)
     llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
               kv_cache_dtype="auto", gpu_memory_utilization=util)
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
@@ -509,13 +539,16 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # NVFP4 MLP at chunk M). down activation is single-level (gB=1) as fused_swiglu_quant emits.
     def patch(mlp):  # fused (default) or unfused two-level plain-SwiGLU (discriminating/accuracy control)
         if fused:
-            _fused_mlp_fwd(mlp, torch, lib, dev); return
+            _fused_mlp_fwd(mlp, torch, lib, dev, graph=graph); return
         gu, dn, Iw = mlp._qb_gu, mlp._qb_dn, mlp._qb_dn.in_f
 
         def fwd_unf(x):  # plain SwiGLU (NOT the model's SiluAndMul -> that was the cos~0 bug), two-level
             y = gu.forward(x)
             return dn.forward(torch.nn.functional.silu(y[..., :Iw]) * y[..., Iw:])
-        mlp.forward = fwd_unf
+        if graph:
+            mlp._qb_run = fwd_unf
+        else:
+            mlp.forward = fwd_unf
 
     for li, layer in enumerate(model.model.layers if not baseline else []):
         gu, dn = mlpw[li]
@@ -614,6 +647,10 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     print(f"RESULT [{tag}] util={util} device_MiB load={mem_load} "
           f"post-patch={mem_patched} peak={mem_peak} (nvidia-smi, incl KV pool).",
           flush=True)
+    if graph and not baseline:  # HARD proof the sparse graph-break path ran (not silently bypassed to dense)
+        from vllm.model_executor.models.llama import LlamaMLP
+        print(f"SPARSE_CALLS = {LlamaMLP._qb_calls} (>0 proves the class-patch graph-break MLP executed; "
+              f"PPL must read ~10.27 sparse, NOT ~7.97 dense)", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
