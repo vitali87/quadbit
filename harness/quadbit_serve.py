@@ -1821,6 +1821,121 @@ def phase_probe() -> None:
     print("PHASE_PROBE_DONE", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def phase_bench() -> None:
+    # TRACK 4C root-cause: the phase-adaptive dense-prefill ran ~1.7x SLOWER than NVFP4/sparse. The sparse
+    # path (also eager inside the opaque custom op) hits prefill parity via ONE fused ctypes call, so the
+    # penalty must be in the DENSE path's structure (2x flashinfer nvfp4_quantize + 2x mm_fp4 + eager silu).
+    # Break down us/layer at prefill M and compare to (a) vLLM's native NVFP4 MLP (baseline kernel, eager)
+    # and (b) the sparse fused single call. Tells us whether dense-in-op can EVER hit prefill parity.
+    import ctypes
+
+    import torch
+    import torch.nn.functional as F
+    from flashinfer import SfLayout
+    from vllm import LLM
+
+    dev = torch.device("cuda")
+    FP4M, FP8M = 6.0, 448.0
+    import flashinfer as fi
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=4096, gpu_memory_utilization=0.8)
+    model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    mlp0 = model.model.layers[0].mlp
+    gu_proj, dn_proj, act = mlp0.gate_up_proj, mlp0.down_proj, mlp0.act_fn  # native NVFP4 (stock weights)
+    H, Iw = 4096, 14336
+
+    lib = ctypes.CDLL(SO_PATH)
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+    lib.qb_init_func_attrs()
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    torch.manual_seed(0)
+    guW = (torch.randn(28672, H, device=dev) * 0.02).bfloat16()
+    dnW = (torch.randn(4096, Iw, device=dev) * 0.02).bfloat16()
+    gu_sp, dn_sp = QBSparse(guW), QBSparse(dnW)
+
+    def dq(W):
+        gsw = (FP8M * FP4M) / W.float().abs().nan_to_num().max()
+        wq, wsf = fi.nvfp4_quantize(W, gsw, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+        return wq, wsf, gsw
+    guq, gu_sf, gu_gs = dq(guW)
+    dnq, dn_sf, dn_gs = dq(dnW)
+
+    def q(t):
+        gs = (FP8M * FP4M) / t.float().abs().nan_to_num().max()
+        tq, tsf = fi.nvfp4_quantize(t, gs, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+        return tq, tsf, gs
+
+    def ev(fn, it=30):
+        for _ in range(8):
+            fn()
+        torch.cuda.synchronize(); s = torch.cuda.Event(True); e = torch.cuda.Event(True)
+        s.record()
+        for _ in range(it):
+            fn()
+        e.record(); torch.cuda.synchronize(); return s.elapsed_time(e) / it * 1000  # us
+
+    print(f"{'M':>6} | {'q_x':>6} {'mm_gu':>6} {'silu':>6} {'q_h':>6} {'mm_dn':>6} {'DENSE':>6} | "
+          f"{'nativeMLP':>9} {'sparse1call':>11}", flush=True)
+    for M in (2048, 8192, 16384):
+        x = (torch.randn(M, H, device=dev) * 0.1).bfloat16()
+
+        def q_x():
+            q(x)
+
+        xq, xsf, xgs = q(x)
+
+        def mm_gu():
+            fi.mm_fp4(xq, guq.T, xsf, gu_sf.T, (1.0 / (xgs * gu_gs)), torch.bfloat16, None, backend="cutlass")
+        y = fi.mm_fp4(xq, guq.T, xsf, gu_sf.T, (1.0 / (xgs * gu_gs)), torch.bfloat16, None, backend="cutlass")
+
+        def silu():
+            (F.silu(y[:, :Iw]) * y[:, Iw:]).contiguous()
+        h = (F.silu(y[:, :Iw]) * y[:, Iw:]).contiguous()
+
+        def q_h():
+            q(h)
+        hq, hsf, hgs = q(h)
+
+        def mm_dn():
+            fi.mm_fp4(hq, dnq.T, hsf, dn_sf.T, (1.0 / (hgs * dn_gs)), torch.bfloat16, None, backend="cutlass")
+
+        def dense():
+            xq2, xsf2, xgs2 = q(x)
+            y2 = fi.mm_fp4(xq2, guq.T, xsf2, gu_sf.T, (1.0 / (xgs2 * gu_gs)), torch.bfloat16, None, backend="cutlass")
+            h2 = (F.silu(y2[:, :Iw]) * y2[:, Iw:]).contiguous()
+            hq2, hsf2, hgs2 = q(h2)
+            fi.mm_fp4(hq2, dnq.T, hsf2, dn_sf.T, (1.0 / (hgs2 * dn_gs)), torch.bfloat16, None, backend="cutlass")
+
+        def native():
+            g = gu_proj(x); g = g[0] if isinstance(g, tuple) else g
+            hh = act(g)
+            o = dn_proj(hh); return o[0] if isinstance(o, tuple) else o
+
+        tp = M + (-M) % 128
+        Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+        sBg = torch.empty((gu_sp.ks, tp, 4), dtype=torch.uint8, device=dev)
+        gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+        Cgu = torch.empty((28672, tp), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gH = torch.empty((tp,), dtype=torch.float32, device=dev)
+        Cout = torch.empty((tp, 4096), dtype=torch.bfloat16, device=dev)
+        x2 = x.contiguous()
+
+        def sparse1():
+            lib.fused_mlp_2lvl(x2.data_ptr(), gu_sp.Ac.data_ptr(), gu_sp.scaleA.data_ptr(), gu_sp.meta.data_ptr(),
+                               gu_sp.gA.data_ptr(), dn_sp.Ac.data_ptr(), dn_sp.scaleA.data_ptr(), dn_sp.meta.data_ptr(),
+                               dn_sp.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                               Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                               tp, H, Iw, 28672, 4096, torch.cuda.current_stream().cuda_stream)
+        print(f"{M:>6} | {ev(q_x):>6.1f} {ev(mm_gu):>6.1f} {ev(silu):>6.1f} {ev(q_h):>6.1f} {ev(mm_dn):>6.1f} "
+              f"{ev(dense):>6.1f} | {ev(native):>9.1f} {ev(sparse1):>11.1f}", flush=True)
+    print("PHASE_BENCH_DONE (us/layer; DENSE=my flashinfer 5-op path, nativeMLP=vLLM NVFP4 MLP eager, "
+          "sparse1=one fused ctypes call). DENSE>>native => hand-rolled overhead; DENSE~native => flashinfer "
+          "mm_fp4 itself is the floor.", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
@@ -1835,6 +1950,9 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
         print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "phase_probe":
         call = phase_probe.spawn()
+        print(f"SPAWN_ID {call.object_id}", flush=True); return
+    if mode == "phase_bench":
+        call = phase_bench.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "serve":
         call = serve.spawn(sparse, thresh)

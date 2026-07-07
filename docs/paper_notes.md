@@ -574,6 +574,21 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
   the two endpoints**. Closing the tax requires **QAT repair of the `gate_up`-dense/`down`-sparse hybrid
   (9.750)**, not placement alone — the natural phase-split (dense gate_up for prefill, sparse down for decode).
   Consistent with the training-free hybrid-placement negative above.
+- **Phase-adaptive same-weight execution (Track 4C, 2026-07-07): NEGATIVE, dense-prefill is slower than
+  sparse.** Idea: run the SAME recovered pruned weights in two layouts by effective token count. Prefill
+  (large M) uses a production dense NVFP4 GEMM (flashinfer cutlass) over the weights materialized dense
+  (zeros in pruned slots); decode (small M) uses sparse split-K. Semantics are fine: dense-NVFP4 of the
+  recovered weights gives PPL 10.30 through serving (== all-sparse 10.27), so the two layouts are
+  interchangeable and the phase boundary is seamless. But the row LOSES: **39 win / 66 loss of 105 crossover
+  cells vs NVFP4 (all-sparse is 81/29)**, flipping none of the cells all-sparse lost and turning many
+  all-sparse wins into losses. Root cause (`phase_bench`, us per MLP layer at prefill): the hand-rolled dense
+  path (`nvfp4_quantize` + `mm_fp4` + SwiGLU + `nvfp4_quantize` + `mm_fp4`) is ~2× native NVFP4 because the
+  activation quant is unfused (flashinfer `nvfp4_quantize` of the down input alone is 517 us at M=2048, more
+  than both GEMMs), whereas vLLM fuses it into norm/act via compiled passes an opaque custom op cannot use.
+  Decisive: the **sparse fused MLP is already ~7-10% faster per layer than native NVFP4** (618 vs 661 us at
+  M=2048), so no faster dense MLP exists to swap in. The corner all-sparse loses (at most 5 percent, B=64
+  long-prompt short-gen) is attention/Amdahl bound, not MLP bound, so no MLP swap recovers it. SM120 dense
+  recipe recorded in `docs/crossover_result.md` §4C (flashinfer, `do_shuffle=False`, cutlass backend).
 
 ## Reproducibility
 
