@@ -141,7 +141,7 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
             return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
 
     tok = AutoTokenizer.from_pretrained(model)
-    m = AutoModelForCausalLM.from_pretrained(model, dtype=torch.bfloat16).to(dev).eval()
+    m = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16).to(dev).eval()
 
     def mlp_lins():
         for layer in m.model.layers:
