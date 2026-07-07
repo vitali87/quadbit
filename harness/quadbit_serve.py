@@ -408,11 +408,13 @@ def _install_graph_customop(torch, lib, reg, dense=None, dense_thresh=512):
                 fi_, sfl = g["fi"], g["sfl"]
                 guq, gu_sf, gu_gs, dnq, dn_sf, dn_gs = g["dense"][layer_idx]
                 xin = x2f.to(torch.bfloat16).contiguous()  # real t rows (cutlass handles arbitrary M)
-                gsa = (448.0 * 6.0) / xin.float().abs().nan_to_num().max()
+                # bf16 abs/max directly (same dynamic range as fp32); .float() here would allocate a
+                # multi-GB temp per layer in the prefill hot path. clamp_min guards div-by-zero.
+                gsa = (448.0 * 6.0) / xin.abs().max().clamp_min(1e-12)
                 xq, x_sf = fi_.nvfp4_quantize(xin, gsa, sfLayout=sfl, do_shuffle=False)
                 y = fi_.mm_fp4(xq, guq.T, x_sf, gu_sf.T, (1.0 / (gsa * gu_gs)), torch.bfloat16, None, backend="cutlass")
                 h = (F.silu(y[:, :Iw]) * y[:, Iw:]).contiguous()
-                gsh = (448.0 * 6.0) / h.float().abs().nan_to_num().max()
+                gsh = (448.0 * 6.0) / h.abs().max().clamp_min(1e-12)
                 hq, h_sf = fi_.nvfp4_quantize(h, gsh, sfLayout=sfl, do_shuffle=False)
                 out = fi_.mm_fp4(hq, dnq.T, h_sf, dn_sf.T, (1.0 / (gsh * dn_gs)), torch.bfloat16, None, backend="cutlass")
                 g["call_dense"] += 1
@@ -564,6 +566,12 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
                  crossover: bool = False, versweep: bool = False,
                  phase_adaptive: bool = False, dense_thresh: int = 512) -> None:
     import os
+    # The dense-prefill branch lives ONLY in the graph custom op (installed under graph+fused+not baseline).
+    # Without those, phase_adaptive would silently run pure sparse yet still tag/write phaseadaptive output,
+    # mislabeling all-sparse data. Fail fast instead so the CSV/tag can never misrepresent the run.
+    if phase_adaptive and not (graph and fused and not baseline):
+        raise ValueError("phase_adaptive requires graph=True, fused=True, baseline=False "
+                         "(the dense-prefill branch is only installed in the graph custom op)")
     os.environ["QB_SK_SPLITS"] = str(splits)  # sk-down split factor read by _install_graph_customop
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
@@ -631,7 +639,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
             from flashinfer import SfLayout as _SfL
 
             def _dq(W):  # -> (packed_fp4, swizzled_scale, global_scale=(448*6)/amax)
-                gsw = (448.0 * 6.0) / W.float().abs().nan_to_num().max()
+                gsw = (448.0 * 6.0) / W.abs().max().clamp_min(1e-12)
                 wq, w_sf = _fi.nvfp4_quantize(W, gsw, sfLayout=_SfL.layout_128x4, do_shuffle=False)
                 return wq, w_sf, gsw
         reg = []
