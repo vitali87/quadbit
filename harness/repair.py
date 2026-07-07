@@ -50,7 +50,7 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED_INSTRUCT_CKPT,
         rank: int = 32, steps: int = 2000, p1: int = 2000, lr: float = 2e-5, mse_w: float = 0.0,
         calib_windows: int = 32, init_ckpt: str = "", kl_w: float = 1.0, ce_w: float = 0.1,
-        mse_mode: str = "", sched: str = "cosine", tag: str = "") -> float:
+        mse_mode: str = "", sched: str = "cosine", tag: str = "", resume: bool = False) -> float:
     import ctypes
     import math
 
@@ -232,6 +232,10 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
                     yield layer.mlp, nm, lin
 
     src_ckpt = init_ckpt or recovered_ckpt
+    if resume and mode == "distill":  # survive preemption: resume from own best if it exists
+        own = f"/cache/repair_distill_{tag or steps}.pt"
+        if Path(own).exists():
+            src_ckpt = own
     _ck = torch.load(src_ckpt, map_location="cpu", weights_only=True)
     rec = _ck["weights"]  # [gate,up,down]*32
     init_scales = _ck.get("scales")  # present when continuing from a distill checkpoint
@@ -568,10 +572,10 @@ def snapshot(src: str, dst: str) -> str:
 def main(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED_INSTRUCT_CKPT,
          rank: int = 32, steps: int = 2000, p1: int = 2000, lr: float = 2e-5, mse_w: float = 0.0,
          calib_windows: int = 32, init_ckpt: str = "", kl_w: float = 1.0, ce_w: float = 0.1,
-         mse_mode: str = "", sched: str = "cosine", tag: str = "") -> None:
+         mse_mode: str = "", sched: str = "cosine", tag: str = "", resume: bool = False) -> None:
     if mode == "snap":  # freeze a checkpoint on the volume: init_ckpt=src, tag=dst (runs synchronously)
         print(snapshot.remote(init_ckpt, tag), flush=True); return
     call = run.spawn(mode=mode, model=model, recovered_ckpt=recovered_ckpt, rank=rank, steps=steps,
                      p1=p1, lr=lr, mse_w=mse_w, calib_windows=calib_windows, init_ckpt=init_ckpt,
-                     kl_w=kl_w, ce_w=ce_w, mse_mode=mse_mode, sched=sched, tag=tag)
+                     kl_w=kl_w, ce_w=ce_w, mse_mode=mse_mode, sched=sched, tag=tag, resume=resume)
     print(f"SPAWN_ID {call.object_id}", flush=True)
