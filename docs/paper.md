@@ -333,13 +333,13 @@ because the `ue4m3` scale carries a mantissa and its per-block rounding bias acc
 the three-matmul chain; the two-level recipe (per-row fp32 global rescaling the per-16 `ue4m3`
 locals) is what fixes it, since MXFP4's power-of-two scale has no such bias.
 
-> **In progress (not yet in the committed docs).** A training-free, memory-free mixed-precision
-> refinement keeps the most activation-sensitive layers at W4A16 and the rest at W4A4. Selected
-> cleanly (ranked on decontaminated C4, scored on held-out WikiText-2 to avoid selection-on-test
-> overfit), keeping the top-8 of 32 layers at W4A16 brings the base-model cost from +0.71 down to
-> roughly +0.60. This is pending the minimal-K sweep (deploy the smallest K that crosses the
-> target, since each bf16-activation layer is prefill compute you pay for) and will land in the
-> headline once the concurrent recovery ablation converges and the docs re-sync.
+> **In progress (reserved slot, no number claimed).** A training-free, memory-free mixed-precision
+> refinement that keeps the most activation-sensitive layers at W4A16 and the rest at W4A4 is under
+> evaluation. Layers are ranked on decontaminated C4 and scored on held-out WikiText-2 to avoid
+> selection-on-test overfit, and a minimal-K sweep deploys the smallest count of bf16-activation
+> layers that crosses the target, since each such layer is prefill compute paid for. No improved PPL
+> is reported here; the figure will land once the ablation converges and the docs re-sync. Dense W4A4
+> at +0.63 PPL, zero calibration, is the accuracy result this paper stands on.
 
 ---
 
@@ -543,6 +543,41 @@ Reverse densification therefore trades speed for accuracy roughly 1:1 with no fr
 QAT repair of the `gate_up`-dense/`down`-sparse hybrid (9.750), not placement alone. This is consistent with the
 training-free hybrid-placement negative result (Section 8). Full Pareto in `docs/accuracy_pareto.md`.
 
+**Phase-adaptive same-weight execution (Track 4C): built and refuted.** A tempting way to erase the
+prefill-bound corner NVFP4 keeps is to run the *same* recovered pruned weights in two layouts by effective
+token count: prefill (large M) through a production dense NVFP4 GEMM (FlashInfer `cutlass`, weights
+materialized dense with zeros in the pruned slots), decode (small M) through the sparse split-K path. We
+built it. The semantics hold: dense NVFP4 over the recovered weights scores 10.30 PPL through serving,
+equal to all-sparse 10.27 within numerical drift, so the two layouts are interchangeable and the phase
+boundary is seamless. But the row loses: 39 wins and 66 losses of 105 crossover cells versus NVFP4, against
+all-sparse's 81 of 29, and it flips none of the cells all-sparse already lost. The root cause is measured
+(`--mode phase_bench`, microseconds per MLP layer at prefill): the hand-rolled dense path
+(`nvfp4_quantize` plus `mm_fp4` plus SwiGLU plus `nvfp4_quantize` plus `mm_fp4`) runs about 2x native NVFP4
+because its activation quant is unfused (the FlashInfer `nvfp4_quantize` of the down input alone is 517
+microseconds at M=2048, more than both GEMMs combined), whereas vLLM fuses that quant into the norm and the
+SwiGLU through compiled passes an opaque custom op cannot reach. Decisive: the sparse fused MLP is already
+about 7 to 10 percent faster per layer than native NVFP4 (618 versus 661 microseconds at M=2048), so there
+is no faster dense MLP to swap in, and the corner all-sparse loses is attention and Amdahl bound, not MLP
+bound. Track 4C is a documented dead end, not a win. Full analysis in `docs/crossover_result.md` Section 4C.
+
+**The open axis: repairing the +2.3 PPL tax.** Every serving result above carries the same constant
+accuracy tax, +2.3 PPL (10.27 sparse versus 7.97 dense NVFP4), and the crossover is purely a speed map
+because that tax does not move across the request matrix. Two training-free levers to close it are now
+measured and negative: reverse densification (this section) trades speed for accuracy about 1:1, and
+training-free hybrid placement (Section 8) buys almost no sparse FLOPs before errors compound. The
+remaining paper-upgrade axis is therefore accuracy repair that spends training, and a tournament of four
+approaches is in progress: (1) zero-runtime calibration of the deployed sparse recipe, (2) low-rank
+residual adapters over the pruned weights, (3) activation-aware mask repair, and (4) distillation from the
+dense teacher onto the `gate_up`-dense/`down`-sparse hybrid (the 9.750 PPL candidate that preserves the
+whole split-K decode win). Results are pending and no repair number is claimed here; the slot below is
+reserved and will be filled once the tournament converges and the docs re-sync.
+
+> **Reserved results slot (accuracy repair, in progress).** Target: reduce the +2.3 PPL sparse serving
+> tax below the point where the deployed sparse Pareto win justifies the recovery pipeline over dense
+> W4A4. Method under evaluation: zero-runtime calibration, low-rank residual adapters, activation-aware
+> mask repair, distillation onto the `gate_up`-dense/`down`-sparse hybrid. No number is reported until the
+> ablation converges; this paper does not headline an accuracy-repair result.
+
 ---
 
 ## 10. Related work
@@ -607,7 +642,26 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   the best FlashInfer dense on prefill shapes), not dense.
 - **The Pareto win carries an accuracy tax.** The sparse speed advantage only pays off where a
   weight tolerates 2:4 pruning, and on 8B that costs ~1.56 PPL vs dense; the leaderboard result is
-  a speed Pareto point, not a free lunch.
+  a speed Pareto point, not a free lunch. End to end in serving the tax is a constant +2.3 PPL
+  (10.27 vs 7.97 dense NVFP4), and it is the same across the whole request matrix.
+- **The sm_120a block-scale mma is CUDA-12.8-only, forcing a staged build.** quadbit's
+  `sm_120a` block-scale mma (`kind::mxf4nvf4`/`block_scale`/`scale_vec::4X`) is rejected by ptxas 13
+  and assembles only under CUDA <= 12.8, while FlashInfer's `b12x` needs CUDA 13, so the two cannot
+  coexist in one container. The deployed path compiles the `.so` in a CUDA 12.8.1 image and
+  ctypes-loads it into a CUDA 12.9 vLLM process, staged via a shared volume (Section 9,
+  `docs/repro_appendix.md`).
+- **int32 indexing caps a single GEMM.** The kernels pass `M`, `N`, `Klog` and compute all shared
+  memory and global offsets as 32-bit `int` (`cuda/sparse_fp4_lib.cu`, `cuda/dense_fp4_lib.cu`), so
+  a single launch is bounded to problems whose addressed element counts fit in int32. Real LLM
+  linear shapes are far below this bound, but a 64-bit indexing pass would be required before the
+  kernels could serve arbitrarily large fused shapes.
+- **Accuracy repair of the +2.3 PPL tax is open.** Two training-free levers are measured and
+  negative (reverse densification, hybrid placement); the training-based tournament (zero-runtime
+  calibration, low-rank residual adapters, activation-aware mask repair, distillation onto the
+  9.750 PPL `gate_up`-dense/`down`-sparse hybrid) is in progress with a reserved results slot
+  (Sections 7 and 9). This paper does not headline an accuracy-repair number.
+- **No dense FP4 speed win.** quadbit dense loses the SM120 dense race to FlashInfer 1.35 to 2.2x
+  and is retained only as a zero-training W4A4 accuracy drop-in, not a speed contribution.
 
 ---
 
@@ -641,5 +695,8 @@ FP4, deployed, fastest-for-prunable) that CUTLASS, FlashInfer, SGLang, and vLLM 
   `sensitivity_sparse.py` (hybrid sparse-placement sweep, training-free negative result),
   `vllm_nvfp4.py` (vLLM SM120 NVFP4 smoke test).
 - **Full chronological build log.** Memory `quadbit-raw-ptx.md`.
+- **Exact commands, model ids, checkpoints, and the staged .so build recipe.** `docs/repro_appendix.md`.
+- **Figure plan (what each figure shows and its data source).** `docs/figure_plan.md`.
+- **Claims checklist (every claim to its evidence and status).** `docs/claims_checklist.md`.
 </content>
 </invoke>
