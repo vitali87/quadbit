@@ -749,10 +749,18 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         print("CX_HDR " + hdr, flush=True)
         for B in (1, 8, 32, 64):
             for P in (128, 512, 2048, 8192):
+                prompts = [{"prompt_token_ids": ids_len(i, P)} for i in range(B)]
+                # TTFT (prefill + 1st token) is gen-independent, so measure it ONCE per (B,P). With prefix
+                # caching off, each total-latency call below re-prefills the same prompt cold, so
+                # decode = total - ttft isolates the (G-1) decode steps against a consistent prefill.
+                try:
+                    _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
+                except Exception as e:
+                    print(f"CX {B},{P},*,SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                    csv.write(f"{B},{P},all,SKIP\n"); csv.flush()
+                    torch.cuda.empty_cache(); continue
                 for G in (16, 32, 64, 128, 256, 512, 1024):
-                    prompts = [{"prompt_token_ids": ids_len(i, P)} for i in range(B)]
                     try:
-                        _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
                         outs, total = tps(prompts, SamplingParams(temperature=0, max_tokens=G, ignore_eos=True))
                         gen = sum(len(o.outputs[0].token_ids) for o in outs)
                         mem_peak = max(mem_peak, gpu_mib())
