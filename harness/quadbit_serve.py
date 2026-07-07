@@ -357,15 +357,17 @@ def _qbsparse_factory(torch, lib, dev):
 # passes it to the op as an explicit arg -- a per-instance constant Dynamo bakes into the graph, so layer
 # resolution never depends on a runtime call-order counter (which Dynamo dummy/out-of-order passes could
 # desync). g["call"] is kept only as the SPARSE_CALLS proof-of-life counter.
-_QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "registered": False, "init_patched": False}
+_QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "splits": 8, "registered": False, "init_patched": False}
 
 
 def _install_graph_customop(torch, lib, reg):
     """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp, tags each
     LlamaMLP with its construction-order layer index, and class-patches LlamaMLP.forward to call the op."""
     from vllm.model_executor.models.llama import LlamaMLP
+    import os
     g = _QB_OP
     g["reg"], g["lib"], g["call"], g["ctor"], g["nl"] = reg, lib, 0, 0, len(reg)
+    g["splits"] = int(os.environ.get("QB_SK_SPLITS", "8"))  # 0 -> disable sk-down (plain fused everywhere)
     out_f = reg[0][1].out_f
 
     if not g["init_patched"]:  # tag each MLP with its layer index as it is built (in order, pre-capture)
@@ -401,12 +403,22 @@ def _install_graph_customop(torch, lib, reg):
             sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
             gH = torch.empty((tp,), dtype=torch.float32, device=dev)
             Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
-            g["lib"].fused_mlp_2lvl(
-                x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
-                gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
-                dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
-                Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
-                tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
+            strm = torch.cuda.current_stream().cuda_stream
+            if tp <= 128 and g["splits"] > 0:  # DECODE: split-K down fixes the 16-CTA underfill (sk@8 ~2x)
+                Cf = torch.empty((dn.out_f * tp,), dtype=torch.float32, device=dev)
+                g["lib"].fused_mlp_2lvl_skdown(
+                    x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                    gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                    dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                    Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(), Cf.data_ptr(),
+                    tp, H, Iw, gu.out_f, dn.out_f, g["splits"], strm)
+            else:  # PREFILL: plain fused (enough token-tiles to fill the GPU already)
+                g["lib"].fused_mlp_2lvl(
+                    x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                    gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                    dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                    Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                    tp, H, Iw, gu.out_f, dn.out_f, strm)
             return Cout[:t].reshape(*lead, dn.out_f).contiguous()
 
         @qb_fused_mlp.register_fake
@@ -569,6 +581,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
         lib = ctypes.CDLL(SO_PATH)
         lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+        lib.fused_mlp_2lvl_skdown.argtypes = [ctypes.c_void_p] * 18 + [ctypes.c_int] * 6 + [ctypes.c_void_p]
+        lib.qb_init_sk_attrs()  # set matmul_sp_sk smem attr pre-capture too (same reason as below)
         lib.qb_init_func_attrs()  # set matmul_sp smem attr NOW (pre-capture): cudaFuncSetAttribute is a
         # host call illegal inside vLLM's CUDA-graph capture, and the lazy run_sp_mm path would otherwise
         # first hit it during capture. call_once in the .so makes this the single warmup that marks the flag.
