@@ -108,7 +108,7 @@ Prior-art sweep date: 2026-07. Card: Modal cloud RTX PRO 6000 (SM120, no tcgen05
 | Decode small-M beats bf16 | `[measured, marginal]` | 1.27× attn-qkv, 4.53× ffn-up; real-scale decode ties bf16 in the small-N corner (router falls back to bf16) |
 | Sparse decode is a win | `[measured, negative]` | `sparse_sk_lib.cu` marginal; reverted |
 | **End-to-end serving baselines measured** (vLLM bf16 / vLLM NVFP4 / SGLang NVFP4, distinct-prompt, CUDA-graphs) | `[measured]` | `harness/vllm_nvfp4.py`, `harness/sglang_fp4.py`; serving table below + `docs/paper.md` §9 |
-| **quadbit *inside* vLLM (recovered-Instruct sparse MLP + NVFP4 non-MLP) beats NVFP4 at batch, ONE checkpoint** | **`[measured]`** | `harness/quadbit_serve.py --recovered-ckpt`; same eager harness vs NVFP4: PPL 10.27 vs 7.97 (+2.3 sparse tax); prefill B=8/32/64 63409/79051/116748 vs 61118/74916/110600 = +3.7%/+5.5%/+5.6%; decode 282/1102/2157 vs 228/897/1750 = +23%. Enablers: zero-copy epilogue + two-level fused swiglu + single no-sync `fused_mlp_2lvl` (removed 64 syncs/forward). Eager-vs-eager; NVFP4 production uses CUDA graphs (decode 8465@B64) — sparse graph-capture is the last lever |
+| **quadbit *inside* vLLM as a graph-capturable sparse MLP; production NVFP4 still faster** | **`[measured]`** | `harness/quadbit_serve.py --graph --recovered-ckpt`; sparse MLP is a `torch.library` custom op inside vLLM's fullgraph + CUDA-graph capture (proof: `SPARSE_CALLS=7264`, PPL 10.2709 not dense 7.97). **Graph-vs-graph (production):** prefill B=8/32/64 63274/77896/115334 vs NVFP4 66469/80825/119083 = **−4.8/−3.6/−3.1%**; decode 981/3863/7363 vs 1046/4237/8384 = **−6.2/−8.8/−12.2%**. ~88-97% of NVFP4. Decode loss = down_proj underfills (16 CTAs/188 SMs vs gate_up 112); no split-K where CUTLASS has it. Eager +5.6%/+23% win was launch-overhead only (see `docs/graph_serving_result.md`, `docs/frozen_serving_result.md`) |
 
 ### Serving table (RTX PRO 6000, Llama-3.1-8B-Instruct family, CUDA graphs on, distinct prompts, S=2048 prefill / GEN=128 decode)
 
@@ -193,18 +193,19 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    (`harness/cutlass_shapes.py`, committed): rectangular Llama-3 shapes reveal dense **loses** to
    79b (0.89–1.01×) while sparse **wins** vs 80b (1.14–1.18×). The square dense win was an artifact;
    sparse is the consistent win.
-3. ~~**A real end-to-end model run**~~ ~~**Remaining: quadbit inside a real serving engine**~~ **DONE
-   (2026-07-07):** quadbit's two-level sparse MLP is monkeypatched into vLLM's LlamaMLP (V1 engine,
-   paged attention + continuous batching + decode scheduler), NVFP4 for non-MLP. The correct-accuracy
-   fused sparse MLP BEATS vLLM NVFP4 prefill at batch: B=8/32/64 = 63454/79116/116421 vs 61118/74916/
-   110600 = +3.8%/+5.6%/+5.3%, through-serving WT-2 PPL 8.95 (recovered base). Enablers: zero-copy
-   transposed epilogue (contiguous output, no copy) + two-level fused swiglu (correct accuracy) +
-   single no-sync `fused_mlp_2lvl` (removed the 64-`cudaDeviceSynchronize`/forward launch overhead,
-   the +7.7%/+8.3%@B32/64 that flipped parity to a win). Cleared >=5% WITHOUT CUDA graphs. **UNIFIED ROW
-   DONE (recovered-Instruct, ONE checkpoint):** vs full NVFP4, same eager harness — PPL 10.27 vs 7.97
-   (+2.3 sparse tax), prefill +3.7/+5.5/+5.6% (B=8/32/64), decode +23% (sparse wins decode in eager too).
-   Speed-Pareto point. **Remaining:** eager-vs-eager only — NVFP4 production uses CUDA graphs (decode 8465
-   @B64); CUDA-graph capture of the sparse ctypes path is the last lever for a production-vs-production claim.
+3. ~~**A real end-to-end model run**~~ ~~**quadbit inside a real serving engine**~~ **DONE + settled
+   graph-vs-graph (2026-07-07):** quadbit's two-level sparse MLP runs inside vLLM's LlamaMLP (V1 engine,
+   paged attention + continuous batching + decode scheduler), NVFP4 for non-MLP, on a recovered
+   Llama-3.1-8B-Instruct checkpoint. Enablers: zero-copy transposed epilogue + two-level fused swiglu +
+   single no-sync `fused_mlp_2lvl`. **Made it production-graph-capturable** via a `torch.library` custom op
+   (`quadbit::fused_mlp`, weights bound pre-LLM) that vLLM's fullgraph compile + CUDA-graph capture include
+   (proof `SPARSE_CALLS=7264`, PPL 10.2709 not dense 7.97). **Graph-vs-graph verdict: production NVFP4 wins**
+   — prefill −3.1 to −4.8%, decode −6.2 to −12.2% (B=8/32/64); ~88-97% of NVFP4. The eager +5.6%/+23% win
+   was launch-overhead only and does not survive graph capture. Decode loss diagnosed: down_proj underfills
+   (16 CTAs/188 SMs vs gate_up 112); `matmul_sp` has no split-K where CUTLASS does. **Future work (not final-
+   paper):** wire the split-K decode kernel (standalone 0.49×→1.40× vs bf16) into the fused/graph path with a
+   graph-friendly reduction + two-level-scale correctness. Artifacts: `docs/graph_serving_result.md` (main
+   serving table + proofs + diagnosis), `docs/frozen_serving_result.md` (eager ablation).
 4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
    "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
 5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The
@@ -252,9 +253,9 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    shapes/card/fp32-gate. Verdict: dense lost (FI 1.35–2.2×), sparse is the Pareto headline
    (beats best FI dense 1.07–1.38× wall-clock, only deployed sparse FP4). `cudnn` broken all
    shapes, `b12x` collapses at M≥65536, CUDA-13-vs-12.8 mma split documented. **Next step DONE
-   (2026-07-07):** quadbit's sparse MLP inside vLLM (paged attn + continuous batching + decode) beats
-   NVFP4 prefill at batch (+3.8%/+5.6%/+5.3% B=8/32/64, PPL 8.95) — the GEMM-level Pareto win is now a
-   serving-throughput row. See the roadmap item 3 above and `harness/quadbit_serve.py`.
+   (2026-07-07):** quadbit's sparse MLP runs inside vLLM (paged attn + continuous batching + decode) and is
+   production-graph-capturable, but graph-vs-graph it serves at ~88-97% of NVFP4 (prefill −3 to −5%, decode
+   −6 to −12%); the eager +5.6% win was launch-overhead only. See roadmap item 3 and `docs/graph_serving_result.md`.
 1. ~~**Run CUTLASS 80b sparse and benchmark our sparse kernel against it.**~~ **DONE**
    (`harness/cutlass_sparse.py`): win 4–8K, lose 16K, 80b ref-verify PASSES. Gating experiment
    resolved. Next natural step is #2 (rectangular shapes) to see if the win holds off-square.

@@ -347,7 +347,82 @@ def _qbsparse_factory(torch, lib, dev):
     return QBSparse
 
 
-def _fused_mlp_fwd(mlp, torch, lib, dev):
+# Route B proof-of-life. Option A (Dynamo graph break) is IMPOSSIBLE under vLLM V1: it compiles the
+# model with aot_compile_fullgraph, which forbids graph breaks (`torch.compiler.disable` -> Unsupported).
+# The sanctioned way to put an opaque ctypes kernel into a fullgraph is a torch.library custom op: Dynamo
+# emits it as an op NODE (no inline, no break) and cudagraph bakes the kernel launches the op makes AT
+# CAPTURE TIME. So the sparse weights MUST be registered BEFORE LLM() (vLLM captures once during init;
+# a post-init patch is invisible to the frozen graph -> the 7.97-dense trap). Each LlamaMLP instance is
+# tagged with its layer index at CONSTRUCTION (patched __init__, in-order 0..NL-1, before capture) and
+# passes it to the op as an explicit arg -- a per-instance constant Dynamo bakes into the graph, so layer
+# resolution never depends on a runtime call-order counter (which Dynamo dummy/out-of-order passes could
+# desync). g["call"] is kept only as the SPARSE_CALLS proof-of-life counter.
+_QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "registered": False, "init_patched": False}
+
+
+def _install_graph_customop(torch, lib, reg):
+    """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp, tags each
+    LlamaMLP with its construction-order layer index, and class-patches LlamaMLP.forward to call the op."""
+    from vllm.model_executor.models.llama import LlamaMLP
+    g = _QB_OP
+    g["reg"], g["lib"], g["call"], g["ctor"], g["nl"] = reg, lib, 0, 0, len(reg)
+    out_f = reg[0][1].out_f
+
+    if not g["init_patched"]:  # tag each MLP with its layer index as it is built (in order, pre-capture)
+        _orig_mlp_init = LlamaMLP.__init__
+
+        def _mlp_init(self, *a, **k):
+            _orig_mlp_init(self, *a, **k)
+            self._qb_lidx = g["ctor"] % g["nl"]
+            g["ctor"] += 1
+        LlamaMLP.__init__ = _mlp_init
+        g["init_patched"] = True
+
+    if not g["registered"]:
+        @torch.library.custom_op("quadbit::fused_mlp", mutates_args=())
+        def qb_fused_mlp(x: torch.Tensor, layer_idx: int, out_f: int) -> torch.Tensor:
+            lead = x.shape[:-1]
+            x2f = x.reshape(-1, x.shape[-1])
+            t = x2f.shape[0]
+            tp = t + (-t) % 128
+            gu, dn = g["reg"][layer_idx]
+            g["call"] += 1
+            dev = x.device
+            H, Iw = gu.in_f, dn.in_f
+            x2 = x2f.to(torch.bfloat16)
+            if tp != t:
+                x2 = torch.cat([x2, x2.new_zeros(tp - t, H)], 0)
+            x2 = x2.contiguous()
+            Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+            sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
+            gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+            Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
+            Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+            sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+            gH = torch.empty((tp,), dtype=torch.float32, device=dev)
+            Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
+            g["lib"].fused_mlp_2lvl(
+                x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
+            return Cout[:t].reshape(*lead, dn.out_f).contiguous()
+
+        @qb_fused_mlp.register_fake
+        def _(x, layer_idx, out_f):
+            return x.new_empty((*x.shape[:-1], out_f))
+
+        g["registered"] = True
+
+    def _forward(self, x):
+        return torch.ops.quadbit.fused_mlp(x, self._qb_lidx, out_f)
+
+    LlamaMLP.forward = _forward
+    return LlamaMLP
+
+
+def _fused_mlp_fwd(mlp, torch, lib, dev, graph=False):
     """Assign mlp.forward to the FUSED sparse MLP: gate_up sparse GEMM -> C[28672,tp] (no transpose)
     -> fused_swiglu_quant (silu(g)*u + NVFP4 quant, one pass) -> down sparse GEMM. Correct (cos 0.997
     vs two-level; do NOT reuse the model's SiluAndMul on sparse bf16) and fast (~1.25x vs native NVFP4
@@ -356,20 +431,54 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
     gu, dn = mlp._qb_gu, mlp._qb_dn
     H, Iw = gu.in_f, dn.in_f  # 4096, 14336
     _fused_single = os.environ.get("QB_FUSED_SINGLE", "1") == "1"  # 1 ctypes call, 0 syncs; "0" -> 6-call A/B
+    _persist = os.environ.get("QB_PERSIST_WS", "1") == "1"         # persistent per-shape workspace (capture-safe)
+    mlp._qb_ws = {}
+
+    def _workspace(tp):  # persistent per-tp buffers: allocation-free steady state + CUDA-graph-capturable
+        ws = mlp._qb_ws.get(tp)
+        if ws is None:
+            ws = (torch.zeros(tp, H, dtype=torch.bfloat16, device=dev),          # x2 (input staging; pad rows stay 0)
+                  torch.empty((tp, H // 2), dtype=torch.uint8, device=dev),      # Bb
+                  torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev),    # sBg
+                  torch.empty((tp,), dtype=torch.float32, device=dev),           # gBg
+                  torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev), # Cgu
+                  torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev),     # Hb
+                  torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev),# sH
+                  torch.empty((tp,), dtype=torch.float32, device=dev),           # gH (fused_mlp_2lvl zeroes it)
+                  torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)) # Cout ([tp,out_f] zero-copy)
+            mlp._qb_ws[tp] = ws
+        return ws
 
     def fwd(x):
-        lead = x.shape[:-1]; x2 = x.reshape(-1, H).to(torch.bfloat16)
-        t = x2.shape[0]; pad = (-t) % 128
+        lead = x.shape[:-1]; x2f = x.reshape(-1, H)
+        t = x2f.shape[0]; pad = (-t) % 128; tp = t + pad
+        # Persist ONLY the small decode shapes (tp<=512): those are what vLLM's decode CUDA graphs capture
+        # and are reused every step. Large prefill tp uses per-call alloc (freed immediately) so persistent
+        # Cgu[28672,tp] buffers don't accumulate across chunk shapes and OOM (prefill runs eager anyway).
+        if _fused_single and _persist and tp <= 512:
+            # PERSISTENT + CAPTURE-SAFE: stage input into a stable buffer, then one no-alloc no-sync fused
+            # call on the current (capture) stream. Padded rows [t:tp] produce sliced-off output (each token
+            # is independent), so they need no zeroing. Cout is persistent -> consumed by the layer residual
+            # before this layer's next call (and is exactly the static-output vLLM CUDA-graph capture needs).
+            x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout = _workspace(tp)
+            x2[:t].copy_(x2f if x2f.dtype == torch.bfloat16 else x2f.to(torch.bfloat16))
+            lib.fused_mlp_2lvl(x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                               gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                               dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                               Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                               tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
+            return Cout[:t].reshape(*lead, dn.out_f)
+        x2 = x2f.to(torch.bfloat16)
         if pad:
             x2 = torch.cat([x2, x2.new_zeros(pad, H)], 0)
-        x2 = x2.contiguous(); tp = t + pad
+        x2 = x2.contiguous()
         Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
         sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
         gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
         Cgu = torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev)
         Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
         sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
-        gH = torch.zeros((tp,), dtype=torch.float32, device=dev)   # per-token global (two-level); zeroed for atomicMax in swiglu_amax
+        gH = torch.empty((tp,), dtype=torch.float32, device=dev)   # per-token global (two-level); fused_mlp_2lvl zeroes it (cudaMemsetAsync)
         # ZERO-COPY: down GEMM writes [tp, out_f] token-major (outT=1 epilogue) -> Cout[:t] is a
         # CONTIGUOUS, storage_offset-0 tensor returnable to vLLM with no transpose+copy pass.
         Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
@@ -380,7 +489,7 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
                                gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
                                dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
                                Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
-                               tp, H, Iw, gu.out_f, dn.out_f)
+                               tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
             return Cout[:t].reshape(*lead, dn.out_f)
         # per-thread-stream .so: kernels run on vLLM's stream, ordered with the torch ops; no explicit sync
         lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H)
@@ -395,7 +504,10 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
                                  dn.meta.data_ptr(), Cout.data_ptr(), dn.out_f, tp, Iw,
                                  dn.gA.data_ptr(), gH.data_ptr())
         return Cout[:t].reshape(*lead, dn.out_f)
-    mlp.forward = fwd
+    if graph:  # class-level graph-break dispatch reads _qb_run; do NOT set instance .forward
+        mlp._qb_run = fwd
+    else:
+        mlp.forward = fwd
 
 
 NVFP4_CKPT = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
@@ -407,7 +519,7 @@ RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
-                 recovered_ckpt: str = "") -> None:
+                 recovered_ckpt: str = "", graph: bool = False) -> None:
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -448,11 +560,38 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         print(f"side-loaded bf16 MLP weights for {len(mlpw)} layers", flush=True)
 
     # 2) vLLM native NVFP4 (non-MLP linears 4-bit). Lower util to leave room for sparse MLP buffers.
+    # graph=True: enforce_eager=False so vLLM captures the WHOLE forward as CUDA graphs (Route B). The
+    # patched MLP is capture-safe (persistent workspaces, explicit-stream kernels). Whether vLLM's V1
+    # compile/piecewise-cudagraph path admits the ctypes MLP is the open question this measures.
     S, GEN = 2048, 128
-    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=S + GEN + 16,
+    if graph and fused and not baseline:
+        # Build QBSparse for all layers and register the custom op BEFORE LLM() so vLLM's one-shot init
+        # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
+        lib = ctypes.CDLL(SO_PATH)
+        lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+        lib.qb_init_func_attrs()  # set matmul_sp smem attr NOW (pre-capture): cudaFuncSetAttribute is a
+        # host call illegal inside vLLM's CUDA-graph capture, and the lazy run_sp_mm path would otherwise
+        # first hit it during capture. call_once in the .so makes this the single warmup that marks the flag.
+        dev = torch.device("cuda")
+        QBSparse = _qbsparse_factory(torch, lib, dev)
+        reg = []
+        for li in range(len(mlpw)):
+            gu, dn = mlpw[li]
+            reg.append((QBSparse(gu.to(dev)), QBSparse(dn.to(dev))))
+            mlpw[li] = None
+        _install_graph_customop(torch, lib, reg)
+        gc.collect(); torch.cuda.empty_cache()
+        print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture)", flush=True)
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
               kv_cache_dtype="auto", gpu_memory_utilization=util)
-    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}", flush=True)  # expect modelopt_fp4
+    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
+    if graph and fused and not baseline:  # custom op already registered pre-LLM; skip the eager patch loop
+        mem_patched = mem_load
+        print(f"graph mode: {_QB_OP['nl']} MLPs via quadbit::fused_mlp custom op (captured in cudagraph)", flush=True)
+        _graph_customop = True
+    else:
+        _graph_customop = False
 
     lib = ctypes.CDLL(SO_PATH)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
@@ -460,7 +599,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
-    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
     model = llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -472,25 +611,29 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # NVFP4 MLP at chunk M). down activation is single-level (gB=1) as fused_swiglu_quant emits.
     def patch(mlp):  # fused (default) or unfused two-level plain-SwiGLU (discriminating/accuracy control)
         if fused:
-            _fused_mlp_fwd(mlp, torch, lib, dev); return
+            _fused_mlp_fwd(mlp, torch, lib, dev, graph=graph); return
         gu, dn, Iw = mlp._qb_gu, mlp._qb_dn, mlp._qb_dn.in_f
 
         def fwd_unf(x):  # plain SwiGLU (NOT the model's SiluAndMul -> that was the cos~0 bug), two-level
             y = gu.forward(x)
             return dn.forward(torch.nn.functional.silu(y[..., :Iw]) * y[..., Iw:])
-        mlp.forward = fwd_unf
+        if graph:
+            mlp._qb_run = fwd_unf
+        else:
+            mlp.forward = fwd_unf
 
-    for li, layer in enumerate(model.model.layers if not baseline else []):
+    for li, layer in enumerate([] if _graph_customop else (model.model.layers if not baseline else [])):
         gu, dn = mlpw[li]
         mlp = layer.mlp
         mlp._qb_gu = QBSparse(gu.to(dev)); mlp._qb_dn = QBSparse(dn.to(dev))
         mlpw[li] = None  # free CPU copy as we go
         patch(mlp)
-    del mlpw; gc.collect(); torch.cuda.empty_cache()
-    mem_patched = gpu_mib()
-    npatched = 0 if baseline else len(model.model.layers)
-    print(f"patched {npatched} MLPs to sparse (all M); device MiB load={mem_load} "
-          f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
+    if not _graph_customop:
+        del mlpw; gc.collect(); torch.cuda.empty_cache()
+        mem_patched = gpu_mib()
+        npatched = 0 if baseline else len(model.model.layers)
+        print(f"patched {npatched} MLPs to sparse (all M); device MiB load={mem_load} "
+              f"post-patch={mem_patched} (+{mem_patched - mem_load} for sparse MLP buffers)", flush=True)
 
     if instrument:  # Option 3: explain the parity - is per-call overhead eating the GEMM win?
         import torch.nn.functional as F
@@ -577,6 +720,9 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     print(f"RESULT [{tag}] util={util} device_MiB load={mem_load} "
           f"post-patch={mem_patched} peak={mem_peak} (nvidia-smi, incl KV pool).",
           flush=True)
+    if _graph_customop:  # HARD proof the sparse custom op executed (not silently bypassed to dense NVFP4)
+        print(f"SPARSE_CALLS = {_QB_OP['call']} (>0 proves quadbit::fused_mlp ran; "
+              f"PPL must read ~10.27 sparse, NOT ~7.97 dense)", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
@@ -711,7 +857,7 @@ def serve_recovered(ckpt: str = RECOVERED_CKPT, util: float = 0.85, fused: bool 
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
-    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
 
@@ -864,7 +1010,7 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
-    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
     QBSparse = _qbsparse_factory(torch, lib, dev)
     qb_gu = QBSparse(gu0.to(dev), keep_wdq=verify)
     qb_dn = QBSparse(dn0.to(dev), keep_wdq=verify)
@@ -1070,14 +1216,200 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
     print("BENCH_MLP_DONE", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800, volumes={"/cache": vol})
+def graph_probe() -> None:
+    # Milestone 2: capture ONE fused_mlp_2lvl block per fixed shape as a CUDA graph; verify replay ==
+    # eager (cos/relL2/maxabs/nonfinite) and time eager-vs-graph (p50/p95/min + CPU submit). Decode B<=128
+    # all pad to tp=128 (one graph covers all decode batches); prefill chunks 2048/8192/16384/65536.
+    import ctypes
+    import statistics
+    import time
+
+    import torch
+
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+    lib.qb_init_func_attrs()  # set matmul_sp smem attr ONCE (before any capture)
+    dev = torch.device("cuda")
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+
+    H, Iw, GU, DN = 4096, 14336, 28672, 4096
+    torch.manual_seed(0)
+    gu = QBSparse((torch.randn(GU, H, device=dev) * 0.02).bfloat16())   # gate_up: out 28672, in 4096
+    dn = QBSparse((torch.randn(DN, Iw, device=dev) * 0.02).bfloat16())  # down:    out 4096,  in 14336
+    strm = torch.cuda.current_stream().cuda_stream
+
+    def call(tp, bufs):
+        x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout = bufs
+        lib.fused_mlp_2lvl(x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                           gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                           dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                           Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                           tp, H, Iw, GU, DN, torch.cuda.current_stream().cuda_stream)
+
+    def stats_ms(fn, it=200):
+        for _ in range(10):
+            fn()
+        torch.cuda.synchronize()
+        ts = []
+        for _ in range(it):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record(); fn(); e.record(); torch.cuda.synchronize()
+            ts.append(s.elapsed_time(e))
+        ts.sort()
+        return statistics.median(ts), ts[int(0.95 * it)], ts[0]
+
+    print(f"{'shape':>8} | {'cos':>8} {'relL2':>9} {'maxabs':>9} {'nonfin':>6} | "
+          f"{'eager p50':>9} {'graph p50':>9} {'speedup':>7} | {'eagerCPU':>8} {'graphCPU':>8}", flush=True)
+    for tp in (128, 2048, 8192, 16384, 65536):
+        x2 = (torch.randn(tp, H, device=dev) * 0.5).bfloat16()
+        Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+        sBg = torch.empty((H // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+        Cgu = torch.empty((GU, tp), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gH = torch.empty((tp,), dtype=torch.float32, device=dev)
+        Cout = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        bufs = (x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout)
+
+        call(tp, bufs); torch.cuda.synchronize()          # eager reference
+        ref = Cout.clone()
+
+        # capture: warmup on a side stream, then record on the graph's capture stream
+        side = torch.cuda.Stream(); side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                call(tp, bufs)
+        torch.cuda.current_stream().wait_stream(side)
+        g = torch.cuda.CUDAGraph()
+        try:
+            with torch.cuda.graph(g):
+                call(tp, bufs)
+        except Exception as ex:
+            print(f"{tp:>8} | CAPTURE FAILED: {type(ex).__name__} {str(ex)[:120]}", flush=True); continue
+        Cout.zero_(); g.replay(); torch.cuda.synchronize()  # replay must reproduce eager ref
+        rep = Cout
+        num = (rep.float() - ref.float())
+        cos = torch.nn.functional.cosine_similarity(rep.float().flatten(), ref.float().flatten(), dim=0).item()
+        rell2 = (num.norm() / ref.float().norm().clamp_min(1e-9)).item()
+        mx = num.abs().max().item()
+        nonfin = int((~torch.isfinite(rep.float())).sum().item())
+
+        e50, e95, emin = stats_ms(lambda: call(tp, bufs))
+        g50, g95, gmin = stats_ms(lambda: g.replay())
+        # CPU submit time (no sync): how long the host spends launching
+        torch.cuda.synchronize(); t = time.perf_counter()
+        for _ in range(100):
+            call(tp, bufs)
+        ecpu = (time.perf_counter() - t) / 100 * 1e3
+        t = time.perf_counter()
+        for _ in range(100):
+            g.replay()
+        gcpu = (time.perf_counter() - t) / 100 * 1e3
+        torch.cuda.synchronize()
+        print(f"{tp:>8} | {cos:8.5f} {rell2:9.5f} {mx:9.4f} {nonfin:>6} | "
+              f"{e50:9.3f} {g50:9.3f} {e50 / g50:7.2f}x | {ecpu:8.3f} {gcpu:8.3f}", flush=True)
+        del x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout, bufs, g, ref
+        torch.cuda.empty_cache()
+    print("GRAPH_PROBE_DONE", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=1800, volumes={"/cache": vol})
+def profile_decode() -> None:
+    # ONE bounded profiling pass (kernel-level, CUDA events). Kernel times are GRAPH-INVARIANT (a cudagraph
+    # removes launch gaps, not kernel duration), so this explains the graph-vs-graph decode loss directly.
+    # Per-kernel breakdown of the sparse MLP at decode (M=8/32/64) + prefill (2048/4096), vs a dense-bf16
+    # reference. dense-bf16 is 4x the BYTES of dense-FP4, so if bf16-dense already BEATS sparse-FP4 at
+    # decode, a dense-NVFP4 decode fallback (0.25x bf16 bytes) would clearly win -> that is the ablation.
+    # Weights random 2:4 (GEMM timing is value-independent; the 2:4 density is fixed).
+    import ctypes
+    import statistics
+
+    import torch
+
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+    lib.qb_init_func_attrs()
+    dev = torch.device("cuda")
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    H, Iw, GU, DN = 4096, 14336, 28672, 4096
+    torch.manual_seed(0)
+    gu = QBSparse((torch.randn(GU, H, device=dev) * 0.02).bfloat16())
+    dn = QBSparse((torch.randn(DN, Iw, device=dev) * 0.02).bfloat16())
+    strm = torch.cuda.current_stream().cuda_stream
+    Wgu = (torch.randn(GU, H, device=dev) * 0.02).bfloat16()   # dense bf16 gate_up ref
+    Wdn = (torch.randn(DN, Iw, device=dev) * 0.02).bfloat16()  # dense bf16 down ref
+
+    def us(fn, it=300):  # median us over it iters (per-call sync)
+        for _ in range(20):
+            fn()
+        torch.cuda.synchronize()
+        ts = []
+        for _ in range(it):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record(); fn(); e.record(); torch.cuda.synchronize()
+            ts.append(s.elapsed_time(e) * 1e3)
+        return statistics.median(ts)
+
+    print(f"{'M':>6} | {'quant':>7} {'gateup':>7} {'swiglu':>7} {'down':>7} {'ksum':>7} {'full':>7} | "
+          f"{'bf16gu':>7} {'bf16dn':>7} {'bf16sum':>8} | {'full/bf16':>9}", flush=True)
+    for M in (8, 32, 64, 2048, 4096):
+        tp = M + (-M) % 128
+        x2 = (torch.randn(tp, H, device=dev) * 0.5).bfloat16()
+        Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+        sBg = torch.empty((H // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+        Cgu = torch.empty((GU, tp), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gH = torch.zeros((tp,), dtype=torch.float32, device=dev)
+        Cout = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        xd = (torch.randn(M, H, device=dev) * 0.5).bfloat16()
+        hd = (torch.randn(M, Iw, device=dev) * 0.5).bfloat16()
+
+        t_q = us(lambda: lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H))
+        t_gu = us(lambda: lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
+                                                 gu.meta.data_ptr(), Cgu.data_ptr(), GU, tp, H, gu.gA.data_ptr(), gBg.data_ptr()))
+        t_sw = us(lambda: lib.fused_swiglu_quant_2lvl(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(),
+                                                      sH.data_ptr(), gH.data_ptr(), tp, Iw))
+        t_dn = us(lambda: lib.sparse_fp4_mm_2lvl_t(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                                   dn.meta.data_ptr(), Cout.data_ptr(), DN, tp, Iw, dn.gA.data_ptr(), gH.data_ptr()))
+        t_full = us(lambda: lib.fused_mlp_2lvl(x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                                               gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                                               dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                                               Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                                               tp, H, Iw, GU, DN, strm))
+        t_bgu = us(lambda: torch.matmul(xd, Wgu.t()))
+        t_bdn = us(lambda: torch.matmul(hd, Wdn.t()))
+        ksum = t_q + t_gu + t_sw + t_dn
+        print(f"{M:>6} | {t_q:7.1f} {t_gu:7.1f} {t_sw:7.1f} {t_dn:7.1f} {ksum:7.1f} {t_full:7.1f} | "
+              f"{t_bgu:7.1f} {t_bdn:7.1f} {t_bgu + t_bdn:8.1f} | {t_full / (t_bgu + t_bdn):9.2f}", flush=True)
+        del x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout, xd, hd
+        torch.cuda.empty_cache()
+    print("PROFILE_DONE (us; ksum=sum of 4 sub-kernels, full=fused single call, full/bf16<1 => sparse beats "
+          "dense-bf16; >1 at decode => dense-NVFP4 fallback would win)", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
-         baseline: bool = False, recovered_ckpt: str = "") -> None:
+         baseline: bool = False, recovered_ckpt: str = "", graph: bool = False) -> None:
+    if mode == "graph_probe":
+        call = graph_probe.spawn()
+        print(f"SPAWN_ID {call.object_id}", flush=True); return
+    if mode == "profile_decode":
+        call = profile_decode.spawn()
+        print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
