@@ -609,7 +609,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # prefill, corrupting the decode = total - ttft decomposition (and hiding sparse's prefill deficit).
     llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=mm_len,
               kv_cache_dtype="auto", gpu_memory_utilization=util,
-              enable_prefix_caching=not crossover)
+              enable_prefix_caching=not (crossover or versweep))
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
     if graph and fused and not baseline:  # custom op already registered pre-LLM; skip the eager patch loop
