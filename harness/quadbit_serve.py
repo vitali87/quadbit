@@ -406,7 +406,8 @@ RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
-                 fused: bool = True, ppl_only: bool = False, baseline: bool = False) -> None:
+                 fused: bool = True, ppl_only: bool = False, baseline: bool = False,
+                 recovered_ckpt: str = "") -> None:
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -429,7 +430,15 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # baseline=True: skip side-load + patch entirely -> pure vLLM native NVFP4 (the speed comparand,
     # measured in THIS identical harness/util so the fused-vs-NVFP4 delta is apples-to-apples).
     mlpw = []
-    if not baseline:
+    if not baseline and recovered_ckpt:
+        # UNIFIED row: recovered-Instruct sparse MLP (correct accuracy) + NVFP4 non-MLP, ONE checkpoint.
+        rec = torch.load(recovered_ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32
+        for li in range(len(rec) // 3):
+            gu = torch.cat([rec[3 * li], rec[3 * li + 1]], 0).clone()
+            mlpw.append((gu, rec[3 * li + 2].clone()))
+        del rec; gc.collect()
+        print(f"loaded RECOVERED-Instruct MLP weights for {len(mlpw)} layers from {recovered_ckpt}", flush=True)
+    elif not baseline:
         from transformers import AutoModelForCausalLM
         src = AutoModelForCausalLM.from_pretrained(BF16_CKPT, dtype=torch.bfloat16, low_cpu_mem_usage=True)
         for layer in src.model.layers:
@@ -1063,11 +1072,11 @@ def bench_mlp(util: float = 0.55, verify: bool = False) -> None:
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
-         baseline: bool = False) -> None:
+         baseline: bool = False, recovered_ckpt: str = "") -> None:
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
