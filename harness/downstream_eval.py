@@ -30,7 +30,7 @@ image = (
           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
     .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu128", pre=True)
     .pip_install("transformers", "huggingface_hub", "safetensors", "sentencepiece", "numpy",
-                 "lm-eval==0.4.5", "datasets")
+                 "lm-eval==0.4.9.2", "datasets")
     .add_local_dir((ROOT / "cuda").as_posix(), "/root/cuda")
 )
 app = modal.App("quadbit-downstream", image=image)
