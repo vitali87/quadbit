@@ -54,15 +54,17 @@ Real serving engines on the same card, same model family, same protocol (CUDA gr
 
 Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration.
 
-**quadbit inside vLLM beats native NVFP4 at batch — one checkpoint, prefill and decode.** The two-level *sparse* MLP is monkeypatched into vLLM's LlamaMLP (V1 engine, paged attention + continuous batching + decode scheduler), NVFP4 for all non-MLP linears, on a recovered Llama-3.1-8B-Instruct checkpoint. Same eager harness vs full vLLM NVFP4:
+**quadbit runs a correct, graph-capturable sparse-FP4 MLP inside vLLM on SM120 — but production dense NVFP4 is still faster end-to-end.** The two-level *sparse* MLP is registered as a `torch.library` custom op (`quadbit::fused_mlp`) so vLLM's V1 fullgraph compile + CUDA-graph capture include it (NVFP4 for all non-MLP linears, recovered Llama-3.1-8B-Instruct). The sparse path provably runs under production graphs (`SPARSE_CALLS=7264`, through-serving PPL **10.2709**, not the 7.97 dense value). **Graph-vs-graph (the production-representative comparison):**
 
-| metric | NVFP4 (dense) | quadbit sparse MLP | Δ |
-|--------|---------------|--------------------|---|
-| WT-2 PPL | 7.97 | 10.27 | +2.30 |
-| prefill B=8/32/64 | 61118/74916/110600 | 63409/79051/116748 | +3.7% / **+5.5%** / **+5.6%** |
-| decode B=8/32/64 | 228/897/1750 | 282/1102/2157 | +23.7% / +22.9% / +23.3% |
+| metric | vLLM NVFP4 (graph, production) | quadbit sparse MLP (graph) | Δ |
+|--------|-------------------------------|----------------------------|---|
+| WT-2 PPL | 7.97 | 10.2709 | +2.30 |
+| prefill B=8/32/64 | 66469/80825/119083 | 63274/77896/115334 | **−4.8% / −3.6% / −3.1%** |
+| decode B=8/32/64 | 1046/4237/8384 | 981/3863/7363 | **−6.2% / −8.8% / −12.2%** |
 
-Three kernel enablers turned this from batch parity into a win: a **zero-copy transposed epilogue** (contiguous MLP output, no transpose+copy), a **two-level fused SwiGLU** (correct accuracy in the fused path), and a single no-sync **`fused_mlp_2lvl`** entry that runs the whole MLP in one ctypes call with zero device syncs (removing ~64 `cudaDeviceSynchronize`/forward — the +7.7%/+8.3% at B=32/64 that flipped parity to a win). Cleared the ≥5% prefill bar without CUDA graphs. This is a **speed-Pareto point**: +5.5–5.6% prefill and +23% decode (same-config eager) at the cost of +2.3 PPL and 2:4 MLP sparsity. Caveat: NVFP4's *production* path uses CUDA graphs (higher absolute, e.g. decode 8465 @B64); the sparse ctypes path can't be graph-captured yet — that's the next lever. See `harness/quadbit_serve.py` and [docs/paper.md §9](docs/paper.md).
+CUDA graphs plus CUTLASS small-M scheduling erase the sparse eager advantage: quadbit serves at **~88–97% of production NVFP4 throughput** with correct sparse accuracy. The decode loss is a specific, diagnosed systems limitation — the sparse **down projection underfills the GPU at decode** (16 CTAs on ~188 SMs, vs 112 for gate_up), because our `matmul_sp` has no split-K/stream-K where CUTLASS does. Full breakdown, proofs, and commands in [docs/graph_serving_result.md](docs/graph_serving_result.md).
+
+*Eager-vs-eager (diagnostic ablation, not the production headline):* three kernel enablers — a **zero-copy transposed epilogue**, a **two-level fused SwiGLU**, and a single no-sync **`fused_mlp_2lvl`** (removing ~64 `cudaDeviceSynchronize`/forward) — took the eager path from batch parity to **+3.7/+5.5/+5.6%** prefill and **+23%** decode vs *eager* NVFP4 (PPL 10.27 vs 7.97). That win is **launch-overhead only**; it does not survive once both paths are CUDA-graphed. See [docs/frozen_serving_result.md](docs/frozen_serving_result.md) for the eager table and `harness/quadbit_serve.py`.
 
 ## The stack
 

@@ -1,7 +1,14 @@
-# FROZEN serving result (fallback paper result, 2026-07-07)
+# Eager serving ablation (diagnostic, 2026-07-07)
 
-This is the correct, proven eager-serving result. The CUDA-graph-capture work happens on the
-`graph-capture` branch and MUST NOT mutate this path on `main` until a graph result is proven.
+> **NOT the production serving headline.** This eager-vs-eager result is a **diagnostic ablation** that
+> explains the kernel optimization path (zero-copy epilogue, two-level fused SwiGLU, no-sync
+> `fused_mlp_2lvl`). The +5.5/+5.6% prefill and +23% decode win here is **launch-overhead only** and does
+> **not** survive once both paths are CUDA-graphed. The production-representative serving comparison
+> (graph-vs-graph, where dense NVFP4 wins by 3-12%) is in **`docs/graph_serving_result.md`** — cite that,
+> not these numbers, as the serving result.
+
+This is the correct, proven eager-serving result. It stays frozen on `main`; the graph-capture work lives
+on the `graph-capture` branch (settled: production NVFP4 is faster — see `docs/graph_serving_result.md`).
 
 ## Commit / checkpoint / environment
 - **Frozen commit:** `c60f179f1f921aec9c4299b5d6cdcea8ffecbde9` (branch `main`)
@@ -38,6 +45,9 @@ uv run modal run --detach harness/quadbit_serve.py --mode hybrid --util 0.8 --fu
 uv run modal run --detach harness/quadbit_serve.py --mode recovered --util 0.8 --fused
 ```
 
-## Caveat this result carries
-Eager-vs-eager. NVFP4's production path uses CUDA graphs (higher absolute, e.g. decode 8465 @B64 in
-Table A). The `graph-capture` branch turns this into a production-comparable result, especially decode.
+## Caveat this result carries (now resolved)
+Eager-vs-eager. NVFP4's production path uses CUDA graphs. The `graph-capture` branch turned this into the
+production-comparable result: quadbit's sparse MLP was made graph-capturable (a `torch.library` custom op
+inside vLLM's fullgraph + CUDA-graph capture, PPL 10.2709 proving sparse ran), and **graph-vs-graph dense
+NVFP4 wins** (prefill −3.1 to −4.8%, decode −6.2 to −12.2%). The eager win above was launch-overhead only.
+See `docs/graph_serving_result.md` for the production serving table, proofs, and the decode-underfill diagnosis.

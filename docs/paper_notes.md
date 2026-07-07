@@ -388,17 +388,24 @@ a correct-output batch win, in order of impact:
    (kernels stream on vLLM's per-thread stream). Collapsed the 6-crossing + 64-`cudaDeviceSynchronize`/
    forward launch overhead — worth +7.7%/+8.3% at B=32/64, which is what flipped the correct path from
    parity to the win. Cleared the >=5% bar WITHOUT CUDA graphs (graphs are additional upside).
-**UNIFIED ROW (recovered-Instruct, ONE checkpoint, `--recovered-ckpt`):** NVFP4 non-MLP + recovered-
-Instruct two-level sparse MLP vs full vLLM NVFP4, same eager harness (util 0.8, WT-2 16x2048): PPL
-**10.27 vs 7.97** (+2.30, the 2:4 sparse tax; 10.27 = offline-through-kernel 10.03 + the NVFP4 non-MLP
-quant); prefill B=8/32/64 = 63409/79051/116748 vs 61118/74916/110600 = **+3.7% / +5.5% / +5.6%**; decode
-B=8/32/64 = 282/1102/2157 vs 228/897/1750 = **+23.7% / +22.9% / +23.3%** (sparse wins decode in this
-eager config too). CAVEAT: eager-vs-eager (both enforce_eager); NVFP4's PRODUCTION path uses CUDA graphs
-(Table A: prefill 78028 / decode 8465 @B64, higher absolute), which the sparse ctypes path cannot capture
-yet -- CUDA-graph capture is the remaining lever for a production-vs-production decode claim. So the honest
-headline: quadbit sparse FP4 is a **speed-Pareto point** -- +5.5-5.6% prefill and +23% decode (same-config
-eager) at the cost of +2.3 WT-2 PPL and 2:4 MLP sparsity (the recovery's ~+2.76 WT-2 tax off the teacher,
-consistent base and Instruct). The recovered-Instruct ckpt is `/cache/recovered_Llama-3.1-8B-Instruct_
+**PRODUCTION-GRAPH RESULT (the serving headline, 2026-07-07; `docs/graph_serving_result.md`).** The sparse
+MLP is registered as a `torch.library` custom op (`quadbit::fused_mlp`, weights bound pre-LLM) so vLLM's V1
+**fullgraph compile + CUDA-graph capture include it** (Option A / Dynamo graph break is impossible —
+`aot_compile_fullgraph` forbids breaks). Provably sparse under graphs: `SPARSE_CALLS=7264`, PPL **10.2709**
+(not the 7.97 dense value). **Graph-vs-graph (recovered-Instruct, util 0.8, WT-2 15x2048):** prefill B=8/32/64
+= 63274/77896/115334 vs NVFP4 66469/80825/119083 = **−4.8% / −3.6% / −3.1%**; decode = 981/3863/7363 vs
+1046/4237/8384 = **−6.2% / −8.8% / −12.2%**. Honest headline: **quadbit is a correct, graph-capturable
+sparse-FP4 vLLM path on SM120, but production dense NVFP4 is faster end-to-end (~88-97%)** — CUDA graphs +
+CUTLASS small-M scheduling erase the sparse eager advantage. Decode loss diagnosed (`--mode profile_decode`,
+µs/layer, graph-invariant): quant 16, gate_up 53 (**112 CTAs**), swiglu 31, **down 111 (16 CTAs)**, full 173
+vs NVFP4 ≈137 — the sparse **down_proj underfills** (`grid=M/2BM`; M=4096→16 CTAs on ~188 SMs), no split-K
+where CUTLASS has it. Fix (future work, not final-paper): wire the split-K decode kernel (standalone
+0.49×→1.40× vs bf16) into `fused_mlp_2lvl` with a graph-friendly reduction + two-level-scale correctness.
+
+**EAGER ABLATION (diagnostic, NOT the serving headline; `docs/frozen_serving_result.md`).** Same recovered-
+Instruct one-checkpoint setup with `enforce_eager=True`: PPL 10.27 vs 7.97; prefill +3.7/+5.5/+5.6%, decode
++23% vs *eager* NVFP4. This win is **launch-overhead only** (it does not survive graph capture) and exists to
+explain the kernel optimization path. The recovered-Instruct ckpt is `/cache/recovered_Llama-3.1-8B-Instruct_
 P30000_p25000_2sh_lr3e-05.pt`.
 
 ## Measured hardware ceilings (SM120 / RTX PRO 6000)
