@@ -49,7 +49,8 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
               secrets=[modal.Secret.from_name("huggingface")])
 def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED_INSTRUCT_CKPT,
         rank: int = 32, steps: int = 2000, p1: int = 2000, lr: float = 2e-5, mse_w: float = 0.0,
-        calib_windows: int = 32) -> float:
+        calib_windows: int = 32, init_ckpt: str = "", kl_w: float = 1.0, ce_w: float = 0.1,
+        mse_mode: str = "", sched: str = "cosine", tag: str = "") -> float:
     import ctypes
     import math
 
@@ -230,8 +231,12 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
                 if lin.weight.shape[0] % 256 == 0 and lin.weight.shape[1] % 256 == 0:
                     yield layer.mlp, nm, lin
 
-    rec = torch.load(recovered_ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32
-    print(f"MODE={mode} model={model} recovered_ckpt={recovered_ckpt} rank={rank} steps={steps}", flush=True)
+    src_ckpt = init_ckpt or recovered_ckpt
+    _ck = torch.load(src_ckpt, map_location="cpu", weights_only=True)
+    rec = _ck["weights"]  # [gate,up,down]*32
+    init_scales = _ck.get("scales")  # present when continuing from a distill checkpoint
+    print(f"MODE={mode} model={model} src_ckpt={src_ckpt} rank={rank} steps={steps} "
+          f"kl_w={kl_w} ce_w={ce_w} mse_mode={mse_mode or '-'} mse_w={mse_w} sched={sched} tag={tag or '-'}", flush=True)
 
     teacher = load().eval()
     for p in teacher.parameters():
@@ -313,6 +318,10 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
         learn = (mode == "distill" and nm == "down_proj")
         q = SparseQAT(rec[idx].to(dev).to(torch.bfloat16), learn_scale=learn).to(dev)
         setattr(mlp, nm, q); sparse_qats.append(q); layer_of[id(mlp)] = idx // 3
+    if init_scales is not None:  # continuing from a distill ckpt: restore learned per-out scales
+        for q, sc in zip(sparse_qats, init_scales):
+            if q.scale is not None and sc is not None:
+                q.scale.data = sc.to(dev).float()
     base_fq = ppl(student)
     print(f"PPL all-sparse recovered (fake-quant, baseline to beat): {base_fq:.4f}", flush=True)
 
@@ -471,49 +480,98 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
         opt = bnb.optim.AdamW8bit(params, lr=lr, betas=(0.9, 0.95), weight_decay=0.0)
         T, seq, wu = 2.0, 1024, 200
         starts = list(range(0, len(train_ids) - seq, seq))
+        NL = len(student.model.layers)
+        s_mlp, t_mlp = {}, {}
+        if mse_mode == "mlp":  # feature-distill hooks on each layer's MLP block output
+            for li in range(NL):
+                student.model.layers[li].mlp.register_forward_hook(
+                    lambda _m, _i, o, li=li: s_mlp.__setitem__(li, o))
+                teacher.model.layers[li].mlp.register_forward_hook(
+                    lambda _m, _i, o, li=li: t_mlp.__setitem__(li, o))
+        want_hs = (mse_mode == "hidden")
+        tag_ = tag or str(steps)
+        outp = f"/cache/repair_distill_{tag_}.pt"
         student.train()
         best = 1e9
         for step in range(steps):
             for g in opt.param_groups:
-                g["lr"] = (lr * (step + 1) / wu if step < wu else
-                           lr / 20 + 0.5 * (lr - lr / 20) * (1 + math.cos(math.pi * (step - wu) / max(1, steps - wu))))
+                if step < wu:
+                    g["lr"] = lr * (step + 1) / wu
+                elif sched == "const":
+                    g["lr"] = lr
+                else:
+                    floor = 0.0 if sched == "cosine0" else lr / 20
+                    g["lr"] = floor + 0.5 * (lr - floor) * (1 + math.cos(math.pi * (step - wu) / max(1, steps - wu)))
             i = starts[(step * 2654435761) % len(starts)]
             w = train_ids[i:i + seq].unsqueeze(0).to(dev)
             with torch.no_grad():
-                tl = teacher(w).logits.reshape(-1, teacher.config.vocab_size)
-            logits = student(w).logits.reshape(-1, teacher.config.vocab_size)
+                tout = teacher(w, output_hidden_states=want_hs)
+                tl = tout.logits.reshape(-1, teacher.config.vocab_size)
+            sout = student(w, output_hidden_states=want_hs)
+            logits = sout.logits.reshape(-1, teacher.config.vocab_size)
             kl = F.kl_div(F.log_softmax(logits / T, -1), F.softmax(tl / T, -1), reduction="batchmean") * (T * T)
             ce = F.cross_entropy(logits[:-1], w.reshape(-1)[1:])
-            loss = kl + 0.1 * ce
+            loss = kl_w * kl + ce_w * ce
+            mse_val = 0.0
+            if mse_mode == "hidden":
+                th, sh = tout.hidden_states[-1], sout.hidden_states[-1]
+                mse_t = ((sh - th) ** 2).mean() / (th ** 2).mean().clamp_min(1e-8)
+                loss = loss + mse_w * mse_t; mse_val = mse_t.item()
+            elif mse_mode == "mlp":
+                acc = logits.new_zeros(())
+                for li in range(NL):
+                    th = t_mlp[li].detach(); sh = s_mlp[li]
+                    acc = acc + ((sh - th) ** 2).mean() / (th ** 2).mean().clamp_min(1e-8)
+                mse_t = acc / NL
+                loss = loss + mse_w * mse_t; mse_val = mse_t.item()
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step()
             with torch.no_grad():
                 for q, mk in masks_d.items():
                     q.weight.data *= mk
-            if (step + 1) in (500, 1000, 2000, 3000, 5000) or (step + 1) == steps:
+            s_mlp.clear(); t_mlp.clear()
+            if (step + 1) in (500, 1000, 1500, 2000, 3000, 4000, 5000) or (step + 1) == steps:
                 fq = ppl(student, windows=16)
-                print(f"  distill {step + 1}/{steps} KL {kl.item():.4f} CE {ce.item():.4f} PPL(fake-quant) {fq:.4f}", flush=True)
+                print(f"  distill[{tag_}] {step + 1}/{steps} KL {kl.item():.4f} CE {ce.item():.4f} MSE {mse_val:.4f} "
+                      f"lr {opt.param_groups[0]['lr']:.2e} PPL(fake-quant) {fq:.4f}", flush=True)
                 if fq < best:
                     best = fq
                     torch.save({"weights": [q.weight.data.to(torch.bfloat16).cpu() for q in sparse_qats],
                                 "scales": [q.scale.data.cpu() if q.scale is not None else None for q in sparse_qats]},
-                               f"/cache/repair_distill_{steps}.pt")
+                               outp)
                 student.train()
-        for (mlp, nm, _lin), q in zip(targets, sparse_qats):
-            setattr(mlp, nm, QuadbitLinear(q.weight.data, scale=q.scale.data if q.scale is not None else None).to(dev))
+        bestck = torch.load(outp, map_location="cpu", weights_only=True)  # deploy the BEST, not the final
+        for (mlp, nm, _lin), w_, sc_ in zip(targets, bestck["weights"], bestck["scales"]):
+            setattr(mlp, nm, QuadbitLinear(w_.to(dev), scale=(sc_.to(dev) if sc_ is not None else None)).to(dev))
         kp = ppl(student)
-        print(f"RESULT mode=distill steps={steps} base_fq={base_fq:.4f} best_fq={best:.4f} kernel_ppl={kp:.4f} "
-              f"ckpt=/cache/repair_distill_{steps}.pt", flush=True)
+        print(f"RESULT mode=distill tag={tag_} steps={steps} lr={lr} kl_w={kl_w} ce_w={ce_w} "
+              f"mse_mode={mse_mode or '-'} mse_w={mse_w} sched={sched} base_fq={base_fq:.4f} "
+              f"best_fq={best:.4f} kernel_ppl={kp:.4f} ckpt={outp}", flush=True)
         return kp
 
     print(f"unknown mode {mode}", flush=True)
     return -1.0
 
 
+@app.function(volumes={"/cache": vol}, timeout=600)
+def snapshot(src: str, dst: str) -> str:
+    import os
+    import shutil
+    if not os.path.exists(src):
+        return f"MISSING {src}"
+    shutil.copy(src, dst)
+    vol.commit()
+    return f"copied {src} -> {dst}"
+
+
 @app.local_entrypoint()
 def main(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED_INSTRUCT_CKPT,
          rank: int = 32, steps: int = 2000, p1: int = 2000, lr: float = 2e-5, mse_w: float = 0.0,
-         calib_windows: int = 32) -> None:
+         calib_windows: int = 32, init_ckpt: str = "", kl_w: float = 1.0, ce_w: float = 0.1,
+         mse_mode: str = "", sched: str = "cosine", tag: str = "") -> None:
+    if mode == "snap":  # freeze a checkpoint on the volume: init_ckpt=src, tag=dst (runs synchronously)
+        print(snapshot.remote(init_ckpt, tag), flush=True); return
     call = run.spawn(mode=mode, model=model, recovered_ckpt=recovered_ckpt, rank=rank, steps=steps,
-                     p1=p1, lr=lr, mse_w=mse_w, calib_windows=calib_windows)
+                     p1=p1, lr=lr, mse_w=mse_w, calib_windows=calib_windows, init_ckpt=init_ckpt,
+                     kl_w=kl_w, ce_w=ce_w, mse_mode=mse_mode, sched=sched, tag=tag)
     print(f"SPAWN_ID {call.object_id}", flush=True)
