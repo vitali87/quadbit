@@ -1335,7 +1335,9 @@ def profile_decode() -> None:
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
     lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+    lib.sparse_down_sk_2lvl.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2 + [ctypes.c_int]
     lib.qb_init_func_attrs()
+    lib.qb_init_sk_attrs()
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
     H, Iw, GU, DN = 4096, 14336, 28672, 4096
@@ -1392,8 +1394,43 @@ def profile_decode() -> None:
               f"{t_bgu:7.1f} {t_bdn:7.1f} {t_bgu + t_bdn:8.1f} | {t_full / (t_bgu + t_bdn):9.2f}", flush=True)
         del x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout, xd, hd
         torch.cuda.empty_cache()
+
+    # ---- Track 1: split-K DECODE down (sparse_down_sk_2lvl) vs plain two-level down, per split factor.
+    # Correctness: sk-down output must match the plain two-level down (same weights/act/scales) within
+    # atomic-reduction noise. Speed: does split-K fill the 16-CTA underfill and beat plain down 111us?
+    print("\nSPLIT-K DOWN (out_f=4096, K=14336): plain vs sk@splits; cos/relL2 vs plain two-level down", flush=True)
+    print(f"{'M':>6} | {'plain':>7} | {'sk@4':>7} {'sk@8':>7} {'sk@16':>7} {'sk@32':>7} | {'cos':>8} {'relL2':>8}", flush=True)
+    for M in (8, 32, 64, 128):
+        tp = M + (-M) % 128
+        h = (torch.randn(tp, Iw, device=dev) * 0.5).bfloat16()
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gHt = torch.empty((tp,), dtype=torch.float32, device=dev)
+        lib.quantize_act_nvfp4_2lvl(h.data_ptr(), Hb.data_ptr(), sH.data_ptr(), gHt.data_ptr(), tp, Iw)
+        Cpl = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        Csk = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        Cf = torch.empty((DN * tp,), dtype=torch.float32, device=dev)
+
+        def plain():
+            lib.sparse_fp4_mm_2lvl_t(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                     dn.meta.data_ptr(), Cpl.data_ptr(), DN, tp, Iw, dn.gA.data_ptr(), gHt.data_ptr())
+
+        def sk(sp):
+            lib.sparse_down_sk_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                    dn.meta.data_ptr(), Csk.data_ptr(), Cf.data_ptr(), DN, tp, Iw,
+                                    dn.gA.data_ptr(), gHt.data_ptr(), sp)
+        t_pl = us(plain)
+        tsk = {sp: us(lambda sp=sp: sk(sp)) for sp in (4, 8, 16, 32)}
+        plain(); sk(16); torch.cuda.synchronize()  # correctness: sk@16 vs plain
+        a, b = Csk.float().flatten(), Cpl.float().flatten()
+        cos = torch.nn.functional.cosine_similarity(a, b, dim=0).item()
+        rel = ((a - b).norm() / b.norm().clamp_min(1e-9)).item()
+        print(f"{M:>6} | {t_pl:7.1f} | {tsk[4]:7.1f} {tsk[8]:7.1f} {tsk[16]:7.1f} {tsk[32]:7.1f} | {cos:8.5f} {rel:8.5f}", flush=True)
+        del h, Hb, sH, gHt, Cpl, Csk, Cf
+        torch.cuda.empty_cache()
     print("PROFILE_DONE (us; ksum=sum of 4 sub-kernels, full=fused single call, full/bf16<1 => sparse beats "
-          "dense-bf16; >1 at decode => dense-NVFP4 fallback would win)", flush=True)
+          "dense-bf16; >1 at decode => dense-NVFP4 fallback would win). sk cos~1/relL2~0 => correct; "
+          "sk << plain 111us => split-K fixes the down underfill.", flush=True)
 
 
 @app.local_entrypoint()
