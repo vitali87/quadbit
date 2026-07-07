@@ -524,7 +524,9 @@ def _fused_mlp_fwd(mlp, torch, lib, dev, graph=False):
 
 NVFP4_CKPT = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
 BF16_CKPT = "meta-llama/Llama-3.1-8B-Instruct"
-RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
+RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"  # base (bf16 non-MLP) for serve_recovered
+# recovered-Instruct MLP weights, matched to the NVFP4 Instruct model serve_densify/serve_hybrid load
+RECOVERED_INSTRUCT_CKPT = "/cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_2sh_lr3e-05.pt"
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=7200, volumes={"/cache": vol},
@@ -1003,7 +1005,7 @@ def serve_densify(policy: str = "none", recovered_ckpt: str = "", util: float = 
         return False
 
     # sparse projections use recovered (pruned+QAT) weights; dense projections use vLLM's stock NVFP4.
-    ckpt = recovered_ckpt or RECOVERED_CKPT
+    ckpt = recovered_ckpt or RECOVERED_INSTRUCT_CKPT  # Instruct-matched: this fn loads NVFP4_CKPT (Instruct)
     rec = torch.load(ckpt, map_location="cpu", weights_only=True)["weights"]  # [gate,up,down]*32
     nl = len(rec) // 3
     guw = [torch.cat([rec[3 * li], rec[3 * li + 1]], 0).clone() for li in range(nl)]
