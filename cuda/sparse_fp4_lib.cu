@@ -542,36 +542,44 @@ extern "C" void add_rmsnorm_quant(const void *inp, const void *res, const void *
 // Core launcher (NO sync): build TMA maps + launch matmul_sp on the current (per-thread) stream. The
 // per-thread-stream .so binds <<<>>> to the caller's (vLLM's) stream, so kernels are ordered without an
 // explicit sync -- used by fused_mlp_2lvl to batch the whole MLP with zero device syncs.
+// cudaFuncSetAttribute is a host-side call that is ILLEGAL during CUDA-graph stream capture. Set the
+// matmul_sp max-dynamic-smem ONCE (idempotent, SMEM is a compile-time constant) so run_sp_mm contains
+// only stream operations (TMA-descriptor build on host + kernel launch) and is capture-safe thereafter.
+static bool g_sp_attr_set = false;
+extern "C" void qb_init_func_attrs() {
+    cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+    g_sp_attr_set = true;
+}
 static inline void run_sp_mm(const void *A, const void *B, const void *scaleA, const void *scaleB,
                              const void *meta, void *C, int M, int N, int Klog,
-                             const void *gA, const void *gB, int outT) {
+                             const void *gA, const void *gB, int outT, cudaStream_t stream) {
     int KAb = Klog / 4, KBb = Klog / 2;
     alignas(64) CUtensorMap mapA, mapB;
     mk(&mapA, (uint8_t *)A, KAb, M, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
     mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
-    cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
+    if (!g_sp_attr_set) qb_init_func_attrs();   // one-time; skipped during capture (set at warmup)
     dim3 grid(N / BN, M / (2 * BM)), block(256);
-    matmul_sp<<<grid, block, SMEM>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
-                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog,
-                                     (const float *)gA, (const float *)gB, outT);
+    matmul_sp<<<grid, block, SMEM, stream>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                             (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog,
+                                             (const float *)gA, (const float *)gB, outT);
 }
 extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
                              const void *scaleB, const void *meta, void *C, int M, int N, int Klog) {
-    run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, nullptr, nullptr, 0);
+    run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, nullptr, nullptr, 0, 0);
     return (int)cudaDeviceSynchronize();
 }
 // TWO-LEVEL entry: same kernel, plus per-row(M=weight-row) gA and per-col(N=token) gB fp32 globals.
 // scaleA/scaleB now hold ue4m3 codes LOCAL to the globals; the epilogue applies gA[m]*gB[n].
 extern "C" int sparse_fp4_mm_2lvl(const void *A, const void *B, const void *scaleA, const void *scaleB,
                                   const void *meta, void *C, int M, int N, int Klog, const void *gA, const void *gB) {
-    run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, gA, gB, 0);
+    run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, gA, gB, 0, 0);
     return (int)cudaDeviceSynchronize();
 }
 // ZERO-COPY entry: identical math to _2lvl, but writes C in [N token, M out_f] row-major (outT=1)
 // so the caller returns C[:t] directly to vLLM with NO transpose+copy pass. See matmul_sp epilogue.
 extern "C" int sparse_fp4_mm_2lvl_t(const void *A, const void *B, const void *scaleA, const void *scaleB,
                                     const void *meta, void *C, int M, int N, int Klog, const void *gA, const void *gB) {
-    run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, gA, gB, 1);
+    run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, gA, gB, 1, 0);
     return (int)cudaDeviceSynchronize();
 }
 
@@ -581,18 +589,25 @@ extern "C" int sparse_fp4_mm_2lvl_t(const void *A, const void *B, const void *sc
 // two-level swiglu (amax/finalize/quant_g, emits gH) -> down mma (outT=1, [tp,dn_out] contiguous for vLLM).
 // All scratch is caller-preallocated (graph-capture-safe: no cudaMalloc/free, no sync in the region). gH
 // MUST be pre-zeroed by the caller (swiglu_amax atomicMaxes into it).
+// `stream` (raw cudaStream_t as void*; 0 = default) makes this CUDA-GRAPH-CAPTURABLE: every kernel and
+// the gH zeroing run on the CALLER's current stream (torch/vLLM's capture stream), and there are no host
+// syncs, no allocations, and no host reads of device values in the region. gH is zeroed here (cudaMemset
+// Async, capturable) so the caller need not pre-zero it -- swiglu_amax atomicMaxes into it.
 extern "C" int fused_mlp_2lvl(const void *x, const void *gu_Ac, const void *gu_scaleA, const void *gu_meta,
                               const void *gu_gA, const void *dn_Ac, const void *dn_scaleA, const void *dn_meta,
                               const void *dn_gA, void *Bb, void *sBg, void *gBg, void *Cgu, void *Hb,
-                              void *sH, void *gH, void *Cout, int tp, int H, int Iw, int gu_out, int dn_out) {
+                              void *sH, void *gH, void *Cout, int tp, int H, int Iw, int gu_out, int dn_out,
+                              void *stream) {
+    cudaStream_t s = (cudaStream_t)stream;
     int tpb = 256;
-    quant_act_2lvl_k<<<tp, tpb>>>((const __nv_bfloat16 *)x, (uint32_t *)Bb, (uint8_t *)sBg, (float *)gBg, H);
-    run_sp_mm(gu_Ac, Bb, gu_scaleA, sBg, gu_meta, Cgu, gu_out, tp, H, gu_gA, gBg, 0);
+    cudaMemsetAsync(gH, 0, (size_t)tp * sizeof(float), s);   // capturable zero; swiglu_amax atomicMaxes into gH
+    quant_act_2lvl_k<<<tp, tpb, 0, s>>>((const __nv_bfloat16 *)x, (uint32_t *)Bb, (uint8_t *)sBg, (float *)gBg, H);
+    run_sp_mm(gu_Ac, Bb, gu_scaleA, sBg, gu_meta, Cgu, gu_out, tp, H, gu_gA, gBg, 0, s);
     const __nv_bfloat16 *g = (const __nv_bfloat16 *)Cgu, *uu = g + (long)Iw * tp;   // Cgu is [gu_out=2*Iw, tp]
     int total = tp * (Iw / 32);
-    swiglu_amax<<<(total + tpb - 1) / tpb, tpb>>>(g, uu, (float *)gH, tp, Iw);
-    swiglu_finalize<<<(tp + tpb - 1) / tpb, tpb>>>((float *)gH, tp);
-    swiglu_quant_g<<<(total + tpb - 1) / tpb, tpb>>>(g, uu, (uint32_t *)Hb, (uint8_t *)sH, (const float *)gH, tp, Iw);
-    run_sp_mm(dn_Ac, Hb, dn_scaleA, sH, dn_meta, Cout, dn_out, tp, Iw, dn_gA, gH, 1);
+    swiglu_amax<<<(total + tpb - 1) / tpb, tpb, 0, s>>>(g, uu, (float *)gH, tp, Iw);
+    swiglu_finalize<<<(tp + tpb - 1) / tpb, tpb, 0, s>>>((float *)gH, tp);
+    swiglu_quant_g<<<(total + tpb - 1) / tpb, tpb, 0, s>>>(g, uu, (uint32_t *)Hb, (uint8_t *)sH, (const float *)gH, tp, Iw);
+    run_sp_mm(dn_Ac, Hb, dn_scaleA, sH, dn_meta, Cout, dn_out, tp, Iw, dn_gA, gH, 1, s);
     return 0;
 }
