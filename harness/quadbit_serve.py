@@ -602,8 +602,12 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         gc.collect(); torch.cuda.empty_cache()
         print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture); "
               f"QB_SK_SPLITS={_QB_OP['splits']}", flush=True)
+    # crossover measures per-request prefill+decode latency, so prefix caching MUST be off: otherwise
+    # the second (max_tokens=G) generate reuses the first's (max_tokens=1) prompt KV and skips the real
+    # prefill, corrupting the decode = total - ttft decomposition (and hiding sparse's prefill deficit).
     llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=mm_len,
-              kv_cache_dtype="auto", gpu_memory_utilization=util)
+              kv_cache_dtype="auto", gpu_memory_utilization=util,
+              enable_prefix_caching=not crossover)
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
     if graph and fused and not baseline:  # custom op already registered pre-LLM; skip the eager patch loop
@@ -733,8 +737,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
         mem_peak = gpu_mib()
 
-        def ids_len(i, P):
-            return [((j * 131 + i * 7919) % 128000) + 1 for j in range(P)]
+        def ids_len(i, P):  # P-dependent so different prompt lengths are NOT prefixes of each other
+            return [((j * 131 + i * 7919 + P * 104729) % 128000) + 1 for j in range(P)]
 
         # persist every cell to the shared volume too: Modal log retention keeps only the tail, so the
         # early (small-B) cells scroll off. The CSV on /cache is the authoritative complete matrix.
@@ -909,7 +913,10 @@ def serve_densify(policy: str = "none", recovered_ckpt: str = "", util: float = 
     #     down                -> down_proj dense (all layers), gate_up sparse
     #     gateup              -> gate_up dense (all layers), down sparse
     #     L<a>-<b>            -> whole MLP dense for layers a..b inclusive (rest sparse)
-    #   e.g. "down,L22-31" = dense down everywhere + fully dense late layers.
+    #     gu:<a>-<b>          -> gate_up dense only for layers a..b (down stays sparse)
+    #     dn:<a>-<b>          -> down dense only for layers a..b (gate_up stays sparse)
+    #   e.g. "down,L22-31" = dense down everywhere + fully dense late layers;
+    #        "gu:22-31" = dense gate_up in the late layers only, everything else sparse.
     import ctypes
     import gc
     import math
@@ -933,7 +940,15 @@ def serve_densify(policy: str = "none", recovered_ckpt: str = "", util: float = 
                 return True
             if t == "gateup" and proj == "gu":
                 return True
-            if t.startswith("L") and "-" in t:
+            if t.startswith("gu:") and proj == "gu":
+                a, b = t[3:].split("-")
+                if int(a) <= li <= int(b):
+                    return True
+            if t.startswith("dn:") and proj == "dn":
+                a, b = t[3:].split("-")
+                if int(a) <= li <= int(b):
+                    return True
+            if t.startswith("L") and "-" in t and ":" not in t:
                 a, b = t[1:].split("-")
                 if int(a) <= li <= int(b):
                     return True
