@@ -532,7 +532,7 @@ RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
                  recovered_ckpt: str = "", graph: bool = False, splits: int = 8,
-                 crossover: bool = False) -> None:
+                 crossover: bool = False, versweep: bool = False) -> None:
     import os
     os.environ["QB_SK_SPLITS"] = str(splits)  # sk-down split factor read by _install_graph_customop
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
@@ -782,6 +782,43 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         print(f"CROSSOVER_DONE [{tag}] util={util} device_MiB load={mem_load} peak={mem_peak}", flush=True)
         if _graph_customop:
             print(f"SPARSE_CALLS = {_QB_OP['call']} (>0 proves quadbit::fused_mlp ran)", flush=True)
+        return
+
+    if versweep:  # Track 4B: decode throughput vs effective M (verification/multi-token shape M = B*k).
+        # A speculative step verifies k candidate tokens per sequence, so the MLP sees M = B*k rows in one
+        # decode forward. Sweeping the decode batch is exactly that shape. Tests whether the sparse split-K
+        # decode margin over NVFP4 EXPANDS with M (the hypothesis) or shrinks (the small-M underfill fix
+        # fading as NVFP4 also fills the GPU). Fixed short prompt, gen=256; decode isolated via ttft.
+        P, G = 128, 256
+        llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)
+        mem_peak = gpu_mib()
+
+        def ids_v(i):
+            return [((j * 131 + i * 7919 + 7) % 128000) + 1 for j in range(P)]
+
+        csv_path = f"/cache/versweep_{'nvfp4' if baseline else 'sparse'}.csv"
+        vc = open(csv_path, "w"); vc.write("M,ttft_s,total_s,decode_s,decode_tps,tpot_ms\n"); vc.flush()
+        print("VS_HDR M,ttft_s,total_s,decode_s,decode_tps,tpot_ms", flush=True)
+        for M in (1, 8, 16, 32, 64, 128, 256, 512, 1024):
+            prompts = [{"prompt_token_ids": ids_v(i)} for i in range(M)]
+            try:
+                llm.generate(prompts, SamplingParams(temperature=0, max_tokens=2), use_tqdm=False)  # warm shape
+                _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
+                outs, total = tps(prompts, SamplingParams(temperature=0, max_tokens=G, ignore_eos=True))
+                gen = sum(len(o.outputs[0].token_ids) for o in outs)
+                mem_peak = max(mem_peak, gpu_mib())
+                decode = max(total - ttft, 1e-6)
+                tpot = decode / max(gen / M - 1, 1) * 1000
+                row = f"{M},{ttft:.4f},{total:.4f},{decode:.4f},{gen / decode:.0f},{tpot:.3f}"
+                print("VS " + row, flush=True); vc.write(row + "\n"); vc.flush()
+            except Exception as e:
+                print(f"VS {M},SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                vc.write(f"{M},SKIP\n"); vc.flush(); torch.cuda.empty_cache()
+        vc.close()
+        tag = "full-NVFP4-baseline" if baseline else "nvfp4-base+sparse-MLP"
+        print(f"VERSWEEP_DONE [{tag}] util={util} peak={mem_peak}", flush=True)
+        if _graph_customop:
+            print(f"SPARSE_CALLS = {_QB_OP['call']}", flush=True)
         return
 
     llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
@@ -1671,7 +1708,8 @@ def profile_decode() -> None:
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
          baseline: bool = False, recovered_ckpt: str = "", graph: bool = False,
-         splits: int = 8, crossover: bool = False, policy: str = "none", speed: bool = False) -> None:
+         splits: int = 8, crossover: bool = False, policy: str = "none", speed: bool = False,
+         versweep: bool = False) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
@@ -1681,7 +1719,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits, crossover)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits, crossover, versweep)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
