@@ -360,14 +360,24 @@ def _qbsparse_factory(torch, lib, dev):
 _QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "splits": 8, "registered": False, "init_patched": False}
 
 
-def _install_graph_customop(torch, lib, reg):
+def _install_graph_customop(torch, lib, reg, dense=None, dense_thresh=512):
     """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp, tags each
-    LlamaMLP with its construction-order layer index, and class-patches LlamaMLP.forward to call the op."""
+    LlamaMLP with its construction-order layer index, and class-patches LlamaMLP.forward to call the op.
+
+    dense (Track 4C phase-adaptive): [(guq, gu_sf, gu_gs, dnq, dn_sf, dn_gs)] * NL = the SAME recovered
+    weights re-quantized to dense NVFP4 (flashinfer layout). When set, the op runs the production
+    flashinfer cutlass NVFP4 GEMM for tp >= dense_thresh (prefill/large-M) and the sparse split-K path
+    for tp < dense_thresh (decode/small-M). Same weights, layout chosen by effective token count."""
     from vllm.model_executor.models.llama import LlamaMLP
     import os
     g = _QB_OP
     g["reg"], g["lib"], g["call"], g["ctor"], g["nl"] = reg, lib, 0, 0, len(reg)
     g["splits"] = int(os.environ.get("QB_SK_SPLITS", "8"))  # 0 -> disable sk-down (plain fused everywhere)
+    g["dense"], g["dense_thresh"], g["call_dense"] = dense, dense_thresh, 0
+    if dense is not None:  # phase-adaptive: bind the flashinfer NVFP4 GEMM + swizzled-scale layout enum
+        import flashinfer as _fi
+        from flashinfer import SfLayout as _SfL
+        g["fi"], g["sfl"] = _fi, _SfL.layout_128x4
     out_f = reg[0][1].out_f
 
     if not g["init_patched"]:  # tag each MLP with its layer index as it is built (in order, pre-capture)
@@ -388,9 +398,26 @@ def _install_graph_customop(torch, lib, reg):
             t = x2f.shape[0]
             tp = t + (-t) % 128
             gu, dn = g["reg"][layer_idx]
-            g["call"] += 1
             dev = x.device
             H, Iw = gu.in_f, dn.in_f
+            if g["dense"] is not None and tp >= g["dense_thresh"]:
+                # PHASE-ADAPTIVE PREFILL/large-M: production flashinfer cutlass NVFP4 over the SAME
+                # recovered weights (dense-zero), matching baseline prefill speed. do_shuffle=False +
+                # backend=cutlass is the SM120-viable recipe (trtllm refuses sm_120); alpha=1/(gsa*gsw).
+                import torch.nn.functional as F
+                fi_, sfl = g["fi"], g["sfl"]
+                guq, gu_sf, gu_gs, dnq, dn_sf, dn_gs = g["dense"][layer_idx]
+                xin = x2f.to(torch.bfloat16).contiguous()  # real t rows (cutlass handles arbitrary M)
+                gsa = (448.0 * 6.0) / xin.float().abs().nan_to_num().max()
+                xq, x_sf = fi_.nvfp4_quantize(xin, gsa, sfLayout=sfl, do_shuffle=False)
+                y = fi_.mm_fp4(xq, guq.T, x_sf, gu_sf.T, (1.0 / (gsa * gu_gs)), torch.bfloat16, None, backend="cutlass")
+                h = (F.silu(y[:, :Iw]) * y[:, Iw:]).contiguous()
+                gsh = (448.0 * 6.0) / h.float().abs().nan_to_num().max()
+                hq, h_sf = fi_.nvfp4_quantize(h, gsh, sfLayout=sfl, do_shuffle=False)
+                out = fi_.mm_fp4(hq, dnq.T, h_sf, dn_sf.T, (1.0 / (gsh * dn_gs)), torch.bfloat16, None, backend="cutlass")
+                g["call_dense"] += 1
+                return out.reshape(*lead, dn.out_f).contiguous()
+            g["call"] += 1
             x2 = x2f.to(torch.bfloat16)
             if tp != t:
                 x2 = torch.cat([x2, x2.new_zeros(tp - t, H)], 0)
@@ -534,7 +561,8 @@ RECOVERED_INSTRUCT_CKPT = "/cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
                  recovered_ckpt: str = "", graph: bool = False, splits: int = 8,
-                 crossover: bool = False, versweep: bool = False) -> None:
+                 crossover: bool = False, versweep: bool = False,
+                 phase_adaptive: bool = False, dense_thresh: int = 512) -> None:
     import os
     os.environ["QB_SK_SPLITS"] = str(splits)  # sk-down split factor read by _install_graph_customop
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
@@ -595,15 +623,32 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         # first hit it during capture. call_once in the .so makes this the single warmup that marks the flag.
         dev = torch.device("cuda")
         QBSparse = _qbsparse_factory(torch, lib, dev)
+        # Track 4C: dense NVFP4 (flashinfer, do_shuffle=False + cutlass) over the SAME recovered weights,
+        # for the prefill/large-M branch. Quantized ONCE here; the op's global scale = (448*6)/amax.
+        _fi = _SfL = None
+        if phase_adaptive:
+            import flashinfer as _fi
+            from flashinfer import SfLayout as _SfL
+
+            def _dq(W):  # -> (packed_fp4, swizzled_scale, global_scale=(448*6)/amax)
+                gsw = (448.0 * 6.0) / W.float().abs().nan_to_num().max()
+                wq, w_sf = _fi.nvfp4_quantize(W, gsw, sfLayout=_SfL.layout_128x4, do_shuffle=False)
+                return wq, w_sf, gsw
         reg = []
+        dense_reg = [] if phase_adaptive else None
         for li in range(len(mlpw)):
             gu, dn = mlpw[li]
-            reg.append((QBSparse(gu.to(dev)), QBSparse(dn.to(dev))))
+            gud, dnd = gu.to(dev), dn.to(dev)
+            reg.append((QBSparse(gud), QBSparse(dnd)))
+            if phase_adaptive:
+                guq, gu_sf, gu_gs = _dq(gud)
+                dnq, dn_sf, dn_gs = _dq(dnd)
+                dense_reg.append((guq, gu_sf, gu_gs, dnq, dn_sf, dn_gs))
             mlpw[li] = None
-        _install_graph_customop(torch, lib, reg)
+        _install_graph_customop(torch, lib, reg, dense=dense_reg, dense_thresh=dense_thresh)
         gc.collect(); torch.cuda.empty_cache()
         print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture); "
-              f"QB_SK_SPLITS={_QB_OP['splits']}", flush=True)
+              f"QB_SK_SPLITS={_QB_OP['splits']} phase_adaptive={phase_adaptive} dense_thresh={dense_thresh}", flush=True)
     # crossover measures per-request prefill+decode latency, so prefix caching MUST be off: otherwise
     # the second (max_tokens=G) generate reuses the first's (max_tokens=1) prompt KV and skips the real
     # prefill, corrupting the decode = total - ttft decomposition (and hiding sparse's prefill deficit).
@@ -726,8 +771,11 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
             plp = o.prompt_logprobs
             nll += -sum(plp[j][w[j]].logprob for j in range(1, S)); n += S - 1
         wtag = f"recovered ({recovered_ckpt.split('/')[-1]})" if recovered_ckpt else "magnitude pair-2:4, no recovery"
-        print(f"PPL_THROUGH_SERVING {math.exp(nll / n):.4f} (MLP={wtag}; non-MLP NVFP4; "
-              f"{'fused two-level' if fused else 'unfused two-level'}; {len(wins)}x{S})", flush=True)
+        mlptag = ("phase-adaptive dense-NVFP4 (prefill M=%d>=thresh %d)" % (S, dense_thresh)) if phase_adaptive \
+            else ("fused two-level" if fused else "unfused two-level")
+        print(f"PPL_THROUGH_SERVING {math.exp(nll / n):.4f} (MLP={wtag}; non-MLP NVFP4; {mlptag}; {len(wins)}x{S})", flush=True)
+        if _graph_customop:  # phase-adaptive: prefill PPL exercises the DENSE branch (dense_calls>0, sparse=0)
+            print(f"PPL_PATH SPARSE_CALLS={_QB_OP['call']} DENSE_CALLS={_QB_OP['call_dense']}", flush=True)
     if ppl_only:
         print("PPL_ONLY_DONE", flush=True); return
 
@@ -744,7 +792,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
 
         # persist every cell to the shared volume too: Modal log retention keeps only the tail, so the
         # early (small-B) cells scroll off. The CSV on /cache is the authoritative complete matrix.
-        csv_path = f"/cache/crossover_{'nvfp4' if baseline else 'sparse'}.csv"
+        row_tag = "nvfp4" if baseline else ("phaseadaptive" if phase_adaptive else "sparse")
+        csv_path = f"/cache/crossover_{row_tag}.csv"
         hdr = "B,prompt,gen,ttft_s,total_s,decode_s,tpot_ms,prefill_tps,decode_tps,out_tps,total_tps"
         csv = open(csv_path, "w")
         csv.write(hdr + "\n"); csv.flush()
@@ -780,10 +829,13 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
                         csv.write(f"{B},{P},{G},SKIP\n"); csv.flush()
                         torch.cuda.empty_cache()
         csv.close()
-        tag = "full-NVFP4-baseline" if baseline else ("nvfp4-base+sparse-MLP" + ("" if fused else "-unfused2lvl"))
+        tag = ("full-NVFP4-baseline" if baseline else
+               ("phase-adaptive (dense-prefill/sparse-decode, thresh=%d)" % dense_thresh if phase_adaptive else
+                "nvfp4-base+sparse-MLP" + ("" if fused else "-unfused2lvl")))
         print(f"CROSSOVER_DONE [{tag}] util={util} device_MiB load={mem_load} peak={mem_peak}", flush=True)
         if _graph_customop:
-            print(f"SPARSE_CALLS = {_QB_OP['call']} (>0 proves quadbit::fused_mlp ran)", flush=True)
+            print(f"SPARSE_CALLS = {_QB_OP['call']} DENSE_CALLS = {_QB_OP['call_dense']} "
+                  f"(both >0 in phase-adaptive proves the split ran)", flush=True)
         return
 
     if versweep:  # Track 4B: decode throughput vs effective M (verification/multi-token shape M = B*k).
@@ -1741,68 +1793,31 @@ def phase_probe() -> None:
 
     FP4_MAX, FP8_MAX = 6.0, 448.0
 
-    def gscale(w):  # modelopt/NVFP4 per-tensor global scale = FP8_MAX*FP4_MAX / amax
-        return (FP8_MAX * FP4_MAX) / w.abs().max().clamp_min(1e-9)
-
-    # 2) vLLM _custom_ops recipe: quantize both operands, cutlass mm with alpha = 1/(a_gs*w_gs).
-    #    orientation: cutlass_scaled_fp4_mm(a[M,K], b[N,K]) -> [M,N] (b row-major = weight [out,in]).
-    def nvfp4_mm_vllm(x, w):
-        ags, wgs = gscale(x), gscale(w)
-        xq, xs = ops.scaled_fp4_quant(x, ags)
-        wq, ws = ops.scaled_fp4_quant(w, wgs)
-        alpha = (1.0 / (ags * wgs)).to(torch.float32)
-        return ops.cutlass_scaled_fp4_mm(xq, wq, xs, ws, alpha, torch.bfloat16)
-
+    # 2) SELF-CONTAINED flashinfer path (no vLLM layer layout dependency): quantize BOTH operands with
+    #    flashinfer's OWN nvfp4_quantize (self-consistent with mm_fp4) per the documented-verified recipe:
+    #    nvfp4_quantize(t, (448*6)/amax, sfLayout=layout_128x4, do_shuffle=False); alpha=1/(gsa*gsb);
+    #    mm_fp4(a, b.T, a_s, b_s.T, alpha, block_size=16, use_8x4_sf_layout=False).
+    # EXACT flashinfer docstring recipe: SfLayout from top-level; weight nvfp4_quantize with do_shuffle
+    # matched to the backend; mm_fp4(a_fp4, b_fp4.T, a_sf, b_sf.T, 1/(gsa*gsw)). Grid backend x weight
+    # shuffle to find the SM120-viable combo (trtllm refuses SM120 -> need cutlass/auto).
+    from flashinfer import SfLayout
     torch.manual_seed(0)
-    H, N, M = 4096, 512, 256
-    # dense-zero weight: 2:4-pruned random (mimics a recovered pruned matrix's zero pattern)
-    Wd = (torch.randn(N, H, device=dev) * 0.02).bfloat16()
-    Wz = Wd.view(N, H // 4, 4).clone()
-    idx = Wz.abs().topk(2, dim=-1, largest=False).indices  # zero the 2 smallest of every 4 (2:4)
-    Wz.scatter_(-1, idx, 0.0); Wz = Wz.view(N, H)
-    x = (torch.randn(M, H, device=dev) * 0.1).bfloat16()
-    ref = (x.float() @ Wz.float().t())
-
-    if ops is not None and hasattr(ops, "scaled_fp4_quant") and hasattr(ops, "cutlass_scaled_fp4_mm"):
-        try:
-            out = nvfp4_mm_vllm(x, Wz)
-            print(f"VLLM_NVFP4_MM cos_vs_bf16={cos(out, ref):.5f} shape={tuple(out.shape)}", flush=True)
-        except Exception as e:
-            print("VLLM_NVFP4_MM_FAIL", repr(e), flush=True)
-
-    # 3) same test through flashinfer mm_fp4 (fallback path if vLLM ops missing/broken)
-    if fi is not None and hasattr(fi, "mm_fp4") and hasattr(fi, "fp4_quantize"):
-        try:
-            ags, wgs = gscale(x), gscale(Wz)
-            xq, xs = fi.fp4_quantize(x, ags)
-            wq, ws = fi.fp4_quantize(Wz, wgs)
-            alpha = (1.0 / (ags * wgs)).to(torch.float32)
-            out = fi.mm_fp4(xq, wq.T, xs, ws.T, alpha, torch.bfloat16, block_size=16)
-            print(f"FI_NVFP4_MM cos_vs_bf16={cos(out, ref):.5f} shape={tuple(out.shape)}", flush=True)
-        except Exception as e:
-            print("FI_NVFP4_MM_FAIL", repr(e), flush=True)
-
-    # 4) the phase-boundary premise: dense-zero-NVFP4(W) ~= sparse-FP4(W) for the SAME recovered W.
-    #    Load real recovered-Instruct layer-0 gate_up + down and compare both quantizations on real-scale x.
-    try:
-        lib = ctypes.CDLL(SO_PATH)
-        lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
-        lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
-        lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
-        QBSparse = _qbsparse_factory(torch, lib, dev)
-        rec = torch.load(RECOVERED_INSTRUCT_CKPT, map_location="cpu", weights_only=True)["weights"]
-        gu_w = torch.cat([rec[0], rec[1]], 0).to(dev)   # [28672, 4096]
-        dn_w = rec[2].to(dev)                            # [4096, 14336]
-        del rec
-        for name, W, mm in (("gate_up", gu_w, 256), ("down", dn_w, 256)):
-            xin = (torch.randn(mm, W.shape[1], device=dev) * 0.1).bfloat16()
-            sp = QBSparse(W).forward(xin)               # sparse-FP4 path (deployed decode/prefill weights)
-            if ops is not None and hasattr(ops, "cutlass_scaled_fp4_mm"):
-                dz = nvfp4_mm_vllm(xin, W)              # dense-zero NVFP4 (production kernel, same W)
-                print(f"SAME_W {name}: sparseFP4 vs denseNVFP4 cos={cos(sp, dz):.5f} "
-                      f"(pruned nnz frac={(W != 0).float().mean().item():.3f})", flush=True)
-    except Exception as e:
-        print("SAME_W_FAIL", repr(e), flush=True)
+    H, N = 4096, 512
+    Wz = (torch.randn(N, H, device=dev) * 0.02).bfloat16()
+    x = (torch.randn(256, H, device=dev) * 0.1).bfloat16()
+    ref = x.float() @ Wz.float().t()
+    gsa = (FP8_MAX * FP4_MAX) / x.float().abs().nan_to_num().max()
+    gsw = (FP8_MAX * FP4_MAX) / Wz.float().abs().nan_to_num().max()
+    alpha = (1.0 / (gsa * gsw))
+    aq, a_sf = fi.nvfp4_quantize(x, gsa, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+    for wshuf in (True, False):
+        bq, b_sf = fi.nvfp4_quantize(Wz, gsw, sfLayout=SfLayout.layout_128x4, do_shuffle=wshuf)
+        for backend in ("auto", "cutlass", "trtllm"):
+            try:
+                out = fi.mm_fp4(aq, bq.T, a_sf, b_sf.T, alpha, torch.bfloat16, None, backend=backend)
+                print(f"FI wshuf={wshuf} backend={backend} cos={cos(out, ref):.5f} shape={tuple(out.shape)}", flush=True)
+            except Exception as e:
+                print(f"FI wshuf={wshuf} backend={backend} FAIL {repr(e)[:75]}", flush=True)
     print("PHASE_PROBE_DONE", flush=True)
 
 
@@ -1811,7 +1826,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
          baseline: bool = False, recovered_ckpt: str = "", graph: bool = False,
          splits: int = 8, crossover: bool = False, policy: str = "none", speed: bool = False,
-         versweep: bool = False) -> None:
+         versweep: bool = False, phase_adaptive: bool = False, dense_thresh: int = 512) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
@@ -1824,7 +1839,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits, crossover, versweep)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits, crossover, versweep, phase_adaptive, dense_thresh)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
