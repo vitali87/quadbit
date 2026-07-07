@@ -1302,12 +1302,95 @@ def graph_probe() -> None:
     print("GRAPH_PROBE_DONE", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800, volumes={"/cache": vol})
+def profile_decode() -> None:
+    # ONE bounded profiling pass (kernel-level, CUDA events). Kernel times are GRAPH-INVARIANT (a cudagraph
+    # removes launch gaps, not kernel duration), so this explains the graph-vs-graph decode loss directly.
+    # Per-kernel breakdown of the sparse MLP at decode (M=8/32/64) + prefill (2048/4096), vs a dense-bf16
+    # reference. dense-bf16 is 4x the BYTES of dense-FP4, so if bf16-dense already BEATS sparse-FP4 at
+    # decode, a dense-NVFP4 decode fallback (0.25x bf16 bytes) would clearly win -> that is the ablation.
+    # Weights random 2:4 (GEMM timing is value-independent; the 2:4 density is fixed).
+    import ctypes
+    import statistics
+
+    import torch
+
+    lib = ctypes.CDLL(SO_PATH)
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl_t.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
+    lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+    lib.qb_init_func_attrs()
+    dev = torch.device("cuda")
+    QBSparse = _qbsparse_factory(torch, lib, dev)
+    H, Iw, GU, DN = 4096, 14336, 28672, 4096
+    torch.manual_seed(0)
+    gu = QBSparse((torch.randn(GU, H, device=dev) * 0.02).bfloat16())
+    dn = QBSparse((torch.randn(DN, Iw, device=dev) * 0.02).bfloat16())
+    strm = torch.cuda.current_stream().cuda_stream
+    Wgu = (torch.randn(GU, H, device=dev) * 0.02).bfloat16()   # dense bf16 gate_up ref
+    Wdn = (torch.randn(DN, Iw, device=dev) * 0.02).bfloat16()  # dense bf16 down ref
+
+    def us(fn, it=300):  # median us over it iters (per-call sync)
+        for _ in range(20):
+            fn()
+        torch.cuda.synchronize()
+        ts = []
+        for _ in range(it):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record(); fn(); e.record(); torch.cuda.synchronize()
+            ts.append(s.elapsed_time(e) * 1e3)
+        return statistics.median(ts)
+
+    print(f"{'M':>6} | {'quant':>7} {'gateup':>7} {'swiglu':>7} {'down':>7} {'ksum':>7} {'full':>7} | "
+          f"{'bf16gu':>7} {'bf16dn':>7} {'bf16sum':>8} | {'full/bf16':>9}", flush=True)
+    for M in (8, 32, 64, 2048, 4096):
+        tp = M + (-M) % 128
+        x2 = (torch.randn(tp, H, device=dev) * 0.5).bfloat16()
+        Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
+        sBg = torch.empty((H // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
+        Cgu = torch.empty((GU, tp), dtype=torch.bfloat16, device=dev)
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gH = torch.zeros((tp,), dtype=torch.float32, device=dev)
+        Cout = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        xd = (torch.randn(M, H, device=dev) * 0.5).bfloat16()
+        hd = (torch.randn(M, Iw, device=dev) * 0.5).bfloat16()
+
+        t_q = us(lambda: lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), tp, H))
+        t_gu = us(lambda: lib.sparse_fp4_mm_2lvl(gu.Ac.data_ptr(), Bb.data_ptr(), gu.scaleA.data_ptr(), sBg.data_ptr(),
+                                                 gu.meta.data_ptr(), Cgu.data_ptr(), GU, tp, H, gu.gA.data_ptr(), gBg.data_ptr()))
+        t_sw = us(lambda: lib.fused_swiglu_quant_2lvl(Cgu.data_ptr(), Cgu.data_ptr() + Iw * tp * 2, Hb.data_ptr(),
+                                                      sH.data_ptr(), gH.data_ptr(), tp, Iw))
+        t_dn = us(lambda: lib.sparse_fp4_mm_2lvl_t(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                                   dn.meta.data_ptr(), Cout.data_ptr(), DN, tp, Iw, dn.gA.data_ptr(), gH.data_ptr()))
+        t_full = us(lambda: lib.fused_mlp_2lvl(x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                                               gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                                               dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                                               Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                                               tp, H, Iw, GU, DN, strm))
+        t_bgu = us(lambda: torch.matmul(xd, Wgu.t()))
+        t_bdn = us(lambda: torch.matmul(hd, Wdn.t()))
+        ksum = t_q + t_gu + t_sw + t_dn
+        print(f"{M:>6} | {t_q:7.1f} {t_gu:7.1f} {t_sw:7.1f} {t_dn:7.1f} {ksum:7.1f} {t_full:7.1f} | "
+              f"{t_bgu:7.1f} {t_bdn:7.1f} {t_bgu + t_bdn:8.1f} | {t_full / (t_bgu + t_bdn):9.2f}", flush=True)
+        del x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout, xd, hd
+        torch.cuda.empty_cache()
+    print("PROFILE_DONE (us; ksum=sum of 4 sub-kernels, full=fused single call, full/bf16<1 => sparse beats "
+          "dense-bf16; >1 at decode => dense-NVFP4 fallback would win)", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
          baseline: bool = False, recovered_ckpt: str = "", graph: bool = False) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
+        print(f"SPAWN_ID {call.object_id}", flush=True); return
+    if mode == "profile_decode":
+        call = profile_decode.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
