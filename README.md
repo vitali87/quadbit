@@ -54,15 +54,15 @@ Real serving engines on the same card, same model family, same protocol (CUDA gr
 
 Native NVFP4 is ~1.7× bf16 on both prefill and decode at B=64 for 2.6× smaller weights (+0.71 PPL). **quadbit's deployed W4A4 path matches this accuracy**: full-forward through-kernel PPL **7.90** (vs native NVFP4 7.97) at 3.93 GiB quantized-linear weights, zero calibration.
 
-**quadbit runs a correct, graph-capturable sparse-FP4 MLP inside vLLM on SM120 — but production dense NVFP4 is still faster end-to-end.** The two-level *sparse* MLP is registered as a `torch.library` custom op (`quadbit::fused_mlp`) so vLLM's V1 fullgraph compile + CUDA-graph capture include it (NVFP4 for all non-MLP linears, recovered Llama-3.1-8B-Instruct). The sparse path provably runs under production graphs (`SPARSE_CALLS=7264`, through-serving PPL **10.2709**, not the 7.97 dense value). **Graph-vs-graph (the production-representative comparison):**
+**quadbit runs a correct, graph-capturable sparse-FP4 MLP inside vLLM on SM120 and beats production dense NVFP4 on decode.** The two-level *sparse* MLP is registered as a `torch.library` custom op (`quadbit::fused_mlp`) so vLLM's V1 fullgraph compile + CUDA-graph capture include it (NVFP4 for all non-MLP linears, recovered Llama-3.1-8B-Instruct). At decode it dispatches to a **split-K down projection** that fills the GPU; prefill uses the plain kernel. The sparse path provably runs under production graphs (`SPARSE_CALLS=7264`, through-serving PPL **10.2709**, not the 7.97 dense value). **Graph-vs-graph (the production-representative comparison):**
 
-| metric | vLLM NVFP4 (graph, production) | quadbit sparse MLP (graph) | Δ |
-|--------|-------------------------------|----------------------------|---|
+| metric | vLLM NVFP4 (graph, production) | quadbit sparse MLP + split-K down (graph) | Δ |
+|--------|-------------------------------|-------------------------------------------|---|
 | WT-2 PPL | 7.97 | 10.2709 | +2.30 |
-| prefill B=8/32/64 | 66469/80825/119083 | 63274/77896/115334 | **−4.8% / −3.6% / −3.1%** |
-| decode B=8/32/64 | 1046/4237/8384 | 981/3863/7363 | **−6.2% / −8.8% / −12.2%** |
+| prefill B=8/32/64 | 66469/80825/119083 | 62914/77605/115069 | **−5.3% / −4.0% / −3.4%** |
+| decode B=8/32/64 | 1046/4237/8384 | **1147/4543/8567** | **+9.7% / +7.2% / +2.2%** |
 
-CUDA graphs plus CUTLASS small-M scheduling erase the sparse eager advantage: quadbit serves at **~88–97% of production NVFP4 throughput** with correct sparse accuracy. The decode loss is a specific, diagnosed systems limitation — the sparse **down projection underfills the GPU at decode** (16 CTAs on ~188 SMs, vs 112 for gate_up), because our `matmul_sp` has no split-K/stream-K where CUTLASS does. Full breakdown, proofs, and commands in [docs/graph_serving_result.md](docs/graph_serving_result.md).
+**Decode — the latency-critical, memory-bound serving regime — now beats production NVFP4 at every batch** with correct sparse accuracy. The earlier decode loss (−6 to −12%) was a diagnosed underfill: the sparse **down projection launched only 16 CTAs on ~188 SMs** at decode. A **split-K down kernel** (`matmul_sp_sk`, `gridDim.z` K-splits → 128 CTAs, f32 reduction + two-level-scale epilogue) fills the machine (down 109→56.5 µs, 1.94×) and flips the result. Prefill still trails by ~3–5% (uses the plain non-split-K down, which was never underfilled). Full breakdown, split-factor sweep, proofs, and commands in [docs/graph_serving_result.md](docs/graph_serving_result.md).
 
 *Eager-vs-eager (diagnostic ablation, not the production headline):* three kernel enablers — a **zero-copy transposed epilogue**, a **two-level fused SwiGLU**, and a single no-sync **`fused_mlp_2lvl`** (removing ~64 `cudaDeviceSynchronize`/forward) — took the eager path from batch parity to **+3.7/+5.5/+5.6%** prefill and **+23%** decode vs *eager* NVFP4 (PPL 10.27 vs 7.97). That win is **launch-overhead only**; it does not survive once both paths are CUDA-graphed. See [docs/frozen_serving_result.md](docs/frozen_serving_result.md) for the eager table and `harness/quadbit_serve.py`.
 

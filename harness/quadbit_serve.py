@@ -357,15 +357,17 @@ def _qbsparse_factory(torch, lib, dev):
 # passes it to the op as an explicit arg -- a per-instance constant Dynamo bakes into the graph, so layer
 # resolution never depends on a runtime call-order counter (which Dynamo dummy/out-of-order passes could
 # desync). g["call"] is kept only as the SPARSE_CALLS proof-of-life counter.
-_QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "registered": False, "init_patched": False}
+_QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "splits": 8, "registered": False, "init_patched": False}
 
 
 def _install_graph_customop(torch, lib, reg):
     """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp, tags each
     LlamaMLP with its construction-order layer index, and class-patches LlamaMLP.forward to call the op."""
     from vllm.model_executor.models.llama import LlamaMLP
+    import os
     g = _QB_OP
     g["reg"], g["lib"], g["call"], g["ctor"], g["nl"] = reg, lib, 0, 0, len(reg)
+    g["splits"] = int(os.environ.get("QB_SK_SPLITS", "8"))  # 0 -> disable sk-down (plain fused everywhere)
     out_f = reg[0][1].out_f
 
     if not g["init_patched"]:  # tag each MLP with its layer index as it is built (in order, pre-capture)
@@ -401,12 +403,22 @@ def _install_graph_customop(torch, lib, reg):
             sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
             gH = torch.empty((tp,), dtype=torch.float32, device=dev)
             Cout = torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)
-            g["lib"].fused_mlp_2lvl(
-                x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
-                gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
-                dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
-                Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
-                tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
+            strm = torch.cuda.current_stream().cuda_stream
+            if tp <= 128 and g["splits"] > 0:  # DECODE: split-K down fixes the 16-CTA underfill (sk@8 ~2x)
+                Cf = torch.empty((dn.out_f * tp,), dtype=torch.float32, device=dev)
+                g["lib"].fused_mlp_2lvl_skdown(
+                    x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                    gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                    dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                    Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(), Cf.data_ptr(),
+                    tp, H, Iw, gu.out_f, dn.out_f, g["splits"], strm)
+            else:  # PREFILL: plain fused (enough token-tiles to fill the GPU already)
+                g["lib"].fused_mlp_2lvl(
+                    x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                    gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                    dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                    Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                    tp, H, Iw, gu.out_f, dn.out_f, strm)
             return Cout[:t].reshape(*lead, dn.out_f).contiguous()
 
         @qb_fused_mlp.register_fake
@@ -519,7 +531,9 @@ RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
-                 recovered_ckpt: str = "", graph: bool = False) -> None:
+                 recovered_ckpt: str = "", graph: bool = False, splits: int = 8) -> None:
+    import os
+    os.environ["QB_SK_SPLITS"] = str(splits)  # sk-down split factor read by _install_graph_customop
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -569,6 +583,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
         lib = ctypes.CDLL(SO_PATH)
         lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+        lib.fused_mlp_2lvl_skdown.argtypes = [ctypes.c_void_p] * 18 + [ctypes.c_int] * 6 + [ctypes.c_void_p]
+        lib.qb_init_sk_attrs()  # set matmul_sp_sk smem attr pre-capture too (same reason as below)
         lib.qb_init_func_attrs()  # set matmul_sp smem attr NOW (pre-capture): cudaFuncSetAttribute is a
         # host call illegal inside vLLM's CUDA-graph capture, and the lazy run_sp_mm path would otherwise
         # first hit it during capture. call_once in the .so makes this the single warmup that marks the flag.
@@ -581,7 +597,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
             mlpw[li] = None
         _install_graph_customop(torch, lib, reg)
         gc.collect(); torch.cuda.empty_cache()
-        print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture)", flush=True)
+        print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture); "
+              f"QB_SK_SPLITS={_QB_OP['splits']}", flush=True)
     llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
               kv_cache_dtype="auto", gpu_memory_utilization=util)
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
@@ -1335,7 +1352,9 @@ def profile_decode() -> None:
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.fused_swiglu_quant_2lvl.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 2
     lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+    lib.sparse_down_sk_2lvl.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2 + [ctypes.c_int]
     lib.qb_init_func_attrs()
+    lib.qb_init_sk_attrs()
     dev = torch.device("cuda")
     QBSparse = _qbsparse_factory(torch, lib, dev)
     H, Iw, GU, DN = 4096, 14336, 28672, 4096
@@ -1392,14 +1411,50 @@ def profile_decode() -> None:
               f"{t_bgu:7.1f} {t_bdn:7.1f} {t_bgu + t_bdn:8.1f} | {t_full / (t_bgu + t_bdn):9.2f}", flush=True)
         del x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout, xd, hd
         torch.cuda.empty_cache()
+
+    # ---- Track 1: split-K DECODE down (sparse_down_sk_2lvl) vs plain two-level down, per split factor.
+    # Correctness: sk-down output must match the plain two-level down (same weights/act/scales) within
+    # atomic-reduction noise. Speed: does split-K fill the 16-CTA underfill and beat plain down 111us?
+    print("\nSPLIT-K DOWN (out_f=4096, K=14336): plain vs sk@splits; cos/relL2 vs plain two-level down", flush=True)
+    print(f"{'M':>6} | {'plain':>7} | {'sk@4':>7} {'sk@8':>7} {'sk@16':>7} {'sk@32':>7} | {'cos':>8} {'relL2':>8}", flush=True)
+    for M in (8, 32, 64, 128):
+        tp = M + (-M) % 128
+        h = (torch.randn(tp, Iw, device=dev) * 0.5).bfloat16()
+        Hb = torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev)
+        gHt = torch.empty((tp,), dtype=torch.float32, device=dev)
+        lib.quantize_act_nvfp4_2lvl(h.data_ptr(), Hb.data_ptr(), sH.data_ptr(), gHt.data_ptr(), tp, Iw)
+        Cpl = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        Csk = torch.empty((tp, DN), dtype=torch.bfloat16, device=dev)
+        Cf = torch.empty((DN * tp,), dtype=torch.float32, device=dev)
+
+        def plain():
+            lib.sparse_fp4_mm_2lvl_t(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                     dn.meta.data_ptr(), Cpl.data_ptr(), DN, tp, Iw, dn.gA.data_ptr(), gHt.data_ptr())
+
+        def sk(sp):
+            lib.sparse_down_sk_2lvl(dn.Ac.data_ptr(), Hb.data_ptr(), dn.scaleA.data_ptr(), sH.data_ptr(),
+                                    dn.meta.data_ptr(), Csk.data_ptr(), Cf.data_ptr(), DN, tp, Iw,
+                                    dn.gA.data_ptr(), gHt.data_ptr(), sp)
+        t_pl = us(plain)
+        tsk = {sp: us(lambda sp=sp: sk(sp)) for sp in (4, 8, 16, 32)}
+        plain(); sk(16); torch.cuda.synchronize()  # correctness: sk@16 vs plain
+        a, b = Csk.float().flatten(), Cpl.float().flatten()
+        cos = torch.nn.functional.cosine_similarity(a, b, dim=0).item()
+        rel = ((a - b).norm() / b.norm().clamp_min(1e-9)).item()
+        print(f"{M:>6} | {t_pl:7.1f} | {tsk[4]:7.1f} {tsk[8]:7.1f} {tsk[16]:7.1f} {tsk[32]:7.1f} | {cos:8.5f} {rel:8.5f}", flush=True)
+        del h, Hb, sH, gHt, Cpl, Csk, Cf
+        torch.cuda.empty_cache()
     print("PROFILE_DONE (us; ksum=sum of 4 sub-kernels, full=fused single call, full/bf16<1 => sparse beats "
-          "dense-bf16; >1 at decode => dense-NVFP4 fallback would win)", flush=True)
+          "dense-bf16; >1 at decode => dense-NVFP4 fallback would win). sk cos~1/relL2~0 => correct; "
+          "sk << plain 111us => split-K fixes the down underfill.", flush=True)
 
 
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
-         baseline: bool = False, recovered_ckpt: str = "", graph: bool = False) -> None:
+         baseline: bool = False, recovered_ckpt: str = "", graph: bool = False,
+         splits: int = 8) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
@@ -1409,7 +1464,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":

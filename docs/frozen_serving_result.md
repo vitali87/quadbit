@@ -4,11 +4,11 @@
 > explains the kernel optimization path (zero-copy epilogue, two-level fused SwiGLU, no-sync
 > `fused_mlp_2lvl`). The +5.5/+5.6% prefill and +23% decode win here is **launch-overhead only** and does
 > **not** survive once both paths are CUDA-graphed. The production-representative serving comparison
-> (graph-vs-graph, where dense NVFP4 wins by 3-12%) is in **`docs/graph_serving_result.md`** — cite that,
-> not these numbers, as the serving result.
+> (graph-vs-graph, where quadbit's split-K down **beats** NVFP4 on decode by +2 to +10% and trails ~3–5% on
+> prefill) is in **`docs/graph_serving_result.md`** — cite that, not these numbers, as the serving result.
 
-This is the correct, proven eager-serving result. It stays frozen on `main`; the graph-capture work lives
-on the `graph-capture` branch (settled: production NVFP4 is faster — see `docs/graph_serving_result.md`).
+This is the correct, proven eager-serving ablation. The production serving win is the graph-vs-graph
+split-K-down result in `docs/graph_serving_result.md`.
 
 ## Commit / checkpoint / environment
 - **Frozen commit:** `c60f179f1f921aec9c4299b5d6cdcea8ffecbde9` (branch `main`)
@@ -46,8 +46,9 @@ uv run modal run --detach harness/quadbit_serve.py --mode recovered --util 0.8 -
 ```
 
 ## Caveat this result carries (now resolved)
-Eager-vs-eager. NVFP4's production path uses CUDA graphs. The `graph-capture` branch turned this into the
+Eager-vs-eager. NVFP4's production path uses CUDA graphs. The graph-capture work turned this into the
 production-comparable result: quadbit's sparse MLP was made graph-capturable (a `torch.library` custom op
-inside vLLM's fullgraph + CUDA-graph capture, PPL 10.2709 proving sparse ran), and **graph-vs-graph dense
-NVFP4 wins** (prefill −3.1 to −4.8%, decode −6.2 to −12.2%). The eager win above was launch-overhead only.
-See `docs/graph_serving_result.md` for the production serving table, proofs, and the decode-underfill diagnosis.
+inside vLLM's fullgraph + CUDA-graph capture, PPL 10.2709 proving sparse ran), and with a **split-K decode
+down projection** quadbit **beats graph-vs-graph dense NVFP4 on decode** (+9.7/+7.2/+2.2% at B=8/32/64;
+prefill −5.3 to −3.4%). The eager win above was launch-overhead only, a separate lever.
+See `docs/graph_serving_result.md` for the production serving table, split-factor sweep, proofs, and diagnosis.
