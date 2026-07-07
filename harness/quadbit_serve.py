@@ -527,11 +527,12 @@ BF16_CKPT = "meta-llama/Llama-3.1-8B-Instruct"
 RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
 
 
-@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+@app.function(gpu="RTX-PRO-6000", timeout=7200, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
-                 recovered_ckpt: str = "", graph: bool = False, splits: int = 8) -> None:
+                 recovered_ckpt: str = "", graph: bool = False, splits: int = 8,
+                 crossover: bool = False) -> None:
     import os
     os.environ["QB_SK_SPLITS"] = str(splits)  # sk-down split factor read by _install_graph_customop
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
@@ -578,6 +579,8 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
     # patched MLP is capture-safe (persistent workspaces, explicit-stream kernels). Whether vLLM's V1
     # compile/piecewise-cudagraph path admits the ctypes MLP is the open question this measures.
     S, GEN = 2048, 128
+    # crossover (Track 4) sweeps prompt up to 8192 + gen up to 1024; size the context window for it.
+    mm_len = (8192 + 1024 + 16) if crossover else (S + GEN + 16)
     if graph and fused and not baseline:
         # Build QBSparse for all layers and register the custom op BEFORE LLM() so vLLM's one-shot init
         # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
@@ -599,7 +602,7 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         gc.collect(); torch.cuda.empty_cache()
         print(f"registered quadbit::fused_mlp custom op with {len(reg)} layers (pre-LLM capture); "
               f"QB_SK_SPLITS={_QB_OP['splits']}", flush=True)
-    llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=mm_len,
               kv_cache_dtype="auto", gpu_memory_utilization=util)
     print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
@@ -721,6 +724,41 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
               f"{'fused two-level' if fused else 'unfused two-level'}; {len(wins)}x{S})", flush=True)
     if ppl_only:
         print("PPL_ONLY_DONE", flush=True); return
+
+    if crossover:  # Track 4: end-to-end request-regime crossover matrix (this row = NVFP4 baseline
+        # or sparse+split-K, decided by how the harness was launched). Per (B, prompt, gen) cell:
+        # TTFT (prefill+1st tok), total request latency, decode time, TPOT, and throughputs. TTFT is
+        # a separate max_tokens=1 pass; total is the full ignore_eos generation. Infeasible cells
+        # (KV pool can't hold B*(prompt+gen)) are caught and skipped so the matrix completes.
+        llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
+        mem_peak = gpu_mib()
+
+        def ids_len(i, P):
+            return [((j * 131 + i * 7919) % 128000) + 1 for j in range(P)]
+
+        print("CX_HDR B,prompt,gen,ttft_s,total_s,decode_s,tpot_ms,prefill_tps,decode_tps,out_tps,total_tps", flush=True)
+        for B in (1, 8, 32, 64):
+            for P in (128, 512, 2048, 8192):
+                for G in (16, 32, 64, 128, 256, 512, 1024):
+                    prompts = [{"prompt_token_ids": ids_len(i, P)} for i in range(B)]
+                    try:
+                        _, ttft = tps(prompts, SamplingParams(temperature=0, max_tokens=1))
+                        outs, total = tps(prompts, SamplingParams(temperature=0, max_tokens=G, ignore_eos=True))
+                        gen = sum(len(o.outputs[0].token_ids) for o in outs)
+                        mem_peak = max(mem_peak, gpu_mib())
+                        decode = max(total - ttft, 1e-6)
+                        tpot = decode / max(gen / B - 1, 1) * 1000  # avg per-token decode latency (ms)
+                        print(f"CX {B},{P},{G},{ttft:.4f},{total:.4f},{decode:.4f},{tpot:.3f},"
+                              f"{B * P / ttft:.0f},{gen / decode:.0f},{gen / total:.0f},"
+                              f"{B * (P + G) / total:.0f}", flush=True)
+                    except Exception as e:
+                        print(f"CX {B},{P},{G},SKIP {type(e).__name__}: {str(e)[:80]}", flush=True)
+                        torch.cuda.empty_cache()
+        tag = "full-NVFP4-baseline" if baseline else ("nvfp4-base+sparse-MLP" + ("" if fused else "-unfused2lvl"))
+        print(f"CROSSOVER_DONE [{tag}] util={util} device_MiB load={mem_load} peak={mem_peak}", flush=True)
+        if _graph_customop:
+            print(f"SPARSE_CALLS = {_QB_OP['call']} (>0 proves quadbit::fused_mlp ran)", flush=True)
+        return
 
     llm.generate([distinct_short(0)], SamplingParams(temperature=0, max_tokens=8), use_tqdm=False)  # warmup
     mem_peak = gpu_mib()
@@ -1454,7 +1492,7 @@ def profile_decode() -> None:
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
          baseline: bool = False, recovered_ckpt: str = "", graph: bool = False,
-         splits: int = 8) -> None:
+         splits: int = 8, crossover: bool = False) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
@@ -1464,7 +1502,7 @@ def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bo
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph, splits, crossover)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
