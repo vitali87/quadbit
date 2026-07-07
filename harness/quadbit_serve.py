@@ -377,7 +377,10 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
     def fwd(x):
         lead = x.shape[:-1]; x2f = x.reshape(-1, H)
         t = x2f.shape[0]; pad = (-t) % 128; tp = t + pad
-        if _fused_single and _persist:
+        # Persist ONLY the small decode shapes (tp<=512): those are what vLLM's decode CUDA graphs capture
+        # and are reused every step. Large prefill tp uses per-call alloc (freed immediately) so persistent
+        # Cgu[28672,tp] buffers don't accumulate across chunk shapes and OOM (prefill runs eager anyway).
+        if _fused_single and _persist and tp <= 512:
             # PERSISTENT + CAPTURE-SAFE: stage input into a stable buffer, then one no-alloc no-sync fused
             # call on the current (capture) stream. Padded rows [t:tp] produce sliced-off output (each token
             # is independent), so they need no zeroing. Cout is persistent -> consumed by the layer residual
