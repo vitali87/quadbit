@@ -356,13 +356,44 @@ def _fused_mlp_fwd(mlp, torch, lib, dev):
     gu, dn = mlp._qb_gu, mlp._qb_dn
     H, Iw = gu.in_f, dn.in_f  # 4096, 14336
     _fused_single = os.environ.get("QB_FUSED_SINGLE", "1") == "1"  # 1 ctypes call, 0 syncs; "0" -> 6-call A/B
+    _persist = os.environ.get("QB_PERSIST_WS", "1") == "1"         # persistent per-shape workspace (capture-safe)
+    mlp._qb_ws = {}
+
+    def _workspace(tp):  # persistent per-tp buffers: allocation-free steady state + CUDA-graph-capturable
+        ws = mlp._qb_ws.get(tp)
+        if ws is None:
+            ws = (torch.zeros(tp, H, dtype=torch.bfloat16, device=dev),          # x2 (input staging; pad rows stay 0)
+                  torch.empty((tp, H // 2), dtype=torch.uint8, device=dev),      # Bb
+                  torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev),    # sBg
+                  torch.empty((tp,), dtype=torch.float32, device=dev),           # gBg
+                  torch.empty((gu.out_f, tp), dtype=torch.bfloat16, device=dev), # Cgu
+                  torch.empty((tp, Iw // 2), dtype=torch.uint8, device=dev),     # Hb
+                  torch.empty((Iw // 128, tp, 4), dtype=torch.uint8, device=dev),# sH
+                  torch.empty((tp,), dtype=torch.float32, device=dev),           # gH (fused_mlp_2lvl zeroes it)
+                  torch.empty((tp, dn.out_f), dtype=torch.bfloat16, device=dev)) # Cout ([tp,out_f] zero-copy)
+            mlp._qb_ws[tp] = ws
+        return ws
 
     def fwd(x):
-        lead = x.shape[:-1]; x2 = x.reshape(-1, H).to(torch.bfloat16)
-        t = x2.shape[0]; pad = (-t) % 128
+        lead = x.shape[:-1]; x2f = x.reshape(-1, H)
+        t = x2f.shape[0]; pad = (-t) % 128; tp = t + pad
+        if _fused_single and _persist:
+            # PERSISTENT + CAPTURE-SAFE: stage input into a stable buffer, then one no-alloc no-sync fused
+            # call on the current (capture) stream. Padded rows [t:tp] produce sliced-off output (each token
+            # is independent), so they need no zeroing. Cout is persistent -> consumed by the layer residual
+            # before this layer's next call (and is exactly the static-output vLLM CUDA-graph capture needs).
+            x2, Bb, sBg, gBg, Cgu, Hb, sH, gH, Cout = _workspace(tp)
+            x2[:t].copy_(x2f if x2f.dtype == torch.bfloat16 else x2f.to(torch.bfloat16))
+            lib.fused_mlp_2lvl(x2.data_ptr(), gu.Ac.data_ptr(), gu.scaleA.data_ptr(), gu.meta.data_ptr(),
+                               gu.gA.data_ptr(), dn.Ac.data_ptr(), dn.scaleA.data_ptr(), dn.meta.data_ptr(),
+                               dn.gA.data_ptr(), Bb.data_ptr(), sBg.data_ptr(), gBg.data_ptr(), Cgu.data_ptr(),
+                               Hb.data_ptr(), sH.data_ptr(), gH.data_ptr(), Cout.data_ptr(),
+                               tp, H, Iw, gu.out_f, dn.out_f, torch.cuda.current_stream().cuda_stream)
+            return Cout[:t].reshape(*lead, dn.out_f)
+        x2 = x2f.to(torch.bfloat16)
         if pad:
             x2 = torch.cat([x2, x2.new_zeros(pad, H)], 0)
-        x2 = x2.contiguous(); tp = t + pad
+        x2 = x2.contiguous()
         Bb = torch.empty((tp, H // 2), dtype=torch.uint8, device=dev)
         sBg = torch.empty((gu.ks, tp, 4), dtype=torch.uint8, device=dev)
         gBg = torch.empty((tp,), dtype=torch.float32, device=dev)
@@ -407,7 +438,7 @@ RECOVERED_CKPT = "/cache/recovered_Meta-Llama-3-8B_P30000_p25000_2sh_lr3e-05.pt"
               secrets=[modal.Secret.from_name("huggingface")])
 def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = False,
                  fused: bool = True, ppl_only: bool = False, baseline: bool = False,
-                 recovered_ckpt: str = "") -> None:
+                 recovered_ckpt: str = "", graph: bool = False) -> None:
     # Option 1: vLLM native NVFP4 for ALL non-MLP linears (attention/qkv/o/lm_head 4-bit), quadbit
     # sparse two-level for the MLP on EVERY M (prefill + decode; same weights, no mode-dependence).
     # Non-MLP stays NVFP4 (log confirms modelopt_fp4). MLP weights are the true bf16 Instruct weights,
@@ -448,10 +479,13 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         print(f"side-loaded bf16 MLP weights for {len(mlpw)} layers", flush=True)
 
     # 2) vLLM native NVFP4 (non-MLP linears 4-bit). Lower util to leave room for sparse MLP buffers.
+    # graph=True: enforce_eager=False so vLLM captures the WHOLE forward as CUDA graphs (Route B). The
+    # patched MLP is capture-safe (persistent workspaces, explicit-stream kernels). Whether vLLM's V1
+    # compile/piecewise-cudagraph path admits the ctypes MLP is the open question this measures.
     S, GEN = 2048, 128
-    llm = LLM(model=NVFP4_CKPT, enforce_eager=True, max_model_len=S + GEN + 16,
+    llm = LLM(model=NVFP4_CKPT, enforce_eager=not graph, max_model_len=S + GEN + 16,
               kv_cache_dtype="auto", gpu_memory_utilization=util)
-    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}", flush=True)  # expect modelopt_fp4
+    print(f"NON_MLP_QUANT = {llm.llm_engine.model_config.quantization}; graph={graph}", flush=True)
     mem_load = gpu_mib()
 
     lib = ctypes.CDLL(SO_PATH)
@@ -1173,14 +1207,14 @@ def graph_probe() -> None:
 @app.local_entrypoint()
 def main(mode: str = "smoke", sparse: bool = True, thresh: int = 256, do_ppl: bool = True,
          util: float = 0.8, instrument: bool = False, fused: bool = True, ppl_only: bool = False,
-         baseline: bool = False, recovered_ckpt: str = "") -> None:
+         baseline: bool = False, recovered_ckpt: str = "", graph: bool = False) -> None:
     if mode == "graph_probe":
         call = graph_probe.spawn()
         print(f"SPAWN_ID {call.object_id}", flush=True); return
     if mode == "serve":
         call = serve.spawn(sparse, thresh)
     elif mode == "hybrid":
-        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt)
+        call = serve_hybrid.spawn(do_ppl, util, instrument, fused, ppl_only, baseline, recovered_ckpt, graph)
     elif mode == "recovered":
         call = serve_recovered.spawn(RECOVERED_CKPT, util, fused, instrument)  # --instrument -> diag
     elif mode == "gusparse":
