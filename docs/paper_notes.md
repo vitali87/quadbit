@@ -556,8 +556,8 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
 - **Multi-token / verification decode favoring sparse (Track 4B, 2026-07-07): REFUTED.** Speculative/
   verification decode processes k candidates per sequence, so the MLP sees effective M = B·k rows/step;
   hypothesis was that larger M favors sparse tensor-core work. It does NOT — the sparse/NVFP4 decode-tok/s
-  margin SHRINKS with M and never expands: M=1 **+9%** (1.092), M=8 1.066, M=16 1.054, M=32 1.019, M=64
-  **parity** (0.998), M≥256 noisy/BW-bound/NVFP4-favorable. The split-K decode win is a **small-M
+  margin SHRINKS with M and never expands: M=1 **+13%** (1.134), M=8 1.083, M=16 1.066, M=32 1.051, M=64
+  **+2%** (1.020), M≥256 noisy/BW-bound/NVFP4-favorable. The split-K decode win is a **small-M
   GPU-underfill fix**: as M grows NVFP4's own dense GEMM fills the machine and the advantage fades. So
   sparse FP4 is for **low-M latency-sensitive decode (single/low-batch single-token), NOT throughput
   verification** — consistent with the crossover map (sparse owns B=1-8, NVFP4 owns the batch-heavy corner).

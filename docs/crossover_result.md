@@ -94,9 +94,10 @@ decode margin over NVFP4 *shrinks* with M in the clean regime and never expands:
 
 | effective M | 1 | 8 | 16 | 32 | 64 | 128 |
 |---|---|---|---|---|---|---|
-| sparse/NVFP4 decode tok/s | 1.092 | 1.066 | 1.054 | 1.019 | 0.998 | 1.040 |
+| sparse/NVFP4 decode tok/s | 1.134 | 1.083 | 1.066 | 1.051 | 1.020 | 1.043 |
 
-(M >= 256 is scheduling/BW-bound in full-forward decode, noisy and NVFP4-favorable, not a clean MLP shape.)
+(prefix caching off, same as the crossover. M >= 256 is scheduling/BW-bound in full-forward decode, noisy
+and NVFP4-favorable, not a clean MLP shape.)
 The split-K decode win is a **small-M GPU-underfill fix**: as M grows, NVFP4's own dense GEMM fills the
 machine and the advantage fades. So sparse FP4 is most attractive for **low-M latency-sensitive decode
 (single/low-batch single-token)**, NOT for throughput-oriented multi-token verification. This is consistent
