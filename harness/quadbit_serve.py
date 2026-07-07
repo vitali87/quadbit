@@ -352,29 +352,40 @@ def _qbsparse_factory(torch, lib, dev):
 # The sanctioned way to put an opaque ctypes kernel into a fullgraph is a torch.library custom op: Dynamo
 # emits it as an op NODE (no inline, no break) and cudagraph bakes the kernel launches the op makes AT
 # CAPTURE TIME. So the sparse weights MUST be registered BEFORE LLM() (vLLM captures once during init;
-# a post-init patch is invisible to the frozen graph -> the 7.97-dense trap). Layer is resolved by a
-# call-order counter (vLLM runs layers 0..31 in order every forward, and the op body only executes at
-# real/capture time -- trace uses register_fake, replay reuses captured kernels -- so the counter stays
-# aligned modulo NL as long as every forward is a complete 32-call sweep).
-_QB_OP = {"reg": None, "lib": None, "call": 0, "nl": 0, "registered": False}
+# a post-init patch is invisible to the frozen graph -> the 7.97-dense trap). Each LlamaMLP instance is
+# tagged with its layer index at CONSTRUCTION (patched __init__, in-order 0..NL-1, before capture) and
+# passes it to the op as an explicit arg -- a per-instance constant Dynamo bakes into the graph, so layer
+# resolution never depends on a runtime call-order counter (which Dynamo dummy/out-of-order passes could
+# desync). g["call"] is kept only as the SPARSE_CALLS proof-of-life counter.
+_QB_OP = {"reg": None, "lib": None, "call": 0, "ctor": 0, "nl": 0, "registered": False, "init_patched": False}
 
 
 def _install_graph_customop(torch, lib, reg):
-    """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp and
-    class-patches LlamaMLP.forward to call it. Returns the class (for the _qb_calls proof counter)."""
+    """reg = [(gu_QBSparse, dn_QBSparse)] * NL, built BEFORE LLM(). Registers quadbit::fused_mlp, tags each
+    LlamaMLP with its construction-order layer index, and class-patches LlamaMLP.forward to call the op."""
     from vllm.model_executor.models.llama import LlamaMLP
     g = _QB_OP
-    g["reg"], g["lib"], g["call"], g["nl"] = reg, lib, 0, len(reg)
+    g["reg"], g["lib"], g["call"], g["ctor"], g["nl"] = reg, lib, 0, 0, len(reg)
     out_f = reg[0][1].out_f
+
+    if not g["init_patched"]:  # tag each MLP with its layer index as it is built (in order, pre-capture)
+        _orig_mlp_init = LlamaMLP.__init__
+
+        def _mlp_init(self, *a, **k):
+            _orig_mlp_init(self, *a, **k)
+            self._qb_lidx = g["ctor"] % g["nl"]
+            g["ctor"] += 1
+        LlamaMLP.__init__ = _mlp_init
+        g["init_patched"] = True
 
     if not g["registered"]:
         @torch.library.custom_op("quadbit::fused_mlp", mutates_args=())
-        def qb_fused_mlp(x: torch.Tensor, out_f: int) -> torch.Tensor:
+        def qb_fused_mlp(x: torch.Tensor, layer_idx: int, out_f: int) -> torch.Tensor:
             lead = x.shape[:-1]
             x2f = x.reshape(-1, x.shape[-1])
             t = x2f.shape[0]
             tp = t + (-t) % 128
-            gu, dn = g["reg"][g["call"] % g["nl"]]
+            gu, dn = g["reg"][layer_idx]
             g["call"] += 1
             dev = x.device
             H, Iw = gu.in_f, dn.in_f
@@ -399,13 +410,13 @@ def _install_graph_customop(torch, lib, reg):
             return Cout[:t].reshape(*lead, dn.out_f).contiguous()
 
         @qb_fused_mlp.register_fake
-        def _(x, out_f):
+        def _(x, layer_idx, out_f):
             return x.new_empty((*x.shape[:-1], out_f))
 
         g["registered"] = True
 
     def _forward(self, x):
-        return torch.ops.quadbit.fused_mlp(x, out_f)
+        return torch.ops.quadbit.fused_mlp(x, self._qb_lidx, out_f)
 
     LlamaMLP.forward = _forward
     return LlamaMLP
@@ -558,6 +569,9 @@ def serve_hybrid(do_ppl: bool = True, util: float = 0.8, instrument: bool = Fals
         # cudagraph capture records SPARSE per-layer kernels (see _install_graph_customop).
         lib = ctypes.CDLL(SO_PATH)
         lib.fused_mlp_2lvl.argtypes = [ctypes.c_void_p] * 17 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
+        lib.qb_init_func_attrs()  # set matmul_sp smem attr NOW (pre-capture): cudaFuncSetAttribute is a
+        # host call illegal inside vLLM's CUDA-graph capture, and the lazy run_sp_mm path would otherwise
+        # first hit it during capture. call_once in the .so makes this the single warmup that marks the flag.
         dev = torch.device("cuda")
         QBSparse = _qbsparse_factory(torch, lib, dev)
         reg = []

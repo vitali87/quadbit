@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <mutex>
 #include <cuda.h>
 #include <cuda_bf16.h>
 #define BM 128
@@ -545,11 +546,15 @@ extern "C" void add_rmsnorm_quant(const void *inp, const void *res, const void *
 // cudaFuncSetAttribute is a host-side call that is ILLEGAL during CUDA-graph stream capture. Set the
 // matmul_sp max-dynamic-smem ONCE (idempotent, SMEM is a compile-time constant) so run_sp_mm contains
 // only stream operations (TMA-descriptor build on host + kernel launch) and is capture-safe thereafter.
-static bool g_sp_attr_set = false;
-extern "C" void qb_init_func_attrs() {
+// std::call_once (not a bare bool) so tensor-parallel / multi-threaded runners don't race on the flag,
+// and so BOTH the explicit qb_init_func_attrs() entry AND the lazy run_sp_mm path share ONE flag: the
+// pre-capture warmup call marks it, so the capture-time call is a guaranteed no-op (no cudaFuncSetAttribute
+// inside stream capture, which would fail).
+static std::once_flag g_sp_attr_once;
+static void set_sp_attr() {
     cudaFuncSetAttribute(matmul_sp, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM);
-    g_sp_attr_set = true;
 }
+extern "C" void qb_init_func_attrs() { std::call_once(g_sp_attr_once, set_sp_attr); }
 static inline void run_sp_mm(const void *A, const void *B, const void *scaleA, const void *scaleB,
                              const void *meta, void *C, int M, int N, int Klog,
                              const void *gA, const void *gB, int outT, cudaStream_t stream) {
@@ -557,7 +562,7 @@ static inline void run_sp_mm(const void *A, const void *B, const void *scaleA, c
     alignas(64) CUtensorMap mapA, mapB;
     mk(&mapA, (uint8_t *)A, KAb, M, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
     mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
-    if (!g_sp_attr_set) qb_init_func_attrs();   // one-time; skipped during capture (set at warmup)
+    std::call_once(g_sp_attr_once, set_sp_attr);   // one-time; a no-op after the pre-capture warmup call
     dim3 grid(N / BN, M / (2 * BM)), block(256);
     matmul_sp<<<grid, block, SMEM, stream>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
                                              (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog,

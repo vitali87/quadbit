@@ -14,5 +14,7 @@ a.out
 k
 *.ncu-rep
 *.nsys-rep
+*.log
+scratch_*
 .ruff_cache/
 .DS_Store
