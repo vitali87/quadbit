@@ -1,4 +1,4 @@
-# Production workload crossover — where sparse FP4 wins end-to-end (2026-07-07)
+# Production workload crossover: where sparse FP4 wins end-to-end (2026-07-07)
 
 **Headline:** across a batch x prompt-length x generation-length request matrix, quadbit's sparse split-K
 FP4 MLP **wins end-to-end request latency in 83 of 112 regimes** vs production dense NVFP4. Both paths are
@@ -20,9 +20,9 @@ long-generation request regimes, sparse FP4 wins end-to-end.**
 - Grid: B in {1,8,32,64}, P in {128,512,2048,8192}, G in {16,32,64,128,256,512,1024}. util 0.8, RTX PRO 6000.
 - No cell was KV-infeasible (vLLM wave-schedules the largest cells; that is realistic serving behavior).
 
-## Crossover heatmap — total-latency ratio NVFP4 / sparse (>1.00 = sparse wins)
+## Crossover heatmap: total-latency ratio NVFP4 / sparse (>1.00 = sparse wins)
 
-### B=1 (single stream) — sparse wins every regime (+3.5% to +11.6%)
+### B=1 (single stream): sparse wins every regime (+3.5% to +11.6%)
 | prompt \ gen | 16 | 32 | 64 | 128 | 256 | 512 | 1024 |
 |---|---|---|---|---|---|---|---|
 | 128 | 1.093 | 1.095 | 1.097 | 1.097 | 1.097 | 1.086 | 1.090 |
@@ -56,7 +56,7 @@ long-generation request regimes, sparse FP4 wins end-to-end.**
 
 Bold = NVFP4 wins (ratio <= 1.00). Everything else: sparse wins.
 
-## Crossover boundary — min generation length for sparse to win total latency
+## Crossover boundary: min generation length for sparse to win total latency
 | B | prompt=128 | 512 | 2048 | 8192 |
 |---|---|---|---|---|
 | 1 | 16 | 16 | 16 | 16 |
@@ -80,11 +80,11 @@ deficit as the workload becomes more prefill-bound. Single-stream serving wins u
 - **Interactive / agentic (B=1-8, any prompt, gen >= ~16-64): sparse wins**, up to +11.6%. This is the
   dominant regime for chat and tool-use serving.
 - **Long-generation at any batch: sparse wins** once gen crosses the boundary.
-- **Batch prefill (B=64, long prompt, short gen): NVFP4 wins** by <=3% — the prefill-bound corner where
-  sparse's down-projection sparsity cannot pay for its prefill deficit.
+- **Batch prefill (B=64, long prompt, short gen): NVFP4 wins** by <=3%. This is the prefill-bound corner
+  where sparse's down-projection sparsity cannot pay for its prefill deficit.
 - Accuracy tax is constant at +2.3 PPL (10.27 vs 7.97) everywhere; the crossover is purely a speed map.
 
-## Track 4B addendum — verification / multi-token shapes (M = B*k)
+## Track 4B addendum: verification / multi-token shapes (M = B*k)
 Speculative/verification decoding processes k candidate tokens per sequence, so the MLP sees effective
 M = B*k rows per decode step. Hypothesis: larger M favors sparse tensor-core work. **Refuted.** The sparse
 decode margin over NVFP4 *shrinks* with M in the clean regime and never expands:
