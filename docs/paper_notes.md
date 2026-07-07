@@ -419,11 +419,12 @@ matrix, BOTH paths CUDA-graph captured, scoring total request latency per (B, pr
 **METHODOLOGY POINT — PREFIX CACHING MUST BE OFF:** with it on, vLLM V1 reuses the TTFT call's prompt KV in the
 total call, skips the real prefill, and hides sparse's prefill deficit — a first pass with caching ON spuriously
 showed sparse winning 112/112. With it OFF (each request pays a real prefill): **sparse split-K FP4 MLP wins
-end-to-end total request latency in 83 of 112 regimes** vs production dense NVFP4. **B=1 single-stream wins
-EVERY regime (+3.5% to +11.6%)**; sparse wins at any batch once gen clears a batch/prompt-dependent boundary;
-NVFP4 keeps only the prefill-bound corner (high B x long P x short G, loses <=3%). Crossover boundary (min gen
-for sparse to win): B=1 all=16; B=8 = 16/16/32/64; B=32 = 16/32/128/128; B=64 = 16/256/1024/never (for
-P=128/512/2048/8192). The boundary rises with batch and prompt length as the workload becomes more
+end-to-end total request latency outright in 81 of 112 regimes and ties 2 more (83/112 at least as fast)** vs
+production dense NVFP4. **B=1 single-stream wins EVERY regime (+3.5% to +11.6%)**; sparse wins at any batch
+once gen clears a batch/prompt-dependent boundary; NVFP4 keeps only the prefill-bound corner (high B x long P x
+short G, loses <=3%). Crossover boundary (min gen for sparse to win): B=1 all=16; B=8 = 16/16/32/128; B=32 =
+16/32/128/128; B=64 = 16/never(tie@256)/1024/never (for P=128/512/2048/8192). The two 1.0001 near-ties are
+counted as ties, not wins. The boundary rises with batch and prompt length as the workload becomes more
 prefill-bound. Accuracy is a **constant +2.3 PPL (10.27 vs 7.97) across the whole map** — the crossover is
 purely a speed map. **Serving claim: for interactive/low-batch and long-generation regimes, sparse FP4 wins
 end-to-end; the batch-prefill corner stays NVFP4's.**

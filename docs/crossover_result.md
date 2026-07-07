@@ -1,7 +1,8 @@
 # Production workload crossover: where sparse FP4 wins end-to-end (2026-07-07)
 
 **Headline:** across a batch x prompt-length x generation-length request matrix, quadbit's sparse split-K
-FP4 MLP **wins end-to-end request latency in 83 of 112 regimes** vs production dense NVFP4. Both paths are
+FP4 MLP **wins end-to-end request latency outright in 81 of 112 regimes and ties 2 more (83/112 where it is
+at least as fast)** vs production dense NVFP4. Both paths are
 graph-captured (vLLM V1 fullgraph + CUDA graphs). Sparse wins wherever the **decode fraction** is large
 enough (single-stream, short prompts, or long generations); dense NVFP4 keeps only the prefill-bound
 corner (high batch x long prompt x short generation). This is the serving claim: **for single-stream and
@@ -36,7 +37,7 @@ long-generation request regimes, sparse FP4 wins end-to-end.**
 | 128 | 1.116 | 1.114 | 1.102 | 1.097 | 1.094 | 1.092 | 1.089 |
 | 512 | 1.052 | 1.067 | 1.076 | 1.082 | 1.085 | 1.086 | 1.085 |
 | 2048 | **0.988** | 1.010 | 1.031 | 1.047 | 1.056 | 1.061 | 1.061 |
-| 8192 | **0.990** | **0.994** | 1.000 | 1.008 | 1.015 | 1.022 | 1.026 |
+| 8192 | **0.990** | **0.994** | 1.000† | 1.008 | 1.015 | 1.022 | 1.026 |
 
 ### B=32
 | prompt \ gen | 16 | 32 | 64 | 128 | 256 | 512 | 1024 |
@@ -50,19 +51,21 @@ long-generation request regimes, sparse FP4 wins end-to-end.**
 | prompt \ gen | 16 | 32 | 64 | 128 | 256 | 512 | 1024 |
 |---|---|---|---|---|---|---|---|
 | 128 | 1.018 | 1.008 | 1.014 | 1.016 | 1.011 | 1.007 | 1.004 |
-| 512 | **0.982** | **0.984** | **0.990** | **0.996** | 1.000 | **0.999** | **0.997** |
+| 512 | **0.982** | **0.984** | **0.990** | **0.996** | 1.000† | **0.999** | **0.997** |
 | 2048 | **0.983** | **0.985** | **0.989** | **0.992** | **0.995** | **0.999** | 1.001 |
 | 8192 | **0.998** | **0.998** | **0.999** | **0.999** | **0.998** | **0.998** | **0.997** |
 
-Bold = NVFP4 wins (ratio <= 1.00). Everything else: sparse wins.
+Bold = NVFP4 wins (ratio < 1.00). Everything else: sparse wins (ratio > 1.00). **†** marks the two cells
+whose ratio is 1.0001 (sparse faster by <0.02%): statistical ties, counted as ties not wins. Tally:
+**81 sparse wins, 2 ties, 29 NVFP4 wins.**
 
 ## Crossover boundary: min generation length for sparse to win total latency
 | B | prompt=128 | 512 | 2048 | 8192 |
 |---|---|---|---|---|
 | 1 | 16 | 16 | 16 | 16 |
-| 8 | 16 | 16 | 32 | 64 |
+| 8 | 16 | 16 | 32 | 128 |
 | 32 | 16 | 32 | 128 | 128 |
-| 64 | 16 | 256 | 1024 | never (<=1024) |
+| 64 | 16 | never (tie at 256) | 1024 | never (<=1024) |
 
 The boundary rises with batch and prompt length: sparse needs a longer generation to amortize its prefill
 deficit as the workload becomes more prefill-bound. Single-stream serving wins unconditionally.

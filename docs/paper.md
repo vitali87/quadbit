@@ -504,19 +504,19 @@ CUDA-graph captured, scoring total request latency per cell (TTFT from `generate
 `generate(max_tokens=G, ignore_eos=True)`). **Prefix caching must be OFF**: with it on, vLLM V1 reuses the TTFT
 call's prompt KV in the total call, skips the real prefill, and hides sparse's prefill deficit — a first pass
 with caching on spuriously showed sparse winning all 112 cells. With it off (each request pays a real prefill),
-quadbit's sparse split-K FP4 MLP **wins end-to-end total request latency in 83 of 112 regimes** vs production
-dense NVFP4. B=1 single-stream wins *every* regime (+3.5% to +11.6%); sparse wins at any batch once generation
-clears a batch/prompt-dependent boundary; NVFP4 keeps only the prefill-bound corner (high batch x long prompt x
-short generation, where it wins by <=3%).
+quadbit's sparse split-K FP4 MLP **wins end-to-end total request latency outright in 81 of 112 regimes and
+ties 2 more (83/112 where it is at least as fast)** vs production dense NVFP4. B=1 single-stream wins *every*
+regime (+3.5% to +11.6%); sparse wins at any batch once generation clears a batch/prompt-dependent boundary;
+NVFP4 keeps only the prefill-bound corner (high batch x long prompt x short generation, where it wins by <=3%).
 
 *Crossover boundary — min generation length for sparse to win total latency:*
 
 | B | prompt=128 | 512 | 2048 | 8192 |
 |---|---|---|---|---|
 | 1 | 16 | 16 | 16 | 16 |
-| 8 | 16 | 16 | 32 | 64 |
+| 8 | 16 | 16 | 32 | 128 |
 | 32 | 16 | 32 | 128 | 128 |
-| 64 | 16 | 256 | 1024 | never (<=1024) |
+| 64 | 16 | never (tie at 256) | 1024 | never (<=1024) |
 
 The boundary rises with batch and prompt length: as the workload becomes more prefill-bound, sparse needs a
 longer generation to amortize its prefill deficit. Accuracy is a constant +2.3 PPL (10.27 vs 7.97) across the
