@@ -100,3 +100,19 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | Fused RMSNorm+quant 3.7 to 4.3x; fused add+RMSNorm+quant 5.3 to 5.8x | `docs/paper.md` Section 6 | backed |
 | Full fused dense FP4 block on real Qwen3-8B 2.16 to 2.19x over bf16, block rel 0.13 | `harness/real_model.py`; `docs/paper.md` Section 6 | backed |
 | All frontier-model projections tile onto the kernel | `harness/real_model.py`; `docs/paper.md` Section 6 | backed |
+
+## Distributed sparse-FP4 MoE (DeepSeek-V4-Flash) — next-phase
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| DeepSeek-V4-Flash experts are MXFP4 (int8-packed E2M1 + e8m0 per-32 scale), not the config's FP8 | `harness/moe_prep.py` (raw dtypes: int8 weight + float8_e8m0fnu scale) | backed |
+| MXFP4->bf16 decode is value-exact (100% round-trip; 88.7% raw-byte = harmless +0/-0 aliasing) | `harness/moe_prep.py::run` validate (`docs` scratch m2e log) | backed |
+| Segmented routed-row kernel == per-expert kernel, cos 1.000000, all routing patterns | `harness/moe_seg.py` (uniform/all-to-one/one-per-expert/imbalanced, tiny + deepseek shapes) | backed |
+| Segmented MoE op is CUDA-graph capturable+replayable, cos 1.000000 | `harness/moe_seg.py` graph-capture block | backed |
+| On one real layer (256 experts, real gate), seg == per-expert kernel, cos 1.000000, 0 non-finite | `harness/moe_layer.py` | backed |
+| quadbit sparsifies ~91% of params / ~80% of active linear FLOPs (all expert MLPs; attn/router/embed dense) | `docs/figures/coverage.py`, `docs/figures/data/coverage.csv` | backed |
+| Expert-parallel scaling 2.17x (2 GPU) / 4.21x (4 GPU), imbalance 1.04, checksum-identical | `harness/moe_dist.py`; `docs/figures/data/dist_scaling.csv` | backed |
+| PCIe all-reduce comm 0.32-0.45 ms vs 1.3-2.5 ms expert compute (no NVLink caveat) | `harness/moe_dist.py` | backed |
+| Real-weight per-expert-output 2:4-FP4 tax ~cos 0.70 (random-act worst case); MoE accuracy recovery is future work | `harness/moe_layer.py` | backed |
+| Dense NVFP4 DeepSeek-V4-Flash loads/serves in vLLM 0.24 (FlashInfer CUTLASS MoE) on 2x RTX PRO 6000 | `harness/serve_dsv4.py` | needs-rerun (load confirmed; serving numbers pending) |
+| In-vLLM graph-captured sparse MoE serving (end-to-end) | `harness/serve_dsv4.py` quadbit mode | reserved (staged-.so injection in progress) |
