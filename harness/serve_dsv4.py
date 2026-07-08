@@ -29,7 +29,7 @@ image = (
     # SM120 dense/attention unblock plugin: registered as a vllm.general_plugins entry point so the
     # monkeypatch runs in every spawned worker (an imperative patch in the driver does not survive).
     .add_local_dir(str(ROOT / "harness" / "qb_vllm_plugin"), "/opt/qb_plugin", copy=True)
-    .run_commands("pip install /opt/qb_plugin")
+    .run_commands("pip install --force-reinstall --no-deps /opt/qb_plugin")
 )
 app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
@@ -233,10 +233,27 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
         "serve sparse yet; running native generate here would misrepresent the result.")
 
 
+@app.function(image=image)
+def probe() -> None:
+    # CPU-only: confirm which plugin code is actually baked into the image (guards against pip
+    # skipping a same-version reinstall). Prints the installed version + the dequant source.
+    import inspect
+    from importlib.metadata import entry_points, version
+
+    import qb_sm120_plugin as p
+
+    print(f"# qb-sm120-plugin version={version('qb-sm120-plugin')}", flush=True)
+    eps = [e.value for e in entry_points(group="vllm.general_plugins")]
+    print(f"# vllm.general_plugins entry points: {eps}", flush=True)
+    print(inspect.getsource(p._dequant_block), flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16") -> None:
-    if mode == "inspect":
+    if mode == "probe":
+        probe.remote()
+    elif mode == "inspect":
         inspect_moe.remote(tp=tp, max_len=max_len)
     elif mode == "quadbit":
         quadbit.remote(tp=tp, eager=eager, max_len=max_len)
