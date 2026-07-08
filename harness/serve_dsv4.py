@@ -238,6 +238,43 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
 
 
 @app.function(image=image)
+def dumpsrc() -> None:
+    # CPU-only: read the exact source of the deepseek_v4 o_proj DeepGEMM path so the SM120-safe
+    # replacement is faithful (deep_gemm_fp8_o_proj bypasses Fp8LinearMethod -> our linear patch
+    # never sees it; the DeepGEMM fp8_einsum asserts t.dim()==N on sm_120).
+    import vllm
+
+    base = Path(vllm.__file__).parent
+    def show_full(label, p):
+        print(f"\n===== {label}  ({p}) =====", flush=True)
+        if not p.exists():
+            print(f"  MISSING {p}", flush=True)
+            return
+        text = p.read_text().splitlines()
+        print("\n".join(f"{i + 1:4} {ln}" for i, ln in enumerate(text)), flush=True)
+
+    def show_defs(label, p, keys):
+        print(f"\n===== {label}  ({p}) =====", flush=True)
+        if not p.exists():
+            print(f"  MISSING {p}", flush=True)
+            return
+        text = p.read_text().splitlines()
+        for key in keys:
+            hits = [i for i, ln in enumerate(text) if key in ln]
+            for h in hits[:4]:
+                lo, hi = max(0, h - 1), min(len(text), h + 45)
+                print(f"  --- '{key}' @ line {h + 1} ---", flush=True)
+                print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo, hi)), flush=True)
+
+    show_full("fused_inv_rope_fp8_quant",
+              base / "models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py")
+    show_defs("attention.py wo_a/wo_b/dims",
+              base / "models/deepseek_v4/attention.py",
+              ["self.wo_a", "self.wo_b", "self.o_lora_rank", "self.nope_head_dim",
+               "self.rope_head_dim", "self.n_local_groups", "self.n_local_heads"])
+
+
+@app.function(image=image)
 def probe() -> None:
     # CPU-only: confirm which plugin code is actually baked into the image (guards against pip
     # skipping a same-version reinstall). Prints the installed version + the dequant source.
@@ -267,14 +304,18 @@ def probe() -> None:
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8") -> None:
-    if mode == "probe":
+    if mode == "dumpsrc":
+        dumpsrc.remote()
+    elif mode == "probe":
         probe.remote()
     elif mode == "inspect":
         inspect_moe.remote(tp=tp, max_len=max_len)
     elif mode == "quadbit":
         quadbit.remote(tp=tp, eager=eager, max_len=max_len)
     elif mode == "unblock":
-        call = unblock.spawn(tp=tp, eager=eager, max_len=max_len, dense=dense, kv=kv)
-        print(f"SPAWN_ID={call.object_id}", flush=True)
+        # .remote() (not .spawn()) so the FULL worker log streams to this client; launch under
+        # `modal run --detach` so the job still survives client disconnect. spawn's detached logs
+        # get truncated to a short tail once the app stops, hiding the worker root-cause traceback.
+        unblock.remote(tp=tp, eager=eager, max_len=max_len, dense=dense, kv=kv)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)

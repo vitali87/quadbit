@@ -17,7 +17,28 @@ from __future__ import annotations
 import os
 
 # Per-process counters; each worker prints its own view so fallback is auditable in the logs.
-STATS = {"nvfp4_layers": 0, "bf16_layers": 0, "native_layers": 0, "fp8_calls": 0}
+STATS = {"nvfp4_layers": 0, "bf16_layers": 0, "native_layers": 0, "fp8_calls": 0, "oproj_calls": 0}
+
+
+def _inv_rope_o(o, positions, cos_sin_cache, nope_dim, rope_dim):
+    # bf16 inverse interleaved RoPE on the last rope_dim dims of each head. Mirrors the
+    # deepseek_v4 fused_inv_rope_fp8_quant triton kernel elementwise (validated in
+    # scratchpad/test_inv_rope_py.py): for pair i, even offset -> a*cos+b*sin, odd -> b*cos-a*sin.
+    import torch
+
+    half = rope_dim // 2
+    rope = o[..., nope_dim:].float()
+    cs = cos_sin_cache.float()[positions]  # [T, rope_dim] = cos||sin
+    cos = cs[:, None, :half]
+    sin = cs[:, None, half:]
+    a = rope[..., 0::2]
+    b = rope[..., 1::2]
+    rot = torch.empty_like(rope)
+    rot[..., 0::2] = a * cos + b * sin
+    rot[..., 1::2] = b * cos - a * sin
+    out = o.clone().float()
+    out[..., nope_dim:] = rot
+    return out
 
 
 def _dequant_block(w, s, bs):
@@ -146,4 +167,62 @@ def install() -> None:
 
     Fp8LinearMethod.process_weights_after_loading = patched_pw
     Fp8LinearMethod.apply = patched_apply
+
+    # --- DeepSeek-V4 MLA o_proj: replace the DeepGEMM fp8_einsum path (asserts t.dim()==N on
+    # sm_120) with a bf16 inverse-RoPE + torch.einsum. This op calls deep_gemm directly, bypassing
+    # Fp8LinearMethod, so the linear patch above never sees it. bf16 is strictly more accurate than
+    # the native fp8 einsum, so o_proj output tracks the reference.
+    def _wo_a_bf16(wo_a):
+        # Return wo_a's weight dequantized to bf16 (2D or 3D preserved). Prefer the plugin's
+        # _qb_bf16 (built in patched_pw); else block-dequant the raw fp8 weight+scale.
+        wa = getattr(wo_a, "_qb_bf16", None)
+        if wa is not None:
+            return wa
+        scale = getattr(wo_a, "weight_scale_inv", None)
+        w = wo_a.weight.data
+        if scale is None:
+            return w.to(torch.bfloat16)
+        if w.dim() == 2:
+            return _dequant_block(w, scale.data, (128, 128))
+        # 3D bmm weight [G, N, K] with per-batch block scales: dequant each slice.
+        return torch.stack([_dequant_block(w[i], scale.data[i], (128, 128))
+                            for i in range(w.shape[0])], 0)
+
+    def patched_o_proj(o, positions, cos_sin_cache, wo_a, wo_b, *, n_groups, heads_per_group,
+                       nope_dim, rope_dim, o_lora_rank, einsum_recipe, tma_aligned_scales):
+        wa = _wo_a_bf16(wo_a).to(torch.bfloat16)
+        if STATS["oproj_calls"] == 0:
+            sc = getattr(wo_a, "weight_scale_inv", None)
+            print(f"[qb_sm120] o_proj bf16 path ACTIVE pid={os.getpid()} o={tuple(o.shape)} "
+                  f"n_groups={n_groups} hpg={heads_per_group} o_lora_rank={o_lora_rank} "
+                  f"wo_a.weight={tuple(wo_a.weight.shape)} wa={tuple(wa.shape)} "
+                  f"qb_bf16={'y' if hasattr(wo_a, '_qb_bf16') else 'n'} "
+                  f"scale={tuple(sc.shape) if sc is not None else None}", flush=True)
+        STATS["oproj_calls"] += 1
+        t = o.shape[0]
+        head_dim = o.shape[2]
+        o_r = _inv_rope_o(o, positions, cos_sin_cache, nope_dim, rope_dim)
+        o_g = o_r.reshape(t, n_groups, heads_per_group * head_dim).to(torch.bfloat16)
+        if wa.dim() == 2:
+            wa = wa.reshape(n_groups, o_lora_rank, heads_per_group * head_dim)
+        z = torch.einsum("bhr,hdr->bhd", o_g, wa)
+        return wo_b(z.flatten(1))
+
+    import importlib
+
+    try:
+        oc = importlib.import_module("vllm.models.deepseek_v4.nvidia.ops.o_proj")
+        orig_op = oc.deep_gemm_fp8_o_proj
+        oc.deep_gemm_fp8_o_proj = patched_o_proj
+        import sys
+
+        rebound = 1
+        for mod in list(sys.modules.values()):
+            if mod is not None and getattr(mod, "deep_gemm_fp8_o_proj", None) is orig_op:
+                mod.deep_gemm_fp8_o_proj = patched_o_proj
+                rebound += 1
+        print(f"[qb_sm120] patched deep_gemm_fp8_o_proj in {rebound} module(s)", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"[qb_sm120] o_proj patch skipped: {type(ex).__name__}: {ex}", flush=True)
+
     print(f"[qb_sm120] installed in pid={os.getpid()} (method={method})", flush=True)
