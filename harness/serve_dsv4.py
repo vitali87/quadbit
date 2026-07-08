@@ -231,13 +231,14 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
 
 
 @app.local_entrypoint()
-def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
+def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
+         dense: str = "bf16") -> None:
     if mode == "inspect":
         inspect_moe.remote(tp=tp, max_len=max_len)
     elif mode == "quadbit":
         quadbit.remote(tp=tp, eager=eager, max_len=max_len)
     elif mode == "unblock":
-        call = unblock.spawn(tp=tp, eager=eager, max_len=max_len)
+        call = unblock.spawn(tp=tp, eager=eager, max_len=max_len, dense=dense)
         print(f"SPAWN_ID={call.object_id}", flush=True)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)

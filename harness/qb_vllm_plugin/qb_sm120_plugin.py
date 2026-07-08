@@ -54,9 +54,19 @@ def install() -> None:
             print(f"[qb_sm120] flashinfer import failed {type(ex).__name__}; bf16", flush=True)
             method = "bf16"
 
-    def _bw(self):
-        return getattr(self, "weight_block_size", None) or getattr(
+    def _bw(self, layer, scale):
+        bs = getattr(self, "weight_block_size", None) or getattr(
             getattr(self, "quant_config", None), "weight_block_size", None)
+        if bs is not None:
+            return bs
+        # infer the block from weight vs scale shapes so we never fall through to the crashing
+        # native path just because the attr moved: [N,K] weight, [ceil(N/bn),ceil(K/bk)] scale.
+        w = getattr(layer, "weight", None)
+        if w is not None and scale is not None and w.dim() == 2 and scale.dim() == 2:
+            import math
+
+            return (math.ceil(w.shape[0] / scale.shape[0]), math.ceil(w.shape[1] / scale.shape[1]))
+        return None
 
     def _to_nvfp4(wbf):
         SfLayout, _, nvfp4_quantize = nvq
@@ -68,8 +78,8 @@ def install() -> None:
     orig_apply = Fp8LinearMethod.apply
 
     def patched_pw(self, layer):
-        bs = _bw(self)
         scale = getattr(layer, "weight_scale_inv", None)
+        bs = _bw(self, layer, scale)
         if bs is None or scale is None:
             STATS["native_layers"] += 1
             return orig_pw(self, layer)  # per-tensor fp8 / non-block: leave native path
