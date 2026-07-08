@@ -31,6 +31,110 @@ app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
+def _install_bf16_fp8_fallback() -> list[str]:
+    """WORKSTREAM 0: replace the block-FP8 (ue8m0) dense/attention GEMM (no SM120 kernel) with a
+    correctness-first bf16 dequant path. Patches Fp8LinearMethod so every block-scaled linear
+    dequantizes its weight to bf16 once at load and runs torch F.linear. MoE experts (NVFP4) and
+    everything else are untouched. Returns a log of what was patched."""
+    import torch
+    import torch.nn.functional as F
+
+    log: list[str] = []
+
+    def dequant_block(w: torch.Tensor, s: torch.Tensor, bs) -> torch.Tensor:
+        # w: fp8 [N,K]; s: [ceil(N/bn), ceil(K/bk)] block scales (multiplier). dequant = w * scale.
+        n, k = w.shape
+        bn, bk = int(bs[0]), int(bs[1])
+        se = s.to(torch.float32).repeat_interleave(bn, 0)[:n].repeat_interleave(bk, 1)[:k]
+        return (w.to(torch.float32) * se).to(torch.bfloat16)
+
+    try:
+        from vllm.model_executor.layers.quantization.fp8 import Fp8LinearMethod
+    except Exception as ex:  # noqa: BLE001
+        log.append(f"Fp8LinearMethod import failed: {type(ex).__name__}: {ex}")
+        return log
+
+    def _bw(self):
+        return getattr(self, "weight_block_size", None) or getattr(
+            getattr(self, "quant_config", None), "weight_block_size", None)
+
+    orig_pw = Fp8LinearMethod.process_weights_after_loading
+
+    def patched_pw(self, layer):  # build bf16 weight from RAW load-format scales, skip CUTLASS prep
+        bs = _bw(self)
+        scale = getattr(layer, "weight_scale_inv", None)
+        if bs is None or scale is None:
+            return orig_pw(self, layer)  # per-tensor fp8 or non-block: leave native path
+        w = layer.weight.data
+        layer._bf16_w = dequant_block(w, scale.data, bs)
+        # free the fp8 originals; keep tiny placeholders so any later attr access survives
+        layer.weight.data = torch.empty(0, dtype=w.dtype, device=w.device)
+        layer.weight_scale_inv.data = torch.empty(0, dtype=scale.dtype, device=scale.device)
+        return None
+
+    def patched_apply(self, layer, x, bias=None):
+        wb = getattr(layer, "_bf16_w", None)
+        if wb is None:
+            return orig_apply(self, layer, x, bias)
+        out = F.linear(x.to(wb.dtype), wb)
+        return out + bias if bias is not None else out
+
+    orig_apply = Fp8LinearMethod.apply
+    Fp8LinearMethod.process_weights_after_loading = patched_pw
+    Fp8LinearMethod.apply = patched_apply
+    log.append("patched Fp8LinearMethod.{process_weights_after_loading,apply} -> bf16 dequant")
+    return log
+
+
+@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048) -> None:
+    """WORKSTREAM 0 end-to-end correctness unblock: bf16 dense/attention fallback + native NVFP4 MoE.
+    Proves the model initializes, graph/eager-runs, and generates on SM120 despite no upstream FP8
+    kernel. eager=True first (correctness), then flip to False for graph-capture status."""
+    import os
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    patchlog = _install_bf16_fp8_fallback()
+    print(f"# WS0 unblock: tp={tp} eager={eager} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+    for line in patchlog:
+        print(f"  patch: {line}", flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              hf_overrides={"rope_scaling": rope})
+    t0 = time.time()
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default)", flush=True)
+        llm = LLM(**kw)
+    print(f"  load+init forward ok in {time.time() - t0:.0f}s (the SM120 wall is cleared)", flush=True)
+
+    prompts = ["The capital of France is", "def fibonacci(n):", "The three primary colors are"]
+    sp = SamplingParams(temperature=0.0, max_tokens=32)
+    t1 = time.time()
+    outs = llm.generate(prompts, sp)
+    dt = time.time() - t1
+    for o in outs:
+        print(f"  [gen] {o.prompt!r} -> {o.outputs[0].text!r}", flush=True)
+    ntok = sum(len(o.outputs[0].token_ids) for o in outs)
+    print(f"  generated {ntok} tok in {dt:.2f}s ({ntok / dt:.1f} tok/s)", flush=True)
+
+    import subprocess
+    mem = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True).stdout.strip()
+    print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
+    ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
+    print(f"# WS0 unblock {'PASS' if ok else 'FAIL'} "
+          f"(bf16 dense fallback + native NVFP4 MoE, graph={'eager' if eager else 'captured'})", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
@@ -184,5 +288,8 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         inspect_moe.remote(tp=tp, max_len=max_len)
     elif mode == "quadbit":
         quadbit.remote(tp=tp, eager=eager, max_len=max_len)
+    elif mode == "unblock":
+        call = unblock.spawn(tp=tp, eager=eager, max_len=max_len)
+        print(f"SPAWN_ID={call.object_id}", flush=True)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
