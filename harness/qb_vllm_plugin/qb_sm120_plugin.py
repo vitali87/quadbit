@@ -98,7 +98,8 @@ def install() -> None:
         if done == 0:
             print(f"[qb_sm120] fp8-fallback ACTIVE pid={os.getpid()} method={method}", flush=True)
         if done < 12:
-            print(f"[qb_shape] w={tuple(layer.weight.shape)} s={tuple(scale.shape)} bs={bs}", flush=True)
+            print(f"[qb_shape] w={tuple(layer.weight.shape)} s={tuple(scale.shape)} bs={bs}",
+                  flush=True)
         # Build the bf16/nvfp4 replacement from the RAW load-format weight+scale (validated layout),
         # BEFORE vLLM reprocesses. Do NOT free the fp8 originals: MLA weight absorption reads
         # kv_b_proj/q_b_proj weights at load, and other consumers read weight shapes.
@@ -118,7 +119,7 @@ def install() -> None:
         try:
             orig_pw(self, layer)
         except Exception as ex:  # noqa: BLE001
-            print(f"[qb_sm120] orig process_weights raised {type(ex).__name__}; using our weight", flush=True)
+            print(f"[qb_sm120] orig process_weights raised {type(ex).__name__}; using ours", flush=True)
         return None
 
     def patched_apply(self, layer, x, bias=None):
