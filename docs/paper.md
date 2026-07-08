@@ -746,6 +746,15 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   honest open frontier is sparse capability recovery, not serving plumbing.
 - **No dense FP4 speed win.** quadbit dense loses the SM120 dense race to FlashInfer 1.35 to 2.2x
   and is retained only as a zero-training W4A4 accuracy drop-in, not a speed contribution.
+- **MoE decode occupancy not yet measured.** The segmented expert kernel is validated for correctness
+  and scales at prefill routed-row counts (Section 10); at decode (few routed rows) its grid is small
+  (the 16-CTA underfill regime of Section 8), and a split-K segmented variant -- the mechanical analogue
+  of the single-MLP split-K down we already ship -- is future work, not yet built or measured. Because
+  end-to-end DeepSeek-V4-Flash serving is ecosystem-blocked on SM120 (Section 10), decode latency for
+  this model could not be exercised regardless.
+- **MoE accuracy recovery untried.** The MoE experts are pruned 2:4 by magnitude only; calibrated
+  SparseGPT / distillation on the experts (the dense-model levers of Section 8) are not yet applied at
+  MoE scale. The per-expert-output tax (cos ~0.70 on random activations) is reported un-repaired.
 
 ---
 
