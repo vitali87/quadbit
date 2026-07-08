@@ -133,6 +133,27 @@ uv run modal run --detach harness/quadbit_serve.py --mode hybrid --util 0.8 --fu
 ```
 Output CSVs: `/cache/crossover_nvfp4.csv`, `/cache/crossover_sparse.csv` (112 cells each).
 
+### Accuracy-repair tournament + downstream quality (Section 9)
+```bash
+# repair tournament on the recovered-Instruct all-sparse ckpt (each mode = separate GPU)
+uv run modal run --detach harness/repair.py --mode calib
+uv run modal run --detach harness/repair.py --mode lowrank --rank 32 --steps 2000
+uv run modal run --detach harness/repair.py --mode mask   --steps 2000
+uv run modal run --detach harness/repair.py --mode distill --steps 5000            # KL + 0.1 CE
+# best variant: KL-light / CE-heavy distillation -> through-kernel 8.86, serving 9.10
+uv run modal run --detach harness/repair.py --mode distill --steps 3000 --lr 1e-5 --kl-w 0.2 --ce-w 1.0 --tag loss_ceheavy
+# fold the trained down scale into the weights (exact via per-row gA) -> weights-only serving ckpt
+uv run modal run harness/repair.py::fold --src /cache/repair_distill_loss_ceheavy.pt --dst /cache/serving_ceheavy.pt
+# serving PPL + prefill/decode through the production graph on the repaired ckpt
+uv run modal run --detach harness/quadbit_serve.py --mode hybrid --util 0.8 --fused --graph --do-ppl \
+  --recovered-ckpt /cache/serving_ceheavy.pt
+# downstream 0-shot quality (hellaswag/arc-c/piqa/winogrande); variant in {bf16,nvfp4,sparse,repaired}
+uv run modal run --detach harness/downstream_eval.py --variant nvfp4
+uv run modal run --detach harness/downstream_eval.py --variant repaired --ckpt /cache/repair_distill_loss_ceheavy.pt
+```
+Result: distillation cuts serving PPL 10.27 to 9.10 but downstream accuracy is ~unchanged from all-sparse
+(the 2:4-sparsity capability loss is not recovered). Data: `harness/repair.py`, `harness/downstream_eval.py`.
+
 ### Verification / multi-token sweep (Section 9 Track 4B, refuted)
 ```bash
 uv run modal run --detach harness/quadbit_serve.py --versweep   # effective M = B*k sweep

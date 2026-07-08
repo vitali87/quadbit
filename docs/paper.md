@@ -550,7 +550,7 @@ materialized dense with zeros in the pruned slots), decode (small M) through the
 built it. The semantics hold: dense NVFP4 over the recovered weights scores 10.30 PPL through serving,
 equal to all-sparse 10.27 within numerical drift, so the two layouts are interchangeable and the phase
 boundary is seamless. But the row loses: 39 wins and 66 losses of 105 crossover cells versus NVFP4, against
-all-sparse's 81 of 29, and it flips none of the cells all-sparse already lost. The root cause is measured
+all-sparse's 81 wins and 29 losses, and it flips none of the cells all-sparse already lost. The root cause is measured
 (`--mode phase_bench`, microseconds per MLP layer at prefill): the hand-rolled dense path
 (`nvfp4_quantize` plus `mm_fp4` plus SwiGLU plus `nvfp4_quantize` plus `mm_fp4`) runs about 2x native NVFP4
 because its activation quant is unfused (the FlashInfer `nvfp4_quantize` of the down input alone is 517
@@ -574,7 +574,7 @@ weights and the per-output down scale.
 **Result: distillation reduces the perplexity tax but does not recover downstream capability.** Only the
 distillation family moved the metric. The best variant (KL-light/CE-heavy) reaches through-kernel PPL
 **8.86** (serving PPL **9.10**, from the original **10.27**), clearing the target and keeping the entire
-split-K decode win intact (decode +10.2/+6.7/+1.5% at B=8/32/64; serving speed is weight-value independent,
+split-K decode win intact (decode +9.7/+7.2/+2.2% at B=8/32/64, the banked figure; serving speed is weight-value independent,
 so the 81/112 crossover carries over unchanged). But the downstream-task check tells the real story: on
 ARC-Challenge, HellaSwag, PIQA, and Winogrande the repaired checkpoint is essentially unchanged from the
 un-repaired all-sparse model (about +0.005 accuracy on average), and the lowest-PPL variant even regressed

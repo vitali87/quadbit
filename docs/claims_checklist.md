@@ -41,7 +41,7 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | Sparse path provably ran under graphs: SPARSE_CALLS=7264, PPL 10.2709 (not 7.97) | `docs/graph_serving_result.md` | backed |
 | Decode win +9.7/+7.2/+2.2% at B=8/32/64 vs production NVFP4 | `harness/quadbit_serve.py --graph --splits 8`; `docs/graph_serving_result.md` (1147/4543/8567 vs 1046/4237/8384) | backed |
 | Prefill trails -5.3/-4.0/-3.4% at B=8/32/64 | `docs/graph_serving_result.md` (62914/77605/115069 vs 66469/80825/119083) | backed |
-| Split-K down: 16->128 CTAs, 109->56.5 us (1.94x) at split=8, cos 1.0000 | `harness/quadbit_serve.py --mode profile_decode`; `docs/graph_serving_result.md` | backed |
+| Split-K down: 16->128 CTAs, 109->56.5 us (1.93x) at split=8, cos 1.0000 | `harness/quadbit_serve.py --mode profile_decode`; `docs/graph_serving_result.md` | backed |
 | splits=8 beats 4 and 16 end-to-end | `docs/graph_serving_result.md` split-factor sweep | backed |
 
 ## 4. End-to-end serving crossover
