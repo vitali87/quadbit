@@ -37,6 +37,10 @@ def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
     import torch
     from vllm import LLM, SamplingParams
 
+    import os
+    # DeepGEMM's ue8m0 scale-factor transform asserts on SM120 ("Unknown SF transformation"); disable it
+    # so vLLM routes FP8/scaled GEMMs to the FlashInfer/CUTLASS path that SM120 supports.
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     print(f"# M4 baseline: {MODEL} tp={tp} eager={eager} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
     # DeepSeek-V4 config uses rope_scaling {type: yarn}; newer configs want rope_type -> patch via hf_overrides.
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
@@ -87,10 +91,12 @@ def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
     # M3.6 recon: dump the exact FusedMoE structure so the sparse injection targets real attrs (model
     # is volume-cached after the first baseline load -> this loads fast).
     import inspect
+    import os
 
     import torch
     from vllm import LLM
 
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
     llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
@@ -134,10 +140,12 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
     # under the serve image's CUDA 13 ptxas. Structure-specific wiring (expert-weight dequant + attr
     # names) is finalized against inspect_moe's dump; this run reports SPARSE_EXPERT_CALLS + fallbacks.
     import ctypes
+    import os
 
     import torch
     from vllm import LLM, SamplingParams
 
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     so = "/cache/sparse_fp4.so"
     lib = ctypes.CDLL(so)
     lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4 +
