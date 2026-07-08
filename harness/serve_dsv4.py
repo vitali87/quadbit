@@ -55,7 +55,7 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
             "beta_fast": 32, "beta_slow": 1}
     kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
               max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
-              hf_overrides={"rope_scaling": rope})
+              max_num_batched_tokens=max(max_len, 2048), hf_overrides={"rope_scaling": rope})
     t0 = time.time()
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
