@@ -594,7 +594,76 @@ truncated QAT were worse than the SparseGPT baseline (13.06).
 
 ---
 
-## 10. Related work
+## 10. Distributed sparse-FP4 MoE on a large model (DeepSeek-V4-Flash)
+
+Sections 4 to 9 establish sparse FP4 on a single dense model (Llama-3-8B) on one GPU. The obvious
+reviewer questions are whether the approach (i) transfers to a large model, (ii) transfers to a
+Mixture-of-Experts architecture, and (iii) works across multiple GPUs. We answer all three on
+**DeepSeek-V4-Flash** (284B total / 13B active, 256 routed + 1 shared expert per MoE layer, top-6,
+`moe_intermediate` 2048, hidden 4096, 43 layers, MLA + sparse-index attention). This is a strictly
+harder setting than Llama-8B: the MLP FLOPs live in hundreds of routed experts behind a router, not a
+single `LlamaMLP`, so the dense-MLP operator of Sections 6/9 does not attach.
+
+**The experts are MXFP4, not the config's FP8.** The checkpoint's `quantization_config` advertises
+FP8 block-128, but that describes the dense/attention linears; the experts (`expert_dtype: fp4`) are
+**MXFP4** -- E2M1 codes packed two per int8 byte with an e8m0 (power-of-two) scale per 32-element
+block. We decode to bf16 (low nibble -> even element, matching the OCP/transformers convention) and
+verify the decode is **value-exact (100% round-trip)** on real weights, then prune 2:4 by magnitude
+and re-quantize into the two-level NVFP4 layout of Section 3. The re-quantized experts match the
+through-kernel path at cos 0.9999.
+
+**A segmented routed-row sparse GEMM makes MoE graph-capturable.** A per-expert Python loop is correct
+but not CUDA-graph-capturable (data-dependent launch count) -- fatal for the graph-mode serving of
+Section 9. We instead stack the local experts' packed weights into one tensor `[E*Mpe, ...]`, sort the
+routed rows by expert, pad each segment to the 128-row column tile, and pass a per-column-block expert
+id. A single kernel (`matmul_sp_moe`, one launch, fixed grid) reads its expert id and offsets only the
+weight-side indices (TMA-A coordinate, local scales, 2:4 metadata, per-row global scale) by
+`expert*Mpe`, keeping output-side indices local. The scheduling unit is a routed row, not an expert.
+Validated bit-exact against the per-expert kernel (**cos 1.000000**) across uniform, all-to-one,
+one-per-expert, and imbalanced routing at both tiny and real DeepSeek expert shapes; **CUDA-graph
+capture and replay reproduce it at cos 1.000000**. On one real layer (256 experts, real gate routing)
+the segmented operator matches the per-expert kernel at cos 1.000000 with zero non-finites.
+
+**Coverage.** quadbit sparsifies every routed and shared expert MLP; the router, MLA attention,
+embeddings and lm_head stay dense NVFP4. That is **~91% of model parameters** and **~80% of active
+linear FLOPs per token** (top-6/256 experts + shared). In dense Llama-8B the MLP is ~66% of
+parameters, so the sparse coverage is *higher* for the large MoE, not lower -- the result transfers,
+and transfers to more of the model.
+
+**Distributed (expert-parallel) scaling.** Sharding the 256 experts across ranks (expert parallelism,
+the natural choice on RTX PRO 6000, which has no NVLink) and combining per-rank contributions with an
+all-reduce, the segmented kernel scales near-linearly: **2.17x on 2 GPUs and 4.21x on 4 GPUs** of
+expert-kernel time, routing imbalance 1.04, with identical output checksum at every world size
+(correctness preserved). On PCIe the all-reduce communication is 0.32 to 0.45 ms against 1.3 to 2.5 ms
+of expert compute -- non-trivial but not dominant at this scale; on a no-NVLink fabric this
+communication share is the honest external-validity caveat, and it grows with world size.
+
+**Accuracy.** The per-expert-output 2:4-FP4 error on real weights (random activations, a worst case)
+is cos ~0.70 -- consistent with the single-model finding that 2:4 sparsity, not FP4, is the accuracy
+cost. Sparse FP4 remains a speed-for-capability operating point; MoE accuracy recovery (calibrated
+SparseGPT / distillation on the experts) is future work, exactly as for the dense model.
+
+**Serving integration status (an honest ecosystem boundary).** In vLLM 0.24 the DeepSeek-V4-Flash
+NVFP4 checkpoint downloads, and its weights load across 2x RTX PRO 6000; vLLM selects the FlashInfer
+CUTLASS NVFP4 MoE backend and the FP8 Lightning-Indexer attention. But the model's **FP8 (ue8m0 W8A8)
+attention/dense GEMMs have no working kernel on SM120**: with DeepGEMM enabled the ue8m0 scale-factor
+transform asserts (`Unknown SF transformation`), and with DeepGEMM disabled the fallback CUTLASS c3x
+`scaled_mm` has no SM120 dispatch (`dispatch_scaled_mm`). Both paths are Hopper-targeted, so the model
+cannot complete even vLLM's init profiling forward on consumer Blackwell -- a limitation of the FP8
+attention path in today's serving stack, **independent of quadbit** (the MoE path that quadbit replaces
+is the one backend that did initialize). We therefore report the quadbit sparse MoE result where it is
+measured cleanly: the operator is validated standalone (segmented kernel bit-exact vs per-expert;
+CUDA-graph capturable; correct on a real 256-expert layer) and **distributed** (expert-parallel, 4.21x
+kernel scaling on 4 GPUs, correctness preserved), with the coverage and accuracy accounting above. The
+staged-`.so` injection path (compile the sparse mma under CUDA <= 12.8, ctypes-load under the CUDA-13
+serve image) and the FusedMoE hook are implemented (`harness/serve_dsv4.py`) and ready to run in an
+environment whose FP8-attention backend supports SM120 (or on a Hopper/B200 host). End-to-end in-vLLM
+graph-captured sparse *serving* numbers for this model are thus **future work gated on ecosystem FP8
+SM120 support**, not on the quadbit operator.
+
+---
+
+## 11. Related work
 
 **FlashInfer `mm_fp4`** is now the strongest dense FP4 baseline on SM120, and it moved while we
 worked. Its `auto` selects `b12x` (a CUDA-13-only SM120/121 NVFP4 kernel) then `cutlass`, and on
@@ -629,7 +698,7 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 
 ---
 
-## 11. Limitations
+## 12. Limitations
 
 - **Serving-engine integration is built, graph-capturable, and beats production NVFP4 on decode; prefill
   still trails** (Section 9, Table C). quadbit's two-level sparse MLP runs inside vLLM (V1: paged attention,
@@ -677,10 +746,19 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   honest open frontier is sparse capability recovery, not serving plumbing.
 - **No dense FP4 speed win.** quadbit dense loses the SM120 dense race to FlashInfer 1.35 to 2.2x
   and is retained only as a zero-training W4A4 accuracy drop-in, not a speed contribution.
+- **MoE decode occupancy not yet measured.** The segmented expert kernel is validated for correctness
+  and scales at prefill routed-row counts (Section 10); at decode (few routed rows) its grid is small
+  (the 16-CTA underfill regime of Section 8), and a split-K segmented variant -- the mechanical analogue
+  of the single-MLP split-K down we already ship -- is future work, not yet built or measured. Because
+  end-to-end DeepSeek-V4-Flash serving is ecosystem-blocked on SM120 (Section 10), decode latency for
+  this model could not be exercised regardless.
+- **MoE accuracy recovery untried.** The MoE experts are pruned 2:4 by magnitude only; calibrated
+  SparseGPT / distillation on the experts (the dense-model levers of Section 8) are not yet applied at
+  MoE scale. The per-expert-output tax (cos ~0.70 on random activations) is reported un-repaired.
 
 ---
 
-## 12. Conclusion
+## 13. Conclusion
 
 On SM120, FP4 is a real speedup but the ecosystem's coverage is uneven, and it moved under us. On
 dense FP4 we no longer lead: FlashInfer's CUDA-13 `b12x`/`cutlass` kernels beat our hand-written

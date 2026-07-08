@@ -1,0 +1,4 @@
+world,rows_per_rank_max,routing_imbalance,expert_kernel_ms,all_reduce_comm_ms,kernel_speedup_vs_1gpu
+1,1536,1.000,5.530,0.024,1.00
+2,772,1.005,2.544,0.322,2.17
+4,399,1.039,1.314,0.451,4.21

@@ -197,3 +197,38 @@ uv run modal run --detach harness/verify_sparse_2lvl.py # metadata/scale layout 
 Memory note `quadbit-raw-ptx.md` (kept outside the repo) records the complete probe-and-verify build order,
 the breakthroughs (wide-TMA-plus-swizzle, two-level rescale, split-K down), and the dead ends
 (stream-K, persistent pipeline, cluster TMA multicast, real-scale decode kernel).
+
+## Distributed sparse-FP4 MoE (DeepSeek-V4-Flash) — next-phase commands
+
+```bash
+# M2: verify MXFP4 expert decode + sparse pack on real weights (value-exact round-trip)
+uv run modal run harness/moe_prep.py                       # mode=validate (default)
+
+# M1/M3.2-3.3: grouped + segmented routed-row kernel correctness + CUDA-graph capture
+uv run modal run harness/moe_sparse.py                     # grouped driver == per-token kernel
+uv run modal run harness/moe_seg.py                        # segmented == per-expert kernel; graph replay
+
+# M3.5: real DeepSeek-V4-Flash layer (256 experts, real gate routing)
+uv run modal run harness/moe_layer.py                      # seg == per-expert kernel cos 1.0
+
+# M3.7: distributed expert-parallel scaling (2/4 GPU), comm vs compute, routing imbalance
+uv run modal run harness/moe_dist.py
+
+# M4 Phase-2: sparse coverage accounting (~91% params / ~80% active FLOPs)
+uv run --with numpy python docs/figures/coverage.py
+
+# Staged .so for serving (sparse mma assembles only under CUDA <= 12.8; loaded under CUDA 13 vLLM)
+uv run modal run harness/build_so.py                       # -> /cache/sparse_fp4.so
+
+# M4 baseline + M3.6 injection substrate (vLLM 0.24, DeepSeek-V4-Flash NVFP4, 2 GPU)
+uv run modal run harness/serve_dsv4.py --mode baseline
+uv run modal run harness/serve_dsv4.py --mode inspect      # dump FusedMoE structure for injection
+uv run modal run harness/serve_dsv4.py --mode quadbit      # sparse-MoE injection
+
+# Publication figures 1-7 (SVG + PDF + source CSVs in docs/figures/{out,data})
+uv run --with matplotlib,numpy python docs/figures/make_figures.py
+```
+
+Hardware: Modal `RTX-PRO-6000` (SM120, 102GB) single- and multi-GPU (`:2`, `:4`; no NVLink -> expert
+parallel). Model IDs: `deepseek-ai/DeepSeek-V4-Flash` (MXFP4 experts), `nvidia/DeepSeek-V4-Flash-NVFP4`
+(dense NVFP4 baseline). vLLM 0.24, transformers 5.13, flashinfer 0.6.12.

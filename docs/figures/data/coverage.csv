@@ -1,0 +1,7 @@
+component,params_B,precision
+routed experts (gate/up/down),257.698,SPARSE FP4 (2:4)
+shared expert (gate/up/down),1.007,SPARSE FP4 (2:4)
+router / gate,0.042,dense
+dense-MLP layers (first-k),0.679,dense (est.)
+"MLA attention (q/kv/o, est.)",1.106,dense
+embeddings + lm_head,1.059,dense
