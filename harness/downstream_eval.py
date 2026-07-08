@@ -57,6 +57,7 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
         print(c.stderr, flush=True); return {}
     lib = ctypes.CDLL(so)
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    lib.sparse_fp4_mm_2lvl.restype = ctypes.c_int
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     dev = torch.device("cuda")
 
@@ -136,9 +137,11 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
             gB = torch.empty((tp,), dtype=torch.float32, device=dev)
             lib.quantize_act_nvfp4_2lvl(x2.data_ptr(), Bb.data_ptr(), sB.data_ptr(), gB.data_ptr(), tp, self.in_f)
             C = torch.empty((self.out_f, tp), dtype=torch.bfloat16, device=dev)
-            lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
-                                   sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
-                                   self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            rc = lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
+                                        sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
+                                        self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
+            if rc != 0:  # cudaDeviceSynchronize status; nonzero => kernel failed, C is garbage
+                raise RuntimeError(f"sparse_fp4_mm_2lvl failed rc={rc} (out_f={self.out_f} tp={tp})")
             y = (C.t()[:t] * self.oscale.to(C.dtype)).reshape(*lead, self.out_f)
             return y.to(x.dtype)
 
@@ -163,14 +166,15 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
         _c = torch.load(src, map_location="cpu", weights_only=True)
         rec = _c["weights"]; scs = _c.get("scales") or [None] * len(rec)  # distill ckpts carry trained down scales
         assert len(rec) == len(targets), f"weights {len(rec)} != targets {len(targets)}"
+        assert len(scs) == len(targets), f"scales {len(scs)} != targets {len(targets)}"
         for (mlp, nm, _lin), w, sc in zip(targets, rec, scs):
             setattr(mlp, nm, QuadbitLinear(w.to(dev), scale=(sc.to(dev) if sc is not None else None)).to(dev))
         if calib:  # per-channel affine MLP-output correction from repair.py calib mode
             cd = torch.load(calib, map_location="cpu", weights_only=True)
-            alpha = cd["alpha"].to(dev); beta = cd["beta"].to(dev)
+            alpha = cd["alpha"].to(device=dev, dtype=torch.bfloat16); beta = cd["beta"].to(device=dev, dtype=torch.bfloat16)
             for li, layer in enumerate(m.model.layers):
                 a, b = alpha[li], beta[li]
-                layer.mlp.register_forward_hook(lambda _mo, _i, o, a=a, b=b: o * a.to(o.dtype) + b.to(o.dtype))
+                layer.mlp.register_forward_hook(lambda _mo, _i, o, a=a, b=b: o * a + b)
     else:
         print(f"unknown variant {variant}", flush=True); return {}
 
