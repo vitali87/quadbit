@@ -26,82 +26,30 @@ image = (
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
           "HF_XET_HIGH_PERFORMANCE": "1"})
     .pip_install("vllm", "huggingface_hub")
+    # SM120 dense/attention unblock plugin: registered as a vllm.general_plugins entry point so the
+    # monkeypatch runs in every spawned worker (an imperative patch in the driver does not survive).
+    .add_local_dir(str(ROOT / "harness" / "qb_vllm_plugin"), "/opt/qb_plugin", copy=True)
+    .run_commands("pip install /opt/qb_plugin")
 )
 app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
-def _install_bf16_fp8_fallback() -> list[str]:
-    """WORKSTREAM 0: replace the block-FP8 (ue8m0) dense/attention GEMM (no SM120 kernel) with a
-    correctness-first bf16 dequant path. Patches Fp8LinearMethod so every block-scaled linear
-    dequantizes its weight to bf16 once at load and runs torch F.linear. MoE experts (NVFP4) and
-    everything else are untouched. Returns a log of what was patched."""
-    import torch
-    import torch.nn.functional as F
-
-    log: list[str] = []
-
-    def dequant_block(w: torch.Tensor, s: torch.Tensor, bs) -> torch.Tensor:
-        # w: fp8 [N,K]; s: [ceil(N/bn), ceil(K/bk)] block scales (multiplier). dequant = w * scale.
-        n, k = w.shape
-        bn, bk = int(bs[0]), int(bs[1])
-        se = s.to(torch.float32).repeat_interleave(bn, 0)[:n].repeat_interleave(bk, 1)[:k]
-        return (w.to(torch.float32) * se).to(torch.bfloat16)
-
-    try:
-        from vllm.model_executor.layers.quantization.fp8 import Fp8LinearMethod
-    except Exception as ex:  # noqa: BLE001
-        log.append(f"Fp8LinearMethod import failed: {type(ex).__name__}: {ex}")
-        return log
-
-    def _bw(self):
-        return getattr(self, "weight_block_size", None) or getattr(
-            getattr(self, "quant_config", None), "weight_block_size", None)
-
-    orig_pw = Fp8LinearMethod.process_weights_after_loading
-
-    def patched_pw(self, layer):  # build bf16 weight from RAW load-format scales, skip CUTLASS prep
-        bs = _bw(self)
-        scale = getattr(layer, "weight_scale_inv", None)
-        if bs is None or scale is None:
-            return orig_pw(self, layer)  # per-tensor fp8 or non-block: leave native path
-        w = layer.weight.data
-        layer._bf16_w = dequant_block(w, scale.data, bs)
-        # free the fp8 originals; keep tiny placeholders so any later attr access survives
-        layer.weight.data = torch.empty(0, dtype=w.dtype, device=w.device)
-        layer.weight_scale_inv.data = torch.empty(0, dtype=scale.dtype, device=scale.device)
-        return None
-
-    def patched_apply(self, layer, x, bias=None):
-        wb = getattr(layer, "_bf16_w", None)
-        if wb is None:
-            return orig_apply(self, layer, x, bias)
-        out = F.linear(x.to(wb.dtype), wb)
-        return out + bias if bias is not None else out
-
-    orig_apply = Fp8LinearMethod.apply
-    Fp8LinearMethod.process_weights_after_loading = patched_pw
-    Fp8LinearMethod.apply = patched_apply
-    log.append("patched Fp8LinearMethod.{process_weights_after_loading,apply} -> bf16 dequant")
-    return log
-
-
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048) -> None:
-    """WORKSTREAM 0 end-to-end correctness unblock: bf16 dense/attention fallback + native NVFP4 MoE.
-    Proves the model initializes, graph/eager-runs, and generates on SM120 despite no upstream FP8
-    kernel. eager=True first (correctness), then flip to False for graph-capture status."""
+def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "bf16") -> None:
+    """WS0/WS1 end-to-end unblock: SM120-safe dense/attention (dense='bf16' or 'nvfp4') + native
+    NVFP4 MoE. The replacement is installed by the qb_sm120 vLLM plugin (survives worker spawn); we
+    only select it via QB_DENSE here. eager=True first (correctness), then flip for graph-capture."""
     import os
 
     import torch
     from vllm import LLM, SamplingParams
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
-    patchlog = _install_bf16_fp8_fallback()
-    print(f"# WS0 unblock: tp={tp} eager={eager} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
-    for line in patchlog:
-        print(f"  patch: {line}", flush=True)
+    os.environ["QB_DENSE"] = dense  # read by the qb_sm120 plugin in every spawned worker
+    print(f"# WS0/1 unblock: dense={dense} tp={tp} eager={eager} on "
+          f"{torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
 
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
