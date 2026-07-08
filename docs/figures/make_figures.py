@@ -148,6 +148,56 @@ def fig7_designspace():
     save(fig, "fig7_designspace")
 
 
+def _box(ax, xy, w, h, text, fc, tc="black", fs=7.5):
+    from matplotlib.patches import FancyBboxPatch
+    ax.add_patch(FancyBboxPatch(xy, w, h, boxstyle="round,pad=0.008,rounding_size=0.02",
+                                fc=fc, ec="#333", lw=0.8))
+    ax.text(xy[0] + w / 2, xy[1] + h / 2, text, ha="center", va="center", fontsize=fs, color=tc, wrap=True)
+
+
+def _arrow(ax, x0y0, x1y1):
+    ax.annotate("", xy=x1y1, xytext=x0y0, arrowprops=dict(arrowstyle="-|>", color="#333", lw=1.0))
+
+
+def fig1_overview():
+    fig, ax = plt.subplots(figsize=(6.8, 3.1)); ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
+    ax.text(0.5, 0.96, "Fig 1. System overview: dense NVFP4 baseline vs quadbit sparse-FP4 path",
+            ha="center", fontsize=9.5)
+    # baseline row
+    ax.text(0.02, 0.78, "dense\nNVFP4\n(baseline)", fontsize=7.5, va="center", color=OK["grey"])
+    _box(ax, (0.16, 0.70), 0.20, 0.16, "NVFP4 weights\n(per-16 two-level)", "#eee")
+    _box(ax, (0.42, 0.70), 0.20, 0.16, "dense FP4\nGEMM / FusedMoE", "#eee")
+    _box(ax, (0.68, 0.70), 0.28, 0.16, "vLLM graph capture\n(FlashInfer CUTLASS)", "#eee")
+    _arrow(ax, (0.36, 0.78), (0.42, 0.78)); _arrow(ax, (0.62, 0.78), (0.68, 0.78))
+    # quadbit row
+    ax.text(0.02, 0.34, "quadbit\nsparse FP4", fontsize=7.5, va="center", color=OK["blue"])
+    _box(ax, (0.16, 0.24), 0.20, 0.18, "2:4-sparse FP4\n+ two-level scale", OK["sky"])
+    _box(ax, (0.42, 0.24), 0.20, 0.18, "fused sparse MLP /\nsegmented expert GEMM", OK["sky"])
+    _box(ax, (0.68, 0.32), 0.28, 0.11, "split-K decode down", OK["yellow"])
+    _box(ax, (0.68, 0.19), 0.28, 0.11, "vLLM graph custom-op\n(staged .so)", OK["sky"])
+    _arrow(ax, (0.36, 0.33), (0.42, 0.33)); _arrow(ax, (0.62, 0.33), (0.68, 0.37)); _arrow(ax, (0.62, 0.31), (0.68, 0.25))
+    ax.text(0.5, 0.06, "attention / router / embeddings stay dense NVFP4 (the ecosystem baseline); "
+            "quadbit sparsifies the MLP / experts (~91% of params)", ha="center", fontsize=7, color="#555")
+    save(fig, "fig1_overview")
+
+
+def fig2_dataflow():
+    fig, ax = plt.subplots(figsize=(6.8, 2.4)); ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
+    ax.text(0.5, 0.9, "Fig 2. Sparse MLP / expert dataflow (one graph-capturable launch chain)", ha="center", fontsize=9.5)
+    stages = [("X", "#eee"), ("act quant\nNVFP4", OK["sky"]), ("gate/up\nsparse GEMM", OK["blue"]),
+              ("fused SwiGLU\n+ quant", OK["green"]), ("down\nsparse GEMM", OK["blue"]), ("combine\n(+shared)", OK["orange"])]
+    n = len(stages); w = 0.13; gap = (1 - 0.04 - n * w) / (n - 1); x = 0.02
+    for i, (t, c) in enumerate(stages):
+        _box(ax, (x, 0.38), w, 0.26, t, c, fs=7)
+        if i < n - 1:
+            _arrow(ax, (x + w, 0.51), (x + w + gap, 0.51))
+        x += w + gap
+    ax.text(0.5, 0.12, "MoE: routed rows sorted by expert; each column-block carries its expert id, "
+            "indexing stacked 2:4-sparse weights (routed-row scheduling, not per-expert launches)",
+            ha="center", fontsize=7, color="#555")
+    save(fig, "fig2_dataflow")
+
+
 def fig6_dist_scaling():
     rows = read_csv(DATA / "dist_scaling.csv")
     world = [int(r["world"]) for r in rows]
@@ -173,6 +223,8 @@ def fig6_dist_scaling():
 
 if __name__ == "__main__":
     print("# building banked paper figures", flush=True)
+    fig1_overview()
+    fig2_dataflow()
     fig3_decode_win()
     fig4_crossover_heatmap()
     fig5_pareto()
