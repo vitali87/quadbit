@@ -18,14 +18,14 @@ ROOT = Path(__file__).parent.parent
 MODEL = "nvidia/DeepSeek-V4-Flash-NVFP4"
 MIN = 60
 
-# CUDA 13 + torch cu130 + flashinfer 0.6.13 is the repo's known-good SM120 FP4 stack (leaderboard_fp4.py).
+# Let vLLM resolve its own torch + flashinfer (pinning them conflicts). vLLM >=0.20 ships the SM120
+# Blackwell FP4 kernels and the deepseek_v4 model. CUDA 13 base for the runtime libs it expects.
 image = (
     modal.Image.from_registry("nvidia/cuda:13.0.0-devel-ubuntu22.04", add_python="3.12")
     .env({"PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
-          "HF_XET_HIGH_PERFORMANCE": "1", "VLLM_USE_V1": "1"})
-    .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu130", pre=True)
-    .pip_install("vllm", "flashinfer-python==0.6.13", "flashinfer-cubin==0.6.13", "huggingface_hub")
+          "HF_XET_HIGH_PERFORMANCE": "1"})
+    .pip_install("vllm", "huggingface_hub")
 )
 app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
@@ -38,9 +38,18 @@ def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
     from vllm import LLM, SamplingParams
 
     print(f"# M4 baseline: {MODEL} tp={tp} eager={eager} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+    # DeepSeek-V4 config uses rope_scaling {type: yarn}; newer configs want rope_type -> patch via hf_overrides.
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
     t0 = time.time()
-    llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9)
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              hf_overrides={"rope_scaling": rope})
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception as ex:  # noqa: BLE001 -- deepseek_v4 tokenizer mode may not exist in this build
+        print(f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default) ", flush=True)
+        llm = LLM(**kw)
     print(f"  load ok in {time.time() - t0:.0f}s", flush=True)
 
     # which MoE / quant method actually got selected (fallback detection)
