@@ -81,6 +81,54 @@ def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
     print(f"# baseline {'PASS' if ntok > 0 else 'FAIL'} (graph_capture={'eager-OFF' if not eager else 'eager'})", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
+    # M3.6 recon: dump the exact FusedMoE structure so the sparse injection targets real attrs (model
+    # is volume-cached after the first baseline load -> this loads fast).
+    import inspect
+
+    import torch
+    from vllm import LLM
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              hf_overrides={"rope_scaling": rope}, tokenizer_mode="deepseek_v4")
+    m = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    shown = 0
+    for name, mod in m.named_modules():
+        cls = type(mod).__name__
+        if "fusedmoe" in cls.lower() or "experts" in cls.lower() or name.endswith("experts"):
+            if shown >= 2:
+                break
+            shown += 1
+            print(f"\n=== {name}  ({cls}) ===", flush=True)
+            qm = getattr(mod, "quant_method", None)
+            print(f"  quant_method: {type(qm).__name__}", flush=True)
+            for an in dir(mod):
+                if an.startswith("_"):
+                    continue
+                v = getattr(mod, an, None)
+                if isinstance(v, torch.Tensor):
+                    print(f"  tensor {an}: shape={tuple(v.shape)} dtype={v.dtype}", flush=True)
+                elif isinstance(v, (int, bool)) and an in (
+                        "top_k", "num_experts", "global_num_experts", "local_num_experts",
+                        "intermediate_size_per_partition", "hidden_size", "renormalize",
+                        "use_grouped_topk", "num_expert_group", "topk_group"):
+                    print(f"  attr {an} = {v}", flush=True)
+            if qm is not None and hasattr(qm, "apply"):
+                try:
+                    print(f"  apply{inspect.signature(qm.apply)}", flush=True)
+                except (ValueError, TypeError):
+                    pass
+    print("\n# inspect_moe done", flush=True)
+
+
 @app.local_entrypoint()
-def main(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
-    baseline.remote(tp=tp, eager=eager, max_len=max_len)
+def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
+    if mode == "inspect":
+        inspect_moe.remote(tp=tp, max_len=max_len)
+    else:
+        baseline.remote(tp=tp, eager=eager, max_len=max_len)
