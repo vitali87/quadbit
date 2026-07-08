@@ -57,9 +57,11 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
 
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
+    # bf16 fallback keeps fp8 originals (MLA absorption) + bf16 copies -> dense weights ~3x; push
+    # gpu_mem_util high and keep batched tokens modest so KV cache memory stays positive.
     kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype=kv,
-              max_num_batched_tokens=max(max_len, 2048), hf_overrides={"rope_scaling": rope})
+              max_model_len=max_len, gpu_memory_utilization=0.95, kv_cache_dtype=kv,
+              max_num_batched_tokens=max_len, hf_overrides={"rope_scaling": rope})
     t0 = time.time()
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
