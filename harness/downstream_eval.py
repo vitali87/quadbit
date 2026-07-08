@@ -104,7 +104,7 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
             return F.linear(xq, Wq).to(x.dtype)
 
     class QuadbitLinear(nn.Module):
-        def __init__(self, W):
+        def __init__(self, W, scale=None):
             super().__init__()
             out_f, in_f = W.shape; ks = in_f // 128
             self.out_f, self.in_f, self.ks = out_f, in_f, ks
@@ -123,6 +123,7 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
             self.register_buffer("Ac", Ac.contiguous()); self.register_buffer("meta", meta)
             self.register_buffer("scaleA", scode.to(torch.uint8).permute(1, 0, 2).contiguous())
             self.register_buffer("gA", gA.reshape(out_f).float().contiguous())
+            self.register_buffer("oscale", (scale if scale is not None else torch.ones(out_f, device=dev)).float())
 
         def forward(self, x):
             lead = x.shape[:-1]; x2 = x.reshape(-1, self.in_f).to(torch.bfloat16)
@@ -138,7 +139,8 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
             lib.sparse_fp4_mm_2lvl(self.Ac.data_ptr(), Bb.data_ptr(), self.scaleA.data_ptr(),
                                    sB.data_ptr(), self.meta.data_ptr(), C.data_ptr(),
                                    self.out_f, tp, self.in_f, self.gA.data_ptr(), gB.data_ptr())
-            return C.t()[:t].reshape(*lead, self.out_f).to(x.dtype)
+            y = (C.t()[:t] * self.oscale.to(C.dtype)).reshape(*lead, self.out_f)
+            return y.to(x.dtype)
 
     tok = AutoTokenizer.from_pretrained(model)
     m = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16).to(dev).eval()
@@ -158,10 +160,11 @@ def run(variant: str = "sparse", model: str = MODEL, ckpt: str = "", tasks: str 
             setattr(mlp, nm, DenseW4A4(lin.weight.data).to(dev))
     elif variant in ("sparse", "repaired"):
         src = ckpt or RECOVERED_INSTRUCT_CKPT
-        rec = torch.load(src, map_location="cpu", weights_only=True)["weights"]
+        _c = torch.load(src, map_location="cpu", weights_only=True)
+        rec = _c["weights"]; scs = _c.get("scales") or [None] * len(rec)  # distill ckpts carry trained down scales
         assert len(rec) == len(targets), f"weights {len(rec)} != targets {len(targets)}"
-        for (mlp, nm, _lin), w in zip(targets, rec):
-            setattr(mlp, nm, QuadbitLinear(w.to(dev)).to(dev))
+        for (mlp, nm, _lin), w, sc in zip(targets, rec, scs):
+            setattr(mlp, nm, QuadbitLinear(w.to(dev), scale=(sc.to(dev) if sc is not None else None)).to(dev))
         if calib:  # per-channel affine MLP-output correction from repair.py calib mode
             cd = torch.load(calib, map_location="cpu", weights_only=True)
             alpha = cd["alpha"].to(dev); beta = cd["beta"].to(dev)
