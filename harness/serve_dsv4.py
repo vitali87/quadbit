@@ -39,7 +39,8 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "bf16") -> None:
+def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "bf16",
+            kv: str = "fp8") -> None:
     """WS0/WS1 end-to-end unblock: SM120-safe dense/attention (dense='bf16' or 'nvfp4') + native
     NVFP4 MoE. The replacement is installed by the qb_sm120 vLLM plugin (survives worker spawn); we
     only select it via QB_DENSE here. eager=True first (correctness), then flip for graph-capture."""
@@ -57,7 +58,7 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
     kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype=kv,
               max_num_batched_tokens=max(max_len, 2048), hf_overrides={"rope_scaling": rope})
     t0 = time.time()
     try:
@@ -265,7 +266,7 @@ def probe() -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
-         dense: str = "bf16") -> None:
+         dense: str = "bf16", kv: str = "fp8") -> None:
     if mode == "probe":
         probe.remote()
     elif mode == "inspect":
@@ -273,7 +274,7 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
     elif mode == "quadbit":
         quadbit.remote(tp=tp, eager=eager, max_len=max_len)
     elif mode == "unblock":
-        call = unblock.spawn(tp=tp, eager=eager, max_len=max_len, dense=dense)
+        call = unblock.spawn(tp=tp, eager=eager, max_len=max_len, dense=dense, kv=kv)
         print(f"SPAWN_ID={call.object_id}", flush=True)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
