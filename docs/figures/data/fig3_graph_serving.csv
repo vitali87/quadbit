@@ -1,0 +1,13 @@
+batch,phase,backend,tok_s
+8,decode,NVFP4 graph,1046
+32,decode,NVFP4 graph,4237
+64,decode,NVFP4 graph,8384
+8,decode,quadbit sparse split-K,1147
+32,decode,quadbit sparse split-K,4543
+64,decode,quadbit sparse split-K,8567
+8,prefill,NVFP4 graph,66469
+32,prefill,NVFP4 graph,80825
+64,prefill,NVFP4 graph,119083
+8,prefill,quadbit sparse split-K,62914
+32,prefill,quadbit sparse split-K,77605
+64,prefill,quadbit sparse split-K,115069

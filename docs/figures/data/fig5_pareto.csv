@@ -1,0 +1,5 @@
+policy,ppl,keeps_decode_win
+dense NVFP4 (baseline),7.974,0
+all-sparse (banked),10.256,1
+distilled sparse,9.1,1
+gate_up-dense frontier,9.75,1
