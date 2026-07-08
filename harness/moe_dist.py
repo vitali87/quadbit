@@ -208,5 +208,5 @@ def run(H: int = 4096, I: int = 2048, E: int = 256, T: int = 256, topk: int = 6)
 
 
 @app.local_entrypoint()
-def main(H: int = 4096, I: int = 2048, E: int = 256, T: int = 256, topk: int = 6) -> None:
-    run.remote(H=H, I=I, E=E, T=T, topk=topk)
+def main() -> None:
+    run.remote()
