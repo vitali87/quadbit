@@ -21,12 +21,23 @@ STATS = {"nvfp4_layers": 0, "bf16_layers": 0, "native_layers": 0, "fp8_calls": 0
 
 
 def _dequant_block(w, s, bs):
-    # w: fp8 [N,K]; s: [ceil(N/bn), ceil(K/bk)] block scales (multiplier). dequant = w * scale.
+    # w: fp8 [N,K]; s: block scales (multiplier); dequant = w * scale_expanded.
+    # The scale grid is [ceil(N/bn), ceil(K/bk)] but some vLLM layers store it transposed; detect
+    # that and expand by the per-axis factor derived from the ACTUAL scale shape so se always
+    # matches [N,K] and the block->element mapping stays correct.
+    import math
+
     import torch
 
     n, k = w.shape
     bn, bk = int(bs[0]), int(bs[1])
-    se = s.to(torch.float32).repeat_interleave(bn, 0)[:n].repeat_interleave(bk, 1)[:k]
+    exp = (math.ceil(n / bn), math.ceil(k / bk))
+    sr, sc = int(s.shape[0]), int(s.shape[1])
+    if (sr, sc) != exp and (sc, sr) == exp:
+        s = s.t().contiguous()
+        sr, sc = sc, sr
+    fn, fk = math.ceil(n / sr), math.ceil(k / sc)
+    se = s.to(torch.float32).repeat_interleave(fn, 0)[:n].repeat_interleave(fk, 1)[:k]
     return (w.to(torch.float32) * se).to(torch.bfloat16)
 
 
@@ -83,10 +94,15 @@ def install() -> None:
         if bs is None or scale is None:
             STATS["native_layers"] += 1
             return orig_pw(self, layer)  # per-tensor fp8 / non-block: leave native path
-        if STATS["bf16_layers"] + STATS["nvfp4_layers"] == 0:
+        done = STATS["bf16_layers"] + STATS["nvfp4_layers"]
+        if done == 0:
             print(f"[qb_sm120] fp8-fallback ACTIVE pid={os.getpid()} method={method}", flush=True)
-        w = layer.weight.data
-        wbf = _dequant_block(w, scale.data, bs)
+        if done < 12:
+            print(f"[qb_shape] w={tuple(layer.weight.shape)} s={tuple(scale.shape)} bs={bs}", flush=True)
+        # Build the bf16/nvfp4 replacement from the RAW load-format weight+scale (validated layout),
+        # BEFORE vLLM reprocesses. Do NOT free the fp8 originals: MLA weight absorption reads
+        # kv_b_proj/q_b_proj weights at load, and other consumers read weight shapes.
+        wbf = _dequant_block(layer.weight.data, scale.data, bs)
         if method == "nvfp4":
             try:
                 layer._qb_nv = _to_nvfp4(wbf)
@@ -97,9 +113,12 @@ def install() -> None:
         else:
             layer._qb_bf16 = wbf
             STATS["bf16_layers"] += 1
-        # free the fp8 originals; tiny placeholders so any later attr access survives
-        layer.weight.data = torch.empty(0, dtype=w.dtype, device=w.device)
-        layer.weight_scale_inv.data = torch.empty(0, dtype=scale.dtype, device=scale.device)
+        # let vLLM run its normal weight prep so MLA absorption / shape bookkeeping stay intact
+        # (safe with VLLM_USE_DEEP_GEMM=0: this is tensor prep, not the unsupported SM120 GEMM).
+        try:
+            orig_pw(self, layer)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[qb_sm120] orig process_weights raised {type(ex).__name__}; using our weight", flush=True)
         return None
 
     def patched_apply(self, layer, x, bias=None):

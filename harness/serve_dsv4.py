@@ -60,6 +60,9 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
     except Exception as ex:  # noqa: BLE001
+        # only fall back when the tokenizer_mode itself is the problem; never mask a forward/init error
+        if "tokenizer_mode" not in str(ex) and "deepseek_v4" not in str(ex).lower():
+            raise
         print(f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default)", flush=True)
         llm = LLM(**kw)
     print(f"  load+init forward ok in {time.time() - t0:.0f}s (the SM120 wall is cleared)", flush=True)
