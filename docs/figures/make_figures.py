@@ -148,10 +148,34 @@ def fig7_designspace():
     save(fig, "fig7_designspace")
 
 
+def fig6_dist_scaling():
+    rows = read_csv(DATA / "dist_scaling.csv")
+    world = [int(r["world"]) for r in rows]
+    kernel = [float(r["expert_kernel_ms"]) for r in rows]
+    comm = [float(r["all_reduce_comm_ms"]) for r in rows]
+    speed = [float(r["kernel_speedup_vs_1gpu"]) for r in rows]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.8, 2.9))
+    x = np.arange(len(world))
+    ax1.bar(x - 0.2, kernel, 0.4, label="expert kernel", color=OK["blue"])
+    ax1.bar(x + 0.2, comm, 0.4, label="all-reduce (PCIe)", color=OK["orange"])
+    ax1.set_yscale("log"); ax1.set_xticks(x); ax1.set_xticklabels([f"{w} GPU" for w in world])
+    ax1.set_ylabel("ms (log)"); ax1.set_title("Compute vs communication", fontsize=9)
+    ax1.legend(fontsize=7.5, frameon=False)
+    ax2.plot(world, speed, "-o", color=OK["green"], label="measured")
+    ax2.plot(world, world, "--", color=OK["grey"], lw=0.9, label="ideal linear")
+    ax2.set_xticks(world); ax2.set_xlabel("GPUs"); ax2.set_ylabel("expert-kernel speedup")
+    ax2.set_title("Expert-parallel scaling", fontsize=9); ax2.legend(fontsize=7.5, frameon=False)
+    for xi, s in zip(world, speed):
+        ax2.annotate(f"{s:.2f}x", (xi, s), textcoords="offset points", xytext=(4, -10), fontsize=8)
+    fig.suptitle("Fig 6. Distributed sparse-FP4 MoE (DeepSeek-V4-Flash, expert-parallel, no NVLink)", fontsize=9.5)
+    save(fig, "fig6_dist_scaling")
+
+
 if __name__ == "__main__":
     print("# building banked paper figures", flush=True)
     fig3_decode_win()
     fig4_crossover_heatmap()
     fig5_pareto()
+    fig6_dist_scaling()
     fig7_designspace()
     print("# done", flush=True)
