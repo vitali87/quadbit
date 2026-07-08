@@ -126,9 +126,53 @@ def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
     print("\n# inspect_moe done", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
+    # M3.6: inject the segmented sparse-FP4 MoE op into vLLM's FusedMoE layers. Loads the staged .so
+    # (built under CUDA 12.8 by build_so.py -> /cache/sparse_fp4.so) since the sparse mma won't assemble
+    # under the serve image's CUDA 13 ptxas. Structure-specific wiring (expert-weight dequant + attr
+    # names) is finalized against inspect_moe's dump; this run reports SPARSE_EXPERT_CALLS + fallbacks.
+    import ctypes
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    so = "/cache/sparse_fp4.so"
+    lib = ctypes.CDLL(so)
+    lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4 +
+                                       [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.qb_init_moe_attrs()
+    print(f"# M3.6 quadbit sparse-MoE injection: loaded {so}", flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              hf_overrides={"rope_scaling": rope}, tokenizer_mode="deepseek_v4")
+    m = llm.llm_engine.model_executor.driver_worker.model_runner.model
+
+    # locate FusedMoE layers (finalized against inspect_moe output)
+    moe = [(n, mod) for n, mod in m.named_modules()
+           if "fusedmoe" in type(mod).__name__.lower() and hasattr(mod, "quant_method")]
+    print(f"  found {len(moe)} FusedMoE layers", flush=True)
+    if not moe:
+        print("  NO FusedMoE layers located -> run `inspect` first to get attr names; aborting injection", flush=True)
+        return
+    # NOTE: expert dequant (NVFP4->bf16) + pack + apply-replacement wired here after inspect confirms
+    # the weight/scale attr names. Until then this run validates .so load + layer discovery + baseline gen.
+    sp = SamplingParams(temperature=0.0, max_tokens=16)
+    out = llm.generate(["The capital of France is"], sp)
+    print(f"  [gen] {out[0].outputs[0].text!r}", flush=True)
+    print("# M3.6 scaffold ok (.so + layer discovery); injection wiring pending inspect", flush=True)
+
+
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
     if mode == "inspect":
         inspect_moe.remote(tp=tp, max_len=max_len)
+    elif mode == "quadbit":
+        quadbit.remote(tp=tp, eager=eager, max_len=max_len)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
