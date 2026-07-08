@@ -250,24 +250,16 @@ def probe() -> None:
     eps = [e.value for e in entry_points(group="vllm.general_plugins")]
     print(f"# vllm.general_plugins entry points: {eps}", flush=True)
     print(inspect.getsource(p._dequant_block), flush=True)
-    # trace each step for the failing shape to see where dim0 goes wrong
-    import math
-    for sshape in [(128, 8), (8, 128)]:
-        n, k = 16384, 1024
+    # call the ACTUAL installed function on the real failing shape (w[16384,1024], s[128,8])
+    for sshape in [(128, 8), (8, 128), (12, 32)]:
+        wh = (16384, 1024) if sshape != (12, 32) else (1536, 4096)
+        w = torch.randint(-7, 8, wh, dtype=torch.float32)
         s = torch.rand(*sshape) + 0.1
-        bn, bk = 128, 128
-        exp = (math.ceil(n / bn), math.ceil(k / bk))
-        sr, sc = s.shape
-        if (sr, sc) != exp and (sc, sr) == exp:
-            s = s.t().contiguous(); sr, sc = sc, sr
-        fn, fk = math.ceil(n / sr), math.ceil(k / sc)
-        a = s.to(torch.float32).repeat_interleave(fn, 0)
-        b = a[:n]
-        c = b.repeat_interleave(fk, 1)
-        d = c[:, :k]
-        print(f"  s0={sshape} exp={exp} sr,sc={sr},{sc} fn,fk={fn},{fk} "
-              f"after_ri0={tuple(a.shape)} sl0={tuple(b.shape)} ri1={tuple(c.shape)} "
-              f"final={tuple(d.shape)}", flush=True)
+        try:
+            out = p._dequant_block(w, s, (128, 128))
+            print(f"  CALL p._dequant_block w={wh} s={sshape} -> {tuple(out.shape)} OK", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"  CALL p._dequant_block w={wh} s={sshape} -> {type(ex).__name__}: {ex}", flush=True)
 
 
 @app.local_entrypoint()
