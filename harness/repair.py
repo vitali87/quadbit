@@ -97,7 +97,7 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
         gA = (keptW.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
         blk = keptW.reshape(out_f, ks, 4, 8, 2)
         sdeq = UE4M3[enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)] * gA
-        kd = (FP4[q_fp4(blk / sdeq[..., None, None])] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
+        kd = (FP4[q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
         Wd = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
         Wd.scatter_(3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kd)
         return Wd.reshape(out_f, in_f)
@@ -107,7 +107,7 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
         gA = (W.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)
         b = W.view(out_f, in_f // 16, 16)
         sdeq = UE4M3[enc_ue4m3_t((b.abs().amax(-1) / 6.0) / gA)] * gA
-        return (FP4[q_fp4(b / sdeq[..., None])] * sdeq[..., None]).reshape(out_f, in_f)
+        return (FP4[q_fp4(b / sdeq.clamp_min(1e-30)[..., None])] * sdeq[..., None]).reshape(out_f, in_f)
 
     def act_fp4_dequant(x):  # per-32 two-level (matched to the sparse mma B operand)
         lead = x.shape[:-1]; i = x.shape[-1]
@@ -115,7 +115,7 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
         gB = (b.abs().amax(-1, keepdim=True) / 2688.0).clamp_min(1e-30)
         bb = b.reshape(b.shape[0], i // 32, 32)
         sdeq = UE4M3[enc_ue4m3_t((bb.abs().amax(-1) / 6.0) / gB)] * gB
-        return (FP4[q_fp4(bb / sdeq[..., None])] * sdeq[..., None]).reshape(*lead, i)
+        return (FP4[q_fp4(bb / sdeq.clamp_min(1e-30)[..., None])] * sdeq[..., None]).reshape(*lead, i)
 
     class SparseQAT(nn.Module):  # trainable, pruned, sparse two-level STE (train == deploy); optional learnable per-out scale
         def __init__(self, weight, learn_scale=False):
@@ -147,7 +147,7 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
             blk = keptW.reshape(out_f, ks, 4, 8, 2)
             scode = enc_ue4m3_t((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)
             sdeq = UE4M3[scode] * gA
-            kc = q_fp4(blk / sdeq[..., None, None])
+            kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
             Ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
             nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
             sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
@@ -233,6 +233,9 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
 
     src_ckpt = init_ckpt or recovered_ckpt
     if resume and mode == "distill":  # survive preemption: resume from own best if it exists
+        # restores weights + scales only (NOT optimizer moments or step): each restart re-runs a fresh
+        # cosine schedule from the best checkpoint. The best-PPL save guards against re-warmup regression,
+        # so this accumulates progress across preemptions; full optimizer/step resume is a future refinement.
         own = f"/cache/repair_distill_{tag or steps}.pt"
         if Path(own).exists():
             src_ckpt = own
@@ -485,13 +488,13 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
         T, seq, wu = 2.0, 1024, 200
         starts = list(range(0, len(train_ids) - seq, seq))
         NL = len(student.model.layers)
-        s_mlp, t_mlp = {}, {}
+        s_mlp, t_mlp, hooks = {}, {}, []
         if mse_mode == "mlp":  # feature-distill hooks on each layer's MLP block output
             for li in range(NL):
-                student.model.layers[li].mlp.register_forward_hook(
-                    lambda _m, _i, o, li=li: s_mlp.__setitem__(li, o))
-                teacher.model.layers[li].mlp.register_forward_hook(
-                    lambda _m, _i, o, li=li: t_mlp.__setitem__(li, o))
+                hooks.append(student.model.layers[li].mlp.register_forward_hook(
+                    lambda _m, _i, o, li=li: s_mlp.__setitem__(li, o)))
+                hooks.append(teacher.model.layers[li].mlp.register_forward_hook(
+                    lambda _m, _i, o, li=li: t_mlp.__setitem__(li, o)))
         want_hs = (mse_mode == "hidden")
         tag_ = tag or str(steps)
         outp = f"/cache/repair_distill_{tag_}.pt"
@@ -544,6 +547,8 @@ def run(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED
                                 "scales": [q.scale.data.cpu() if q.scale is not None else None for q in sparse_qats]},
                                outp)
                 student.train()
+        for h in hooks:  # drop feature-distill hooks so they don't fire (and retain tensors) during eval
+            h.remove()
         bestck = torch.load(outp, map_location="cpu", weights_only=True)  # deploy the BEST, not the final
         for (mlp, nm, _lin), w_, sc_ in zip(targets, bestck["weights"], bestck["scales"]):
             setattr(mlp, nm, QuadbitLinear(w_.to(dev), scale=(sc_.to(dev) if sc_ is not None else None)).to(dev))
@@ -594,6 +599,8 @@ def main(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERE
          mse_mode: str = "", sched: str = "cosine", tag: str = "", resume: bool = False) -> None:
     if mode == "snap":  # freeze a checkpoint on the volume: init_ckpt=src, tag=dst (runs synchronously)
         print(snapshot.remote(init_ckpt, tag), flush=True); return
+    if mode == "fold":  # bake trained down scale into weights for serving: init_ckpt=src, tag=dst
+        print(fold.remote(init_ckpt, tag), flush=True); return
     call = run.spawn(mode=mode, model=model, recovered_ckpt=recovered_ckpt, rank=rank, steps=steps,
                      p1=p1, lr=lr, mse_w=mse_w, calib_windows=calib_windows, init_ckpt=init_ckpt,
                      kl_w=kl_w, ce_w=ce_w, mse_mode=mse_mode, sched=sched, tag=tag, resume=resume)
