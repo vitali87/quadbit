@@ -29,7 +29,9 @@ image = (
     # SM120 dense/attention unblock plugin: registered as a vllm.general_plugins entry point so the
     # monkeypatch runs in every spawned worker (an imperative patch in the driver does not survive).
     .add_local_dir(str(ROOT / "harness" / "qb_vllm_plugin"), "/opt/qb_plugin", copy=True)
-    .run_commands("pip install --force-reinstall --no-deps /opt/qb_plugin")
+    # force_build so a plugin edit always redeploys (Modal's layer cache has served stale bytecode
+    # here despite --force-reinstall); ~10s cost, buys reliable deploys.
+    .run_commands("pip install --force-reinstall --no-deps /opt/qb_plugin", force_build=True)
 )
 app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
