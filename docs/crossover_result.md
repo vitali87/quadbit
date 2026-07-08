@@ -151,3 +151,39 @@ uv run modal run --detach harness/quadbit_serve.py --mode hybrid --util 0.8 --ba
 uv run modal run --detach harness/quadbit_serve.py --mode hybrid --util 0.8 --fused --graph --crossover \
   --recovered-ckpt /cache/recovered_Llama-3.1-8B-Instruct_P30000_p25000_2sh_lr3e-05.pt
 ```
+
+## Accuracy-repair tournament (2026-07-08): PPL repaired, capability NOT
+
+The +2.3 PPL serving tax motivated a four-family repair tournament on the recovered-Instruct all-sparse
+checkpoint (`harness/repair.py`). Only distillation moved the metric.
+
+| family | result | verdict |
+|---|---|---|
+| A1 zero-runtime calibration | scalar 10.03, per-channel affine 12.97 | KILL (output rescale cannot fix a representational loss) |
+| A2 low-rank residual adapters (r16/32/64) | flat ~10.0 | KILL (adapters on frozen sparse weights capture nothing) |
+| A3 Wanda-pair mask + truncated QAT | 13.06 | KILL (worse than SparseGPT baseline) |
+| A4 knowledge distillation | through-kernel **8.86** (serving **9.10**) | PPL repaired |
+
+**Distillation best (KL-light/CE-heavy):** through-kernel PPL 8.86, serving PPL 9.10 (from 10.27), all four
+best variants beat the 9.5 gate (loss_ceheavy 8.86, orig-5k 9.42, cont_cos0 9.44, cont_lr1 9.45). Serving
+speed is weight-value independent, so the 81/112 crossover and the split-K decode win carry over unchanged
+(decode +10.2/+6.7/+1.5% at B=8/32/64, SPARSE_CALLS=7264, graph capture intact). The trained per-output
+down scale folds exactly into the per-row global `gA`, so the serving path needs no code change.
+
+**But the downstream-task check refutes an accuracy-recovered claim.** 0-shot accuracy:
+
+| variant | WT-2 PPL | ARC-C | HellaSwag | PIQA | Winogrande |
+|---|---|---|---|---|---|
+| bf16 | 7.27 | 0.557 | 0.796 | 0.812 | 0.737 |
+| dense NVFP4 | 7.97 | 0.523 | 0.781 | 0.794 | 0.742 |
+| all-sparse (orig) | 10.03 | 0.356 | 0.597 | 0.710 | 0.618 |
+| cont_cos0 (KL) | 9.44 | 0.365 | 0.598 | 0.716 | 0.623 |
+| loss_ceheavy (CE) | 8.86 | 0.348 | 0.605 | 0.710 | 0.623 |
+
+Dense NVFP4 preserves quality (within 1-3 points of bf16), so the ~20-point ARC-C/HellaSwag collapse is
+2:4 SPARSITY, not FP4 quantization. Distillation on WikiText recovers ~+0.005 downstream accuracy; the
+lowest-PPL variant even regressed on ARC-C. **Distillation reduces the PPL tax but does not recover
+downstream capability.** The WT-2 PPL win is largely domain overfitting. The honest remaining frontier is
+sparse capability recovery (broad/larger distillation data, or a different prune target), not serving
+plumbing. Decode token-parallel kernel (Workstream B) was also tried and refuted (FP4 GEMM is compute-bound,
+not weight-BW-bound; ~190x slower on CUDA cores). Data: `harness/repair.py`, `harness/downstream_eval.py`.

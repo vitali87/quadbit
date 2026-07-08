@@ -304,3 +304,13 @@ positioning must follow the measurements, not the other way around.
 - NVFP4-QAD accuracy recovery: https://arxiv.org/abs/2601.20088
 - Pair-wise 4:8 NVFP4 sparsity (hardware spec): https://newsletter.semianalysis.com/p/nvidia-tensor-core-evolution-from-volta-to-blackwell
 - FP4 accuracy reality: https://arxiv.org/pdf/2509.23202
+
+## Accuracy-repair tournament (2026-07-08): distillation repairs PPL, not capability
+Four-family repair of the +2.3 serving PPL tax on recovered-Instruct all-sparse. Only distillation moved
+it: best KL-light/CE-heavy = through-kernel 8.86 / serving 9.10 PPL (from 10.27), all serving wins retained
+(81/112, decode +10.2/+6.7/+1.5%, SPARSE_CALLS=7264, capture intact; down scale folds into per-row gA, no
+serving-code change). KILLED: A1 calibration (affine 12.97), A2 low-rank adapters (flat ~10.0), A3
+Wanda-pair mask (13.06). DECISIVE NEGATIVE: downstream 0-shot accuracy barely moves (ARC-C 0.356->0.348..0.365,
+HellaSwag ~0.60) vs dense ~0.52/0.78; the ~20pt 2:4-sparsity capability loss is NOT recovered; CE-heavy PPL
+win is WikiText overfitting. Decode token-parallel kernel (Workstream B) refuted (compute-bound, 190x slower).
+Frontier: sparse capability recovery (broader distill data / different prune target), not serving plumbing.

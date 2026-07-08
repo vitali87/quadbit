@@ -619,3 +619,13 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
    existing element-2:4 checkpoints (cite the hardware spec; this is not a discovery).
 6. Deployment: packer + fused quantizer + drop-in; 3.7–5.2× over bf16.
 7. Making sparse usable: pair-granular SparseGPT + QAT recovery; the data-scale reality of 2:4.
+
+## Accuracy repair (2026-07-08): PPL repaired, capability not (key honest result)
+- Tournament on recovered-Instruct all-sparse (`harness/repair.py`): calib / lowrank / mask(Wanda) / distill.
+- ONLY distillation moved PPL: best (KL0.2/CE1.0) through-kernel 8.86, serving 9.10 (from 10.27); 4 variants < 9.5.
+- Serving speed weight-independent -> 81/112 crossover + decode win (+10.2/+6.7/+1.5%) carry over; down scale folds into gA (no serving change).
+- KILLS: calib affine 12.97 (rescale can't fix representational loss); lowrank flat ~10.0; Wanda-pair 13.06.
+- DOWNSTREAM (the real test): repaired ARC-C 0.35-0.37, HellaSwag ~0.60 == un-repaired all-sparse; dense NVFP4 0.52/0.78. 2:4 sparsity costs ~20pt ARC-C/HellaSwag; WikiText-KD recovers ~none. CE-heavy PPL = domain overfit.
+- Narrative rule: "distillation reduces the PPL tax but does not recover downstream capability." NOT "accuracy solved."
+- Dense NVFP4 preserves downstream quality => the collapse is 2:4 sparsity, not FP4 quant.
+- Workstream B (decode token-parallel down kernel): refuted; FP4 GEMM compute-bound, ~190x slower on CUDA cores; split-K stays.

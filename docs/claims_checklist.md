@@ -85,7 +85,9 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 
 | Claim | Evidence | Status |
 |-------|----------|--------|
-| Accuracy repair of the +2.3 PPL sparse tax (zero-runtime calibration, low-rank residual adapters, activation-aware mask repair, distillation onto the 9.750 hybrid) | tournament in progress; `docs/paper.md` Sections 7 and 9 reserved slots | reserved |
+| Distillation reduces the sparse serving tax from 10.27 to 9.10 PPL and keeps all serving wins | `docs/crossover_result.md`, `harness/repair.py`, serving confirmation SPARSE_CALLS=7264 | backed |
+| Distillation does NOT recover downstream capability (ARC-C/HellaSwag ~20pt below dense, ~unchanged from un-repaired) | `docs/crossover_result.md`, `harness/downstream_eval.py` | backed |
+| Calibration / low-rank adapters / Wanda-pair mask repair are all negative | `harness/repair.py` run logs | backed |
 | Dense mixed-precision W4A16/W4A4 refinement | in progress; `docs/paper.md` Section 7 reserved slot | reserved |
 | Prefill parity for the sparse serving path (needs stream-K / persistent tiling) | not built; `docs/paper.md` Section 11 | needs-rerun |
 

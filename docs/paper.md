@@ -565,18 +565,32 @@ accuracy tax, +2.3 PPL (10.27 sparse versus 7.97 dense NVFP4), and the crossover
 because that tax does not move across the request matrix. Two training-free levers to close it are now
 measured and negative: reverse densification (this section) trades speed for accuracy about 1:1, and
 training-free hybrid placement (Section 8) buys almost no sparse FLOPs before errors compound. The
-remaining paper-upgrade axis is therefore accuracy repair that spends training, and a tournament of four
-approaches is in progress: (1) zero-runtime calibration of the deployed sparse recipe, (2) low-rank
-residual adapters over the pruned weights, (3) activation-aware mask repair, and (4) distillation from the
-dense teacher onto the `gate_up`-dense/`down`-sparse hybrid (the 9.750 PPL candidate that preserves the
-whole split-K decode win). Results are pending and no repair number is claimed here; the slot below is
-reserved and will be filled once the tournament converges and the docs re-sync.
+remaining paper-upgrade axis is therefore accuracy repair that spends training. A tournament of four
+approaches ran on the recovered-Instruct all-sparse checkpoint: (1) zero-runtime calibration of the
+deployed sparse recipe, (2) low-rank residual adapters over the pruned weights, (3) activation-aware
+(Wanda-pair) mask repair, and (4) knowledge distillation from the dense teacher that retrains the sparse
+weights and the per-output down scale.
 
-> **Reserved results slot (accuracy repair, in progress).** Target: reduce the +2.3 PPL sparse serving
-> tax below the point where the deployed sparse Pareto win justifies the recovery pipeline over dense
-> W4A4. Method under evaluation: zero-runtime calibration, low-rank residual adapters, activation-aware
-> mask repair, distillation onto the `gate_up`-dense/`down`-sparse hybrid. No number is reported until the
-> ablation converges; this paper does not headline an accuracy-repair result.
+**Result: distillation reduces the perplexity tax but does not recover downstream capability.** Only the
+distillation family moved the metric. The best variant (KL-light/CE-heavy) reaches through-kernel PPL
+**8.86** (serving PPL **9.10**, from the original **10.27**), clearing the target and keeping the entire
+split-K decode win intact (decode +10.2/+6.7/+1.5% at B=8/32/64; serving speed is weight-value independent,
+so the 81/112 crossover carries over unchanged). But the downstream-task check tells the real story: on
+ARC-Challenge, HellaSwag, PIQA, and Winogrande the repaired checkpoint is essentially unchanged from the
+un-repaired all-sparse model (about +0.005 accuracy on average), and the lowest-PPL variant even regressed
+on ARC-Challenge (0.356 to 0.348). The 2:4 sparsity removes roughly 20 points of ARC-C/HellaSwag accuracy
+versus dense, and WikiText knowledge distillation recovers almost none of it. The CE-heavy WikiText PPL win
+is largely domain overfitting. The other three families were negative: zero-runtime output calibration is
+neutral to harmful (per-channel affine 12.97, because an output rescale cannot fix a representational
+loss), low-rank adapters on frozen sparse weights stayed flat at about 10.0, and Wanda-pair masks with
+truncated QAT were worse than the SparseGPT baseline (13.06).
+
+> **Accuracy-repair result: PPL repaired, capability not.** Distillation reduces the sparse serving tax
+> from 10.27 to 9.10 PPL and preserves every serving win, but it does not close the downstream-capability
+> gap that 2:4 sparsity opens (ARC-C/HellaSwag stay ~20 points below dense). Distillation on a narrow text
+> corpus buys perplexity, not capability. The honest remaining frontier is sparse capability recovery
+> (broad/larger-scale distillation data, or rethinking the prune target), not serving plumbing. See
+> `docs/crossover_result.md` and `harness/repair.py`.
 
 ---
 
@@ -655,11 +669,12 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   a single launch is bounded to problems whose addressed element counts fit in int32. Real LLM
   linear shapes are far below this bound, but a 64-bit indexing pass would be required before the
   kernels could serve arbitrarily large fused shapes.
-- **Accuracy repair of the +2.3 PPL tax is open.** Two training-free levers are measured and
-  negative (reverse densification, hybrid placement); the training-based tournament (zero-runtime
-  calibration, low-rank residual adapters, activation-aware mask repair, distillation onto the
-  9.750 PPL `gate_up`-dense/`down`-sparse hybrid) is in progress with a reserved results slot
-  (Sections 7 and 9). This paper does not headline an accuracy-repair number.
+- **Accuracy repair repairs PPL, not capability.** A four-way tournament (zero-runtime calibration,
+  low-rank adapters, Wanda-pair mask repair, distillation) found only distillation moves the metric:
+  it cuts the serving tax from 10.27 to 9.10 PPL while keeping every serving win, but the
+  downstream-task accuracy (ARC-C/HellaSwag) stays ~20 points below dense, so the capability loss
+  from 2:4 sparsity is not recovered (Section 9). Distillation buys perplexity, not capability; the
+  honest open frontier is sparse capability recovery, not serving plumbing.
 - **No dense FP4 speed win.** quadbit dense loses the SM120 dense race to FlashInfer 1.35 to 2.2x
   and is retained only as a zero-training W4A4 accuracy drop-in, not a speed contribution.
 
