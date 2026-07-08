@@ -37,7 +37,7 @@ def _dequant_block(w, s, bs):
         s = s.t().contiguous()
         sr, sc = sc, sr
     fn, fk = math.ceil(n / sr), math.ceil(k / sc)
-    se = s.to(torch.float32).repeat_interleave(fn, 0)[:n].repeat_interleave(fk, 1)[:k]
+    se = s.to(torch.float32).repeat_interleave(fn, 0)[:n].repeat_interleave(fk, 1)[:, :k]
     return (w.to(torch.float32) * se).to(torch.bfloat16)
 
 
