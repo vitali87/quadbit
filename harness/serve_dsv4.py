@@ -268,12 +268,32 @@ def dumpsrc() -> None:
                 print(f"  --- '{key}' @ line {h + 1} ---", flush=True)
                 print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo, hi)), flush=True)
 
-    show_full("fused_inv_rope_fp8_quant",
-              base / "models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py")
-    show_defs("attention.py wo_a/wo_b/dims",
-              base / "models/deepseek_v4/attention.py",
-              ["self.wo_a", "self.wo_b", "self.o_lora_rank", "self.nope_head_dim",
-               "self.rope_head_dim", "self.n_local_groups", "self.n_local_heads"])
+    show_defs("deep_gemm.py mqa-logits",
+              base / "utils/deep_gemm.py",
+              ["def get_paged_mqa_logits_metadata", "def fp8_paged_mqa_logits",
+               "def _lazy_init", "_get_paged_mqa_logits_metadata_impl =",
+               "_fp8_paged_mqa_logits_impl =", "def _missing"])
+    show_defs("indexer.py backend",
+              base / "v1/attention/backends/mla/indexer.py",
+              ["get_paged_mqa_logits_metadata", "fp8_paged_mqa_logits", "def build",
+               "scheduler_metadata_buffer"])
+    show_defs("flashinfer_sparse_mla_warmup.py",
+              base / "model_executor/warmup/flashinfer_sparse_mla_warmup.py",
+              ["def deepseek_v4_sparse_mla_attention_warmup"])
+
+    import subprocess
+
+    def show_range(label, p, lo, hi):
+        print(f"\n===== {label} ({p}) [{lo}-{hi}] =====", flush=True)
+        text = p.read_text().splitlines()
+        print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True)
+
+    def show_range2(label, p, lo, hi):
+        print(f"\n===== {label} [{lo}-{hi}] =====", flush=True)
+        text = p.read_text().splitlines()
+        print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True)
+
+    show_range2("deep_gemm fp8_fp4_mqa_logits+paged docs", base / "utils/deep_gemm.py", 499, 645)
 
 
 @app.function(image=image)

@@ -62,6 +62,62 @@ def _dequant_block(w, s, bs):
     return (w.to(torch.float32) * se).to(torch.bfloat16)
 
 
+def _mqa_logits_bf16(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=False):
+    # SM120-safe replacement for DeepGEMM fp8_fp4_mqa_logits (prefill). FP8 path only.
+    # logits[m,n] = sum_h w[m,h] * sum_d q[m,h,d]*k[n,d]  == (sum_h w[m,h]*q[m,h,d]) . k[n,:]
+    import torch
+
+    q_values, _q_scale = q  # [M,H,D] float8_e4m3fn, scale folded into weights
+    k_packed, k_scales = kv  # [N,D] float8_e4m3fn, [N] float32
+    qf = q_values.to(torch.float32)
+    w = weights.to(torch.float32)
+    qw = torch.einsum("mhd,mh->md", qf, w)  # [M,D]
+    kf = k_packed.to(torch.float32) * k_scales.to(torch.float32).reshape(-1, 1)  # [N,D]
+    logits = qw @ kf.t()  # [M,N]
+    n = logits.shape[1]
+    idx = torch.arange(n, device=logits.device).reshape(1, -1)
+    ks = cu_seqlen_ks.to(torch.long).reshape(-1, 1)
+    ke = cu_seqlen_ke.to(torch.long).reshape(-1, 1)
+    valid = (idx >= ks) & (idx < ke)
+    return torch.where(valid, logits, torch.full_like(logits, float("-inf")))
+
+
+def _paged_mqa_logits_bf16(q, kv_cache, weights, context_lens, block_tables, schedule_metadata,
+                           max_model_len, clean_logits=False):
+    # SM120-safe replacement for DeepGEMM fp8_fp4_paged_mqa_logits (decode). FP8 cache:
+    # kv_cache [num_blocks, block_size, 1, D+4] uint8; last 4 bytes/row = fp32 dequant scale.
+    import torch
+
+    q_values, _q_scale = q  # [B, next_n, H, D] float8_e4m3fn
+    b, next_n, h, d = q_values.shape
+    num_blocks, block_size, _one, width = kv_cache.shape
+    kv_u8 = kv_cache.reshape(num_blocks, block_size, width)
+    w = weights.to(torch.float32).reshape(b, next_n, h)
+    qf = q_values.to(torch.float32)
+    qw = torch.einsum("bnhd,bnh->bnd", qf, w)  # [B, next_n, D]
+    ctx = context_lens
+    out = torch.full((b * next_n, max_model_len), float("-inf"),
+                     device=q_values.device, dtype=torch.float32)
+    for bi in range(b):
+        lens_bn = ctx[bi] if ctx.ndim == 2 else ctx[bi].reshape(1).expand(next_n)
+        length = int(lens_bn.max().item())
+        if length <= 0:
+            continue
+        pos = torch.arange(length, device=q_values.device)
+        blk = block_tables[bi, torch.div(pos, block_size, rounding_mode="floor").long()].long()
+        wpos = (pos % block_size).long()
+        rows = kv_u8[blk, wpos]  # [length, width] uint8
+        kf = rows[:, :d].contiguous().view(torch.float8_e4m3fn).to(torch.float32)  # [length,D]
+        ksc = rows[:, d:d + 4].contiguous().view(torch.float32).reshape(-1)  # [length]
+        kf = kf * ksc.reshape(-1, 1)
+        for ni in range(next_n):
+            ln = int(lens_bn[ni].item()) if ctx.ndim == 2 else length
+            if ln <= 0:
+                continue
+            out[bi * next_n + ni, :ln] = qw[bi, ni] @ kf[:ln].t()
+    return out
+
+
 def install() -> None:
     method = os.environ.get("QB_DENSE", "bf16").lower()
     if method == "off":
@@ -224,5 +280,52 @@ def install() -> None:
         print(f"[qb_sm120] patched deep_gemm_fp8_o_proj in {rebound} module(s)", flush=True)
     except Exception as ex:  # noqa: BLE001
         print(f"[qb_sm120] o_proj patch skipped: {type(ex).__name__}: {ex}", flush=True)
+
+    # --- DeepSeek Sparse Attention (Lightning Indexer): DeepGEMM's paged/dense MQA-logits kernels
+    # assert "Unsupported architecture" on sm_120, and the indexer hard-requires DeepGEMM (no native
+    # CUDA fallback). Replace the three DeepGEMM entry points with bf16 torch: metadata -> dummy
+    # buffer (our path ignores SM scheduling), and the two logits kernels -> exact q.k top-k logits.
+    # The FlashInfer sparse-MLA attention core IS sm_120-supported, so only these logits need owning.
+    def _cnt_mqa(*a, **k):
+        if STATS.get("mqa_prefill", 0) == 0:
+            q, kv = a[0], a[1]
+            print(f"[qb_sm120] indexer prefill mqa bf16 ACTIVE pid={os.getpid()} "
+                  f"q={tuple(q[0].shape)}/{q[0].dtype} k={tuple(kv[0].shape)}/{kv[0].dtype} "
+                  f"w={tuple(a[2].shape)}", flush=True)
+        STATS["mqa_prefill"] = STATS.get("mqa_prefill", 0) + 1
+        return _mqa_logits_bf16(*a, **k)
+
+    def _cnt_paged(*a, **k):
+        if STATS.get("mqa_decode", 0) == 0:
+            q, kvc = a[0], a[1]
+            print(f"[qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid={os.getpid()} "
+                  f"q={tuple(q[0].shape)}/{q[0].dtype} kv_cache={tuple(kvc.shape)}/{kvc.dtype} "
+                  f"ctx={tuple(a[3].shape)} bt={tuple(a[4].shape)}", flush=True)
+        STATS["mqa_decode"] = STATS.get("mqa_decode", 0) + 1
+        return _paged_mqa_logits_bf16(*a, **k)
+
+    def _meta_stub(context_lens, block_size, num_sms):
+        return torch.zeros((num_sms + 1, 2), dtype=torch.int32, device=context_lens.device)
+
+    try:
+        dg = importlib.import_module("vllm.utils.deep_gemm")
+        import sys
+
+        repl = {"fp8_fp4_mqa_logits": _cnt_mqa, "fp8_fp4_paged_mqa_logits": _cnt_paged,
+                "get_paged_mqa_logits_metadata": _meta_stub}
+        origs = {n: getattr(dg, n, None) for n in repl}
+        for n, fn in repl.items():
+            setattr(dg, n, fn)
+        rb = 0
+        for mod in list(sys.modules.values()):
+            if mod is None or mod is dg:
+                continue
+            for n, fn in repl.items():
+                if getattr(mod, n, None) is origs[n] and origs[n] is not None:
+                    setattr(mod, n, fn)
+                    rb += 1
+        print(f"[qb_sm120] patched indexer mqa-logits (+{rb} rebinds)", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"[qb_sm120] indexer patch skipped: {type(ex).__name__}: {ex}", flush=True)
 
     print(f"[qb_sm120] installed in pid={os.getpid()} (method={method})", flush=True)
