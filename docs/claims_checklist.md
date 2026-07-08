@@ -114,5 +114,6 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | Expert-parallel scaling 2.17x (2 GPU) / 4.21x (4 GPU), imbalance 1.04, checksum-identical | `harness/moe_dist.py`; `docs/figures/data/dist_scaling.csv` | backed |
 | PCIe all-reduce comm 0.32-0.45 ms vs 1.3-2.5 ms expert compute (no NVLink caveat) | `harness/moe_dist.py` | backed |
 | Real-weight per-expert-output 2:4-FP4 tax ~cos 0.70 (random-act worst case); MoE accuracy recovery is future work | `harness/moe_layer.py` | backed |
-| Dense NVFP4 DeepSeek-V4-Flash loads/serves in vLLM 0.24 (FlashInfer CUTLASS MoE) on 2x RTX PRO 6000 | `harness/serve_dsv4.py` | needs-rerun (load confirmed; serving numbers pending) |
-| In-vLLM graph-captured sparse MoE serving (end-to-end) | `harness/serve_dsv4.py` quadbit mode | reserved (staged-.so injection in progress) |
+| DeepSeek-V4-Flash NVFP4 weights load in vLLM 0.24 on 2x RTX PRO 6000 (FlashInfer CUTLASS MoE selected) | `harness/serve_dsv4.py` (serve3 log) | backed |
+| The model's FP8 (ue8m0 W8A8) attention GEMM has NO SM120 kernel: DeepGEMM SF-transform asserts, CUTLASS c3x scaled_mm no-dispatch -> forward cannot init on consumer Blackwell (ecosystem gap, not quadbit) | `harness/serve_dsv4.py` (serve3/serve4 logs) | backed |
+| In-vLLM graph-captured sparse MoE serving (end-to-end, this model) | `harness/serve_dsv4.py` quadbit mode; staged .so + FusedMoE hook implemented | reserved (future work, gated on ecosystem FP8 SM120 support / Hopper host) |

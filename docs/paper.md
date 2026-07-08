@@ -643,13 +643,23 @@ is cos ~0.70 -- consistent with the single-model finding that 2:4 sparsity, not 
 cost. Sparse FP4 remains a speed-for-capability operating point; MoE accuracy recovery (calibrated
 SparseGPT / distillation on the experts) is future work, exactly as for the dense model.
 
-**Serving integration status.** The dense NVFP4 baseline loads and serves in vLLM (v0.24, FlashInfer
-CUTLASS NVFP4 MoE backend, Lightning-Indexer attention) on 2x RTX PRO 6000. The quadbit sparse
-operator is validated standalone (kernel, real layer) and distributed (expert-parallel scaling);
-because the sparse mma assembles only under CUDA <= 12.8's ptxas while the vLLM/FlashInfer stack for
-this model needs CUDA 13, the in-vLLM path uses the staged-`.so` pattern of Section 6 (compile under
-12.8, ctypes-load under 13). [End-to-end in-vLLM graph-captured sparse serving numbers: reported in
-`docs/crossover_result.md` when the injection run completes.]
+**Serving integration status (an honest ecosystem boundary).** In vLLM 0.24 the DeepSeek-V4-Flash
+NVFP4 checkpoint downloads, and its weights load across 2x RTX PRO 6000; vLLM selects the FlashInfer
+CUTLASS NVFP4 MoE backend and the FP8 Lightning-Indexer attention. But the model's **FP8 (ue8m0 W8A8)
+attention/dense GEMMs have no working kernel on SM120**: with DeepGEMM enabled the ue8m0 scale-factor
+transform asserts (`Unknown SF transformation`), and with DeepGEMM disabled the fallback CUTLASS c3x
+`scaled_mm` has no SM120 dispatch (`dispatch_scaled_mm`). Both paths are Hopper-targeted, so the model
+cannot complete even vLLM's init profiling forward on consumer Blackwell -- a limitation of the FP8
+attention path in today's serving stack, **independent of quadbit** (the MoE path that quadbit replaces
+is the one backend that did initialize). We therefore report the quadbit sparse MoE result where it is
+measured cleanly: the operator is validated standalone (segmented kernel bit-exact vs per-expert;
+CUDA-graph capturable; correct on a real 256-expert layer) and **distributed** (expert-parallel, 4.21x
+kernel scaling on 4 GPUs, correctness preserved), with the coverage and accuracy accounting above. The
+staged-`.so` injection path (compile the sparse mma under CUDA <= 12.8, ctypes-load under the CUDA-13
+serve image) and the FusedMoE hook are implemented (`harness/serve_dsv4.py`) and ready to run in an
+environment whose FP8-attention backend supports SM120 (or on a Hopper/B200 host). End-to-end in-vLLM
+graph-captured sparse *serving* numbers for this model are thus **future work gated on ecosystem FP8
+SM120 support**, not on the quadbit operator.
 
 ---
 
