@@ -240,12 +240,23 @@ def probe() -> None:
     import inspect
     from importlib.metadata import entry_points, version
 
+    import torch
+
     import qb_sm120_plugin as p
 
-    print(f"# qb-sm120-plugin version={version('qb-sm120-plugin')}", flush=True)
+    print(f"# qb-sm120-plugin version={version('qb-sm120-plugin')} file={p.__file__}", flush=True)
     eps = [e.value for e in entry_points(group="vllm.general_plugins")]
     print(f"# vllm.general_plugins entry points: {eps}", flush=True)
     print(inspect.getsource(p._dequant_block), flush=True)
+    # run the deployed dequant on the exact failing shape (w[16384,1024], transposed scale [8,128])
+    for sshape in [(128, 8), (8, 128)]:
+        w = torch.randint(-7, 8, (16384, 1024), dtype=torch.float32)
+        s = torch.rand(*sshape) + 0.1
+        try:
+            out = p._dequant_block(w, s, (128, 128))
+            print(f"  dequant w=[16384,1024] s={sshape} -> {tuple(out.shape)} OK", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"  dequant w=[16384,1024] s={sshape} -> {type(ex).__name__}: {ex}", flush=True)
 
 
 @app.local_entrypoint()
