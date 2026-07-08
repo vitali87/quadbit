@@ -568,6 +568,25 @@ def snapshot(src: str, dst: str) -> str:
     return f"copied {src} -> {dst}"
 
 
+@app.function(volumes={"/cache": vol}, timeout=600)
+def fold(src: str, dst: str) -> str:
+    # Fold the trained per-out-row down scale into the weights: exact for this two-level quant because the
+    # per-row global gA absorbs any per-row multiplier (fp4 codes + local scales unchanged). Produces a
+    # weights-only serving ckpt that quadbit_serve loads unmodified, reproducing the through-kernel PPL.
+    import os
+
+    import torch
+    if not os.path.exists(src):
+        return f"MISSING {src}"
+    ck = torch.load(src, map_location="cpu", weights_only=True)
+    w = ck["weights"]; sc = ck.get("scales") or [None] * len(w)
+    out = [(wi.float() * si[:, None]).to(torch.bfloat16) if si is not None else wi for wi, si in zip(w, sc)]
+    nfold = sum(1 for si in sc if si is not None)
+    torch.save({"weights": out}, dst)
+    vol.commit()
+    return f"folded {src} -> {dst} ({nfold} scaled projections)"
+
+
 @app.local_entrypoint()
 def main(mode: str = "calib", model: str = MODEL, recovered_ckpt: str = RECOVERED_INSTRUCT_CKPT,
          rank: int = 32, steps: int = 2000, p1: int = 2000, lr: float = 2e-5, mse_w: float = 0.0,
