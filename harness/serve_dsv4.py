@@ -26,6 +26,17 @@ image = (
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
           "HF_XET_HIGH_PERFORMANCE": "1"})
     .pip_install("vllm", "huggingface_hub")
+    # vLLM 0.24.0's deepseek_v4 sparse-MLA path calls flashinfer's newer
+    # trtllm_batch_decode_sparse_mla_dsv4(swa_topk_lens=..., extra_sparse_indices=...) API, but
+    # 0.24.0 exact-pins flashinfer 0.6.12 (older sparse_topk_lens/seq_lens sig -> TypeError). Force
+    # 0.6.14 with --no-deps so the resolver can't backtrack vLLM to 0.11.0 (which lacks deepseek_v4).
+    # The swa_topk_lens/extra_sparse_* API vLLM 0.24.0 calls exists ONLY in flashinfer-python 0.6.14,
+    # but flashinfer-cubin stops at 0.6.13. Use python 0.6.14 (for the API) + cubin 0.6.13 (latest
+    # precompiled kernels) and bypass the python/cubin version check -- the sparse-MLA kernel JITs at
+    # runtime regardless. --no-deps keeps vLLM 0.24.0 pinned (a plain pin backtracks it to 0.11.0).
+    .run_commands("pip install --force-reinstall --no-deps "
+                  "flashinfer-python==0.6.14 flashinfer-cubin==0.6.13")
+    .env({"FLASHINFER_DISABLE_VERSION_CHECK": "1"})
     # SM120 dense/attention unblock plugin: registered as a vllm.general_plugins entry point so the
     # monkeypatch runs in every spawned worker (an imperative patch in the driver does not survive).
     .add_local_dir(str(ROOT / "harness" / "qb_vllm_plugin"), "/opt/qb_plugin", copy=True)
@@ -240,6 +251,32 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
 
 
 @app.function(image=image)
+def versions() -> None:
+    # CPU-only: pin down the vLLM<->FlashInfer skew behind the swa_topk_lens TypeError.
+    import inspect
+    from importlib.metadata import version
+
+    for pkg in ["vllm", "flashinfer-python", "flashinfer", "torch"]:
+        try:
+            print(f"{pkg} == {version(pkg)}", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"{pkg}: {type(ex).__name__}", flush=True)
+    try:
+        import flashinfer
+
+        print(f"flashinfer.__version__ = {getattr(flashinfer, '__version__', '?')}", flush=True)
+        fn = getattr(flashinfer, "trtllm_batch_decode_sparse_mla_dsv4", None)
+        if fn is None:
+            import flashinfer.decode as fd
+
+            fn = getattr(fd, "trtllm_batch_decode_sparse_mla_dsv4", None)
+        print(f"trtllm_batch_decode_sparse_mla_dsv4 sig: "
+              f"{inspect.signature(fn) if fn else 'NOT FOUND'}", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"flashinfer introspection failed: {type(ex).__name__}: {ex}", flush=True)
+
+
+@app.function(image=image)
 def dumpsrc() -> None:
     # CPU-only: read the exact source of the deepseek_v4 o_proj DeepGEMM path so the SM120-safe
     # replacement is faithful (deep_gemm_fp8_o_proj bypasses Fp8LinearMethod -> our linear patch
@@ -293,7 +330,20 @@ def dumpsrc() -> None:
         text = p.read_text().splitlines()
         print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True)
 
-    show_range2("deep_gemm fp8_fp4_mqa_logits+paged docs", base / "utils/deep_gemm.py", 499, 645)
+    show_range2("flashinfer_sparse.py _forward_prefill call", base
+                / "models/deepseek_v4/nvidia/flashinfer_sparse.py", 820, 895)
+    show_defs("vllm flashinfer.py wrapper",
+              base / "utils/flashinfer.py",
+              ["trtllm_batch_decode_sparse_mla_dsv4", "def has_flashinfer_sparse_mla_sm120"])
+    import subprocess
+
+    r = subprocess.run(["pip", "index", "versions", "flashinfer-python"],
+                       capture_output=True, text=True)
+    print(f"\n### pip index versions flashinfer-python:\n{r.stdout}\n{r.stderr}", flush=True)
+    r2 = subprocess.run(["grep", "-rn", "flashinfer", str(base.parent / "vllm-0.24.0.dist-info")
+                        if (base.parent / "vllm-0.24.0.dist-info").exists() else str(base)],
+                       capture_output=True, text=True)
+    print(f"\n### vllm flashinfer pin refs:\n{r2.stdout[:1500]}", flush=True)
 
 
 @app.function(image=image)
@@ -326,7 +376,9 @@ def probe() -> None:
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8") -> None:
-    if mode == "dumpsrc":
+    if mode == "versions":
+        versions.remote()
+    elif mode == "dumpsrc":
         dumpsrc.remote()
     elif mode == "probe":
         probe.remote()

@@ -328,4 +328,37 @@ def install() -> None:
     except Exception as ex:  # noqa: BLE001
         print(f"[qb_sm120] indexer patch skipped: {type(ex).__name__}: {ex}", flush=True)
 
+    # --- indexer top-k selection: vLLM's cooperative_topk/persistent_topk CUDA kernels use
+    # cooperative CLUSTER launch, which fails on sm_120 ("launch_cooperative_cluster ... invalid
+    # argument"). Override both with a pure-torch top-k that fills the same [rows, topk] index buffer
+    # (order among the k is irrelevant to the downstream set-attention). Correctness-first.
+    def _topk_into(logits, seq_lens, topk_indices, topk_tokens):
+        rows, width = logits.shape
+        sl = seq_lens.reshape(-1)
+        topk_indices[:rows, :topk_tokens] = -1
+        for r in range(rows):
+            n = int(sl[r].item()) if r < sl.numel() else width
+            n = max(0, min(n, width))
+            if n <= 0:
+                continue
+            k = min(topk_tokens, n)
+            idx = torch.topk(logits[r, :n], k).indices.to(topk_indices.dtype)
+            topk_indices[r, :k] = idx
+
+    def _coop_topk(logits, seq_lens, topk_indices, topk_workspace, topk_tokens, max_seq_len):
+        if STATS.get("topk_calls", 0) == 0:
+            print(f"[qb_sm120] torch top-k ACTIVE pid={os.getpid()} logits={tuple(logits.shape)} "
+                  f"topk={topk_tokens}", flush=True)
+        STATS["topk_calls"] = STATS.get("topk_calls", 0) + 1
+        _topk_into(logits, seq_lens, topk_indices, topk_tokens)
+
+    try:
+        # setattr on the _OpNamespace shadows the cached OpOverloadPacket, so subsequent
+        # torch.ops._C.cooperative_topk(...) calls dispatch to our python impl.
+        setattr(torch.ops._C, "cooperative_topk", _coop_topk)
+        setattr(torch.ops._C, "persistent_topk", _coop_topk)
+        print("[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"[qb_sm120] topk override skipped: {type(ex).__name__}: {ex}", flush=True)
+
     print(f"[qb_sm120] installed in pid={os.getpid()} (method={method})", flush=True)
