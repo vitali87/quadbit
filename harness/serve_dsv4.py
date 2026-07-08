@@ -165,15 +165,17 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
     moe = [(n, mod) for n, mod in m.named_modules()
            if "fusedmoe" in type(mod).__name__.lower() and hasattr(mod, "quant_method")]
     print(f"  found {len(moe)} FusedMoE layers", flush=True)
-    if not moe:
-        print("  NO FusedMoE layers located -> run `inspect` first to get attr names; aborting injection", flush=True)
-        return
-    # NOTE: expert dequant (NVFP4->bf16) + pack + apply-replacement wired here after inspect confirms
-    # the weight/scale attr names. Until then this run validates .so load + layer discovery + baseline gen.
-    sp = SamplingParams(temperature=0.0, max_tokens=16)
-    out = llm.generate(["The capital of France is"], sp)
-    print(f"  [gen] {out[0].outputs[0].text!r}", flush=True)
-    print("# M3.6 scaffold ok (.so + layer discovery); injection wiring pending inspect", flush=True)
+    # The sparse injection (dequant experts NVFP4->bf16, 2:4 pack, replace quant_method.apply with a
+    # sparse_moe_mm_2lvl path) is NOT yet wired: it needs the expert weight/scale attr names from
+    # `inspect_moe`, and on SM120 this model's FP8 attention GEMM has no kernel so LLM() cannot even
+    # finish init (see docs/paper.md Section 10). We deliberately do NOT run llm.generate() here -- that
+    # would exercise the NATIVE vLLM MoE path and could be mistaken for a sparse-served result. This
+    # entry point is ready to complete on a host whose FP8-attention backend supports SM120 (or Hopper).
+    _ = SamplingParams  # referenced once wiring lands
+    raise NotImplementedError(
+        "quadbit sparse-MoE injection not wired: replace each FusedMoE.quant_method.apply with the "
+        "segmented sparse_moe_mm_2lvl path using per-expert weights from `inspect` mode. This does NOT "
+        "serve sparse yet; running native generate here would misrepresent the result.")
 
 
 @app.local_entrypoint()
