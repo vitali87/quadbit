@@ -50,6 +50,7 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ["QB_DENSE"] = dense  # read by the qb_sm120 plugin in every spawned worker
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"  # quiet load bars so worker tracebacks survive
     print(f"# WS0/1 unblock: dense={dense} tp={tp} eager={eager} on "
           f"{torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
 
