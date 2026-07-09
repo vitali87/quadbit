@@ -290,9 +290,13 @@ def _calib_accum(li, le, xe_gu, xe_dn):
 
 
 def dump_calib():
-    # per-rank dump: colnorm[proj][layer] = sqrt(mean col energy over routed tokens) = ||X_col||_rms
+    # per-rank dump: colnorm[proj][layer] = sqrt(mean col energy over routed tokens) = ||X_col||_rms.
+    # Skip when this process has no accumulated data (the driver process also has QB_CALIB set and
+    # would otherwise clobber worker-0's real file on device 0 with an empty dump).
     import torch
 
+    if not _CALIB_GU:
+        return 0
     out = {"gu": {}, "dn": {}, "n": {}}
     for li in _CALIB_GU:
         n = _CALIB_N[li].clamp_min(1.0)
@@ -463,8 +467,8 @@ def _load_sparse_moe():
         # 2:4 pair selection: keep the 2 of every 4 pairs with the largest importance. colnorm=None ->
         # magnitude (|W| summed over the pair). colnorm (Wanda) -> |W|*||X_col|| summed over the pair,
         # which directly minimizes the routed output error ||X(W_dense - W_sparse)||.
-        if colnorm is None:
-            imp = wg.abs().sum(-1)
+        if colnorm is None or not bool((colnorm != 0).any()):
+            imp = wg.abs().sum(-1)  # magnitude (also the fallback for experts unrouted in calib)
         else:
             imp = (wg.abs() * colnorm.view(1, ks, 16, 4, 2)).sum(-1)
         i01, _ = imp.topk(2, dim=-1).indices.sort(dim=-1)

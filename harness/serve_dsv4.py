@@ -744,25 +744,56 @@ def _calib_impl(tp: int, tag: str, max_len: int) -> None:
 
     tok = llm.get_tokenizer()
     corpus = [
-        "The history of science spans many centuries and cultures, from ancient astronomy to modern "
-        "quantum mechanics. Researchers formulate hypotheses, design experiments, and revise theories "
-        "as new evidence emerges. The scientific method relies on reproducibility and peer review.",
+        "The history of science spans many centuries and cultures, from ancient Babylonian astronomy to "
+        "modern quantum mechanics and relativity. Researchers formulate hypotheses, design controlled "
+        "experiments, gather data, and revise theories as new evidence emerges. The scientific method "
+        "relies on reproducibility, falsifiability, and rigorous peer review by the wider community.",
         "In computer science, algorithms and data structures form the foundation of efficient software. "
         "A sorting algorithm arranges elements in order; a hash table offers average constant-time "
-        "lookup. def quicksort(a):\n    if len(a) <= 1:\n        return a\n    p = a[len(a)//2]\n    "
-        "return quicksort([x for x in a if x < p]) + [x for x in a if x == p] + quicksort([x for x in a if x > p])",
-        "Economics studies how societies allocate scarce resources. Supply and demand determine prices "
-        "in competitive markets, while central banks influence interest rates and inflation. Trade "
-        "allows nations to specialize according to comparative advantage.",
+        "lookup; a balanced tree keeps operations logarithmic. def quicksort(a):\n    if len(a) <= 1:\n"
+        "        return a\n    p = a[len(a)//2]\n    lo = [x for x in a if x < p]\n    hi = [x for x in a "
+        "if x > p]\n    return quicksort(lo) + [x for x in a if x == p] + quicksort(hi)\n\nclass Stack:\n"
+        "    def __init__(self):\n        self.items = []\n    def push(self, x):\n        self.items.append(x)",
+        "Economics studies how societies allocate scarce resources among competing uses. Supply and "
+        "demand jointly determine prices in competitive markets, while central banks influence interest "
+        "rates, employment, and inflation through monetary policy. International trade allows nations to "
+        "specialize according to comparative advantage, raising aggregate output but creating winners and losers.",
         "The novel opened on a grey morning in a small coastal town, where the fishermen mended their "
-        "nets and the gulls circled overhead. She walked along the pier, thinking of the letter she had "
-        "never sent, the words still forming and dissolving in her mind like the tide.",
-        "Photosynthesis is the process by which plants convert light energy into chemical energy. "
-        "Chlorophyll absorbs sunlight, water is split into hydrogen and oxygen, and carbon dioxide is "
-        "fixed into glucose. This process sustains nearly all life on Earth through the food chain.",
+        "nets and the gulls circled overhead, crying into the wind. She walked along the weathered pier, "
+        "thinking of the letter she had never sent, the words still forming and dissolving in her mind "
+        "like the restless tide against the pilings below.",
+        "Photosynthesis is the process by which green plants convert light energy into chemical energy. "
+        "Chlorophyll in the chloroplasts absorbs sunlight, water is split into hydrogen and oxygen, and "
+        "atmospheric carbon dioxide is fixed into glucose through the Calvin cycle. This process releases "
+        "the oxygen we breathe and sustains nearly all life on Earth through the food chain.",
         "Mathematics is the study of numbers, structure, space, and change. A prime number has exactly "
-        "two divisors. The Pythagorean theorem relates the sides of a right triangle: a squared plus b "
-        "squared equals c squared. Calculus formalizes rates of change and accumulation.",
+        "two positive divisors, one and itself. The Pythagorean theorem states that for a right triangle "
+        "the square of the hypotenuse equals the sum of the squares of the other two sides. Calculus "
+        "formalizes rates of change through derivatives and accumulation through integrals.",
+        "The human body is composed of many interacting systems. The cardiovascular system circulates "
+        "blood, delivering oxygen and nutrients while removing waste. The nervous system transmits "
+        "electrical signals between the brain and the rest of the body. The immune system defends "
+        "against pathogens using white blood cells, antibodies, and inflammatory responses.",
+        "Constitutional law governs the relationship between the state and its citizens. Courts interpret "
+        "statutes and precedents, balancing individual rights against public interest. The principle of "
+        "separation of powers divides authority among the legislative, executive, and judicial branches "
+        "to prevent the concentration of power and protect against tyranny.",
+        "To make a classic risotto, warm the stock in a saucepan and keep it simmering. In a separate "
+        "pan, soften diced onion in butter, add the rice, and toast it briefly. Add a ladle of stock at "
+        "a time, stirring constantly until absorbed, and continue until the grains are creamy yet still "
+        "firm at the centre. Finish with parmesan and a knob of cold butter.",
+        "The orchestra tuned their instruments as the conductor stepped onto the podium. The symphony "
+        "began softly with the strings, then the woodwinds entered, and finally the brass and percussion "
+        "joined in a triumphant crescendo. Music theory describes harmony, melody, rhythm, and the "
+        "intervals that give a chord its characteristic tension or resolution.",
+        "Climate scientists study the long-term patterns of temperature, precipitation, and atmospheric "
+        "composition. Rising concentrations of greenhouse gases trap heat, warming the oceans and melting "
+        "polar ice. Feedback loops, such as reduced reflectivity from vanishing sea ice, can amplify these "
+        "changes and shift weather patterns across entire continents.",
+        "Ancient Rome grew from a small city-state on the Tiber into an empire spanning three continents. "
+        "Its legions, roads, aqueducts, and legal code shaped the Mediterranean world for centuries. "
+        "Latin, the language of Rome, evolved into the Romance languages and contributed an enormous "
+        "vocabulary to English, science, and law.",
     ]
     ids = [{"prompt_token_ids": tok.encode(c)} for c in corpus]
     ntok = sum(len(d["prompt_token_ids"]) for d in ids)
