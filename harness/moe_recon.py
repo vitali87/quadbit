@@ -97,83 +97,80 @@ def fq_act(x: torch.Tensor) -> torch.Tensor:
     return (fp4[codes] * sdeq[..., None]).reshape(r, in_f).to(x.dtype)
 
 
-class SparseExpertsRepair(torch.nn.Module):
-    """One MoE layer's routed experts as a differentiable fakequant-sparse block. Trainable = the
-    surviving 2:4 weights (dropped held 0). scale_only=True freezes weights, trains only scales."""
+def _dense_expert(
+    x: torch.Tensor, wg: torch.Tensor, wu: torch.Tensor, wd: torch.Tensor
+) -> torch.Tensor:
+    # dense (teacher) expert operator == the plugin dense apply path (plain float matmul, no quant).
+    return (F.silu(x @ wg.t()) * (x @ wu.t())) @ wd.t()
 
-    def __init__(
-        self,
-        w13: torch.Tensor,
-        w2: torch.Tensor,
-        colnorm_gu: torch.Tensor,
-        colnorm_dn: torch.Tensor,
-        inter: int,
-        scale_only: bool = False,
-    ):
-        super().__init__()
-        e = w13.shape[0]
-        self.inter = inter
-        self.scale_only = scale_only
-        self.cgu = colnorm_gu  # (E, H)   per-expert gate/up input col rms
-        self.cdn = colnorm_dn  # (E, I)   per-expert down  input col rms
-        # keep-mask from the initial Wanda pick; hold dropped at 0 so serving re-selects it.
-        self.w13 = torch.nn.Parameter(w13.float(), requires_grad=not scale_only)
-        self.w2 = torch.nn.Parameter(w2.float(), requires_grad=not scale_only)
-        self.register_buffer("m13", self._keepmask(w13.float(), colnorm_gu))
-        self.register_buffer("m2", self._keepmask(w2.float(), colnorm_dn))
-        with torch.no_grad():
-            self.w13 *= self.m13
-            self.w2 *= self.m2
-        self.s_gate = torch.nn.Parameter(
-            torch.ones(e)
-        )  # per-expert output affine (always trainable)
-        self.s_up = torch.nn.Parameter(torch.ones(e))
-        self.s_dn = torch.nn.Parameter(torch.ones(e))
 
-    @staticmethod
-    def _keepmask(w: torch.Tensor, colnorm: torch.Tensor | None) -> torch.Tensor:
-        out_f, in_f = w.shape[-2], w.shape[-1]
-        masks = []
-        for e in range(w.shape[0]):
-            wg = w[e].view(out_f, in_f // 128, 16, 4, 2)
-            cn = colnorm[e] if colnorm is not None else None
-            imp = (
-                wg.abs().sum(-1)
-                if cn is None
-                else (wg.abs() * cn.view(1, in_f // 128, 16, 4, 2)).sum(-1)
-            )
-            i01 = imp.topk(2, dim=-1).indices
-            mk = torch.zeros_like(wg[..., 0])
-            mk.scatter_(3, i01, 1.0)
-            masks.append(mk.unsqueeze(-1).expand(-1, -1, -1, -1, 2).reshape(out_f, in_f))
-        return torch.stack(masks)
+def _sparse_expert(
+    x: torch.Tensor,
+    wg: torch.Tensor,
+    wu: torch.Tensor,
+    wd: torch.Tensor,
+    cgu: torch.Tensor,
+    cdn: torch.Tensor,
+) -> torch.Tensor:
+    # student: fakequant activations + served (2:4-FP4) weights, mirroring the seg-kernel operator.
+    xq = fq_act(x.to(torch.bfloat16))
+    gu = F.silu(xq @ served_weight(wg, cgu).t()) * (xq @ served_weight(wu, cgu).t())
+    return fq_act(gu.to(torch.bfloat16)) @ served_weight(wd, cdn).t()
 
-    def forward(self, x: torch.Tensor, tid: torch.Tensor, tw: torch.Tensor) -> torch.Tensor:
-        t, h = x.shape
-        topk = tid.shape[1]
-        y = torch.zeros(t, h, dtype=torch.float32, device=x.device)
-        tok = torch.arange(t, device=x.device).repeat_interleave(topk)
-        flat = tid.reshape(-1).long()
-        fw = tw.reshape(-1).float()
-        ii = self.inter
-        for le in torch.unique(flat).tolist():
-            if le < 0:
-                continue
-            sel = flat == le
-            rows = tok[sel]
-            xe = fq_act(x[rows].to(torch.bfloat16))
-            wg = (
-                served_weight((self.w13[le, :ii] * self.m13[le, :ii]), self.cgu[le])
-                * self.s_gate[le]
-            )
-            wu = (
-                served_weight((self.w13[le, ii:] * self.m13[le, ii:]), self.cgu[le]) * self.s_up[le]
-            )
-            wd = served_weight((self.w2[le] * self.m2[le]), self.cdn[le]) * self.s_dn[le]
-            hh = fq_act((F.silu(xe @ wg.t()) * (xe @ wu.t())).to(torch.bfloat16))
-            oe = (hh @ wd.t()) * fw[sel][:, None]
-            y.index_add_(0, rows, oe.float())
-        return y
+
+def train_expert(
+    x: torch.Tensor,
+    wg: torch.Tensor,
+    wu: torch.Tensor,
+    wd: torch.Tensor,
+    cgu: torch.Tensor,
+    cdn: torch.Tensor,
+    steps: int,
+    lr: float,
+    scale_only: bool,
+) -> dict:
+    """Fit ONE expert surviving 2:4-FP4 weights (dropped held 0) to its dense output over its routed
+    tokens x. Teacher = dense operator; student = fakequant-sparse. Memory-trivial (one expert)."""
+    dev = wg.device
+    mg = (served_weight(wg, cgu) != 0).float()  # keep-mask (dropped positions -> 0)
+    mu = (served_weight(wu, cgu) != 0).float()
+    md = (served_weight(wd, cdn) != 0).float()
+    with torch.no_grad():
+        teacher = _dense_expert(x.float(), wg.float(), wu.float(), wd.float())
+    tn = teacher.norm().clamp_min(1e-6)
+
+    if scale_only:
+        s = [torch.ones(1, device=dev, requires_grad=True) for _ in range(3)]
+        params, base = s, (wg.float() * mg, wu.float() * mu, wd.float() * md)
+    else:
+        pg = (wg.float() * mg).requires_grad_(True)
+        pu = (wu.float() * mu).requires_grad_(True)
+        pd = (wd.float() * md).requires_grad_(True)
+        params = [pg, pu, pd]
+    opt = torch.optim.Adam(params, lr=lr)
+    trace = []
+    for step in range(1, steps + 1):
+        if scale_only:
+            wg_, wu_, wd_ = base[0] * s[0], base[1] * s[1], base[2] * s[2]
+        else:
+            wg_, wu_, wd_ = pg * mg, pu * mu, pd * md
+        pred = _sparse_expert(x, wg_, wu_, wd_, cgu, cdn)
+        loss = (pred - teacher).pow(2).mean() + 0.1 * (
+            1 - F.cosine_similarity(pred, teacher, dim=1).mean()
+        )
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if step % max(1, steps // 5) == 0 or step == steps:
+            with torch.no_grad():
+                rel = ((_sparse_expert(x, wg_, wu_, wd_, cgu, cdn) - teacher).norm() / tn).item()
+            trace.append((step, round(rel, 4)))
+    with torch.no_grad():
+        if scale_only:
+            wg_, wu_, wd_ = base[0] * s[0], base[1] * s[1], base[2] * s[2]
+        else:
+            wg_, wu_, wd_ = pg * mg, pu * mu, pd * md
+    return {"wg": wg_.detach(), "wu": wu_.detach(), "wd": wd_.detach(), "trace": trace}
 
 
 def train_layer(
@@ -183,100 +180,78 @@ def train_layer(
     cgu: torch.Tensor,
     cdn: torch.Tensor,
     inter: int,
-    steps: int = 2000,
+    steps: int = 400,
     lr: float = 1e-3,
     scale_only: bool = False,
-    ckpt_steps: tuple[int, ...] = (500, 1000, 2000, 5000),
 ) -> dict:
-    """Fit one layer's surviving sparse-FP4 weights to the teacher MoE output. io = {x,tid,tw,y}.
-    Returns {"w13","w2"} updated (dropped=0) + a loss trace + per-ckpt snapshots."""
+    """Repair one MoE layer: per routed expert, fit its sparse weights to dense output. io={x,tid}.
+    Returns updated w13/w2 (dropped=0, folded scales); unrouted experts keep their dense weights."""
     dev = w13.device
-    x, tid, tw, y = io["x"].to(dev), io["tid"].to(dev), io["tw"].to(dev), io["y"].to(dev).float()
-    m = SparseExpertsRepair(w13, w2, cgu, cdn, inter, scale_only).to(dev)
-    opt = torch.optim.Adam([p for p in m.parameters() if p.requires_grad], lr=lr)
-    yn = y.norm().clamp_min(1e-6)
-    trace, snaps = [], {}
-    bs = min(4096, x.shape[0])
-    for step in range(1, max(steps, max(ckpt_steps)) + 1):
-        idx = torch.randint(0, x.shape[0], (bs,), device=dev)
-        pred = m(x[idx], tid[idx], tw[idx])
-        loss = (pred - y[idx]).pow(2).mean() + 0.1 * (
-            1 - F.cosine_similarity(pred, y[idx], dim=1).mean()
+    x, tid = io["x"].to(dev), io["tid"].to(dev)
+    w13n, w2n = w13.float().clone(), w2.float().clone()
+    tok = torch.arange(x.shape[0], device=dev).repeat_interleave(tid.shape[1])
+    flat = tid.reshape(-1).long()
+    traces = {}
+    for le in torch.unique(flat).tolist():
+        if le < 0:
+            continue
+        rows = tok[flat == le]
+        if rows.numel() < 8:
+            continue
+        r = train_expert(
+            x[rows],
+            w13[le, :inter],
+            w13[le, inter:],
+            w2[le],
+            cgu[le],
+            cdn[le],
+            steps,
+            lr,
+            scale_only,
         )
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        with torch.no_grad():  # keep dropped positions pinned at 0
-            m.w13 *= m.m13
-            m.w2 *= m.m2
-        if step % 100 == 0:
-            rel = (
-                (m(x[idx], tid[idx], tw[idx]) - y[idx]).norm()
-                / yn
-                * (yn / y[idx].norm().clamp_min(1e-6))
-            ).item()
-            trace.append((step, round(loss.item(), 6), round(rel, 4)))
-        if step in ckpt_steps:
-            with torch.no_grad():
-                snaps[step] = {
-                    "w13": (m.w13 * m.m13 * m.s_gate.new_ones(1)).cpu().clone(),
-                    "w2": (m.w2 * m.m2).cpu().clone(),
-                }
+        w13n[le, :inter], w13n[le, inter:], w2n[le] = r["wg"], r["wu"], r["wd"]
+        traces[le] = r["trace"][-1] if r["trace"] else None
+    rels = [t[1] for t in traces.values() if t]
     return {
-        "w13": (m.w13 * m.m13).detach(),
-        "w2": (m.w2 * m.m2).detach(),
-        "s_gate": m.s_gate.detach(),
-        "s_up": m.s_up.detach(),
-        "s_dn": m.s_dn.detach(),
-        "trace": trace,
-        "snaps": snaps,
+        "w13": w13n,
+        "w2": w2n,
+        "n_experts": len(traces),
+        "rel_mean": round(sum(rels) / len(rels), 4) if rels else -1.0,
     }
 
 
 def _selfcheck() -> None:
     # tiny CPU check: served_weight is 2:4 (half the pairs zero), STE keeps the forward value + a
-    # gradient, and a short fit on synthetic teacher data drives the loss down.
+    # gradient, and a per-expert fit drives the dense-match relative error down.
     torch.manual_seed(0)
     out_f, in_f = 8, 256
     w = torch.randn(out_f, in_f)
     sw = served_weight(w, None)
-    pairs = sw.view(out_f, in_f // 128, 16, 4, 2)
-    nz = (pairs.abs().sum(-1) > 0).float().mean().item()
+    nz = (sw.view(out_f, in_f // 128, 16, 4, 2).abs().sum(-1) > 0).float().mean().item()
     assert abs(nz - 0.5) < 1e-6, f"2:4 kept fraction {nz} != 0.5"
     assert torch.allclose(served_weight(w, None), sw), "served_weight not deterministic"
-    # STE: gradient reaches w
     wp = w.clone().requires_grad_(True)
     served_weight(wp, None).sum().backward()
     assert wp.grad is not None and wp.grad.abs().sum() > 0, "STE broke the gradient"
 
-    # synthetic single-expert layer: teacher = a random dense expert; fit sparse to match.
-    e, h, inter = 2, 128, 64
-    w13 = torch.randn(e, 2 * inter, h) * 0.05
-    w2 = torch.randn(e, h, inter) * 0.05
-    n = 512
+    # single expert: teacher = dense; fit sparse to match, expect the relative error to fall.
+    h, inter, n = 128, 64, 512
+    w13 = torch.randn(2, 2 * inter, h) * 0.05
+    w2 = torch.randn(2, h, inter) * 0.05
     x = torch.randn(n, h)
-    tid = torch.randint(0, e, (n, 1))
-    tw = torch.ones(n, 1)
-    cgu = x.new_ones(e, h)
-    cdn = x.new_ones(e, inter)
-    teacher = SparseExpertsRepair(w13, w2, cgu, cdn, inter)
-    with torch.no_grad():
-        y = teacher(x, tid, tw)
-    out = train_layer(
-        {"x": x, "tid": tid, "tw": tw, "y": y},
-        torch.randn_like(w13) * 0.05,
-        torch.randn_like(w2) * 0.05,
-        cgu,
-        cdn,
-        inter,
-        steps=400,
-        lr=3e-3,
-        ckpt_steps=(400,),
+    tid = torch.randint(0, 2, (n, 1))
+    cgu, cdn = x.new_ones(2, h), x.new_ones(2, inter)
+    out = train_layer({"x": x, "tid": tid}, w13, w2, cgu, cdn, inter, steps=300, lr=3e-3)
+    r0 = train_expert(x, w13[0, :inter], w13[0, inter:], w2[0], cgu[0], cdn[0], 1, 3e-3, False)[
+        "trace"
+    ][-1][1]
+    assert out["rel_mean"] < r0, (
+        f"per-expert fit did not improve: start {r0} -> end {out['rel_mean']}"
     )
-    first, last = out["trace"][0][1], out["trace"][-1][1]
-    assert last < first, f"loss did not decrease: {first} -> {last}"
-    steps = out["trace"][-1][0]
-    print(f"selfcheck OK: 2:4 kept={nz:.3f}, fit loss {first:.5f} -> {last:.5f} over {steps} steps")
+    print(
+        f"selfcheck OK: 2:4 kept={nz:.3f}, dense-match rel {r0:.4f} -> {out['rel_mean']:.4f} "
+        f"over {out['n_experts']} experts"
+    )
 
 
 if __name__ == "__main__":
