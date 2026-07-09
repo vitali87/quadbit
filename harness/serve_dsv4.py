@@ -596,48 +596,50 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
 
     rows = []
     peak_used = list(load_used)
+    def med(x):
+        return st.median(x) if x else 0.0
+
     for (P, G, B) in matrix:
         prompts = [make_prompt(P) for _ in range(B)]
         sp = SamplingParams(temperature=0.0, max_tokens=G, min_tokens=G, ignore_eos=True)
         torch.cuda.synchronize()
         t1 = time.time()
-        outs = llm.generate(prompts, sp)
+        try:
+            outs = llm.generate(prompts, sp)
+        except Exception as e:
+            # engine death (e.g. long-prefill scheduler KeyError) must not lose completed rows
+            print(f"  [cfg] P={P} G={G} B={B}: FAILED {type(e).__name__}: {str(e)[:160]}", flush=True)
+            break
         wall = time.time() - t1
         u, _fr = smi()
         peak_used = [max(a, b) for a, b in zip(peak_used, u)]
-        # per-request metrics (vLLM RequestOutput.metrics)
-        ttfts, decs, tpots, lats = [], [], [], []
+        # decode time from the monotonic (*_ts) pair only; arrival_time is unix-epoch (different clock),
+        # so TTFT is derived from wall - decode instead of mixing clocks.
+        decs, tpots = [], []
         gen_tok = 0
         for o in outs:
             gen_tok += len(o.outputs[0].token_ids)
             m = o.metrics
             if m is None:
                 continue
-            arr = getattr(m, "arrival_time", None) or getattr(m, "arrival_ts", None)
             ft = getattr(m, "first_token_time", None) or getattr(m, "first_token_ts", None)
             lt = getattr(m, "last_token_time", None) or getattr(m, "last_token_ts", None)
             fin = getattr(m, "finished_time", None) or getattr(m, "finished_ts", None) or lt
-            if ft and arr:
-                ttfts.append(ft - arr)
             if fin and ft and G > 1:
                 d = fin - ft
                 decs.append(d)
                 tpots.append(d / (G - 1))
-            if fin and arr:
-                lats.append(fin - arr)
 
-        def med(x):
-            return st.median(x) if x else 0.0
-
-        ttft = med(ttfts)
+        dec_wall = med(decs)
+        ttft = max(0.0, wall - dec_wall)  # B=1: exact; B>1: proxy (requests overlap)
         tpot = med(tpots)
         prefill_tps = (B * P) / ttft if ttft > 0 else 0.0
-        dec_tps = (B * (G - 1)) / med(decs) if decs and med(decs) > 0 else 0.0
+        dec_tps = (B * (G - 1)) / dec_wall if dec_wall > 0 else 0.0
         tot_tps = gen_tok / wall if wall > 0 else 0.0
         row = {"tp": tp, "prompt": P, "gen": G, "batch": B, "wall_s": round(wall, 3),
                "ttft_s": round(ttft, 4), "tpot_ms": round(tpot * 1000, 3),
                "prefill_tps": round(prefill_tps, 1), "decode_tps": round(dec_tps, 1),
-               "total_tps": round(tot_tps, 1), "req_latency_s": round(med(lats), 3),
+               "total_tps": round(tot_tps, 1), "req_latency_s": round(wall, 3),
                "gen_tok": gen_tok}
         rows.append(row)
         print(f"  [cfg] P={P} G={G} B={B}: wall={wall:.1f}s ttft={ttft:.3f}s "
