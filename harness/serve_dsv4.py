@@ -983,6 +983,236 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     print(f"# qmap CSV -> {csv_path} ({len(rows)} rows)", flush=True)
 
 
+def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file: str,
+                     limit: int, max_len: int) -> None:
+    """WS-A downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
+    acc/acc_norm: per choice, sum teacher-forced logprob of the continuation tokens via vLLM
+    prompt_logprobs; pick argmax) over ARC-C / HellaSwag / PIQA / Winogrande / MMLU-subset. Same
+    bespoke DeepSeek-V4-Flash init as _qmap_impl so the quadbit sparse plugin + fp8-KV + rope
+    overrides are identical. GSM8K skipped (generative, ~2 tok/s sparse decode = not cheap)."""
+    import math
+    import os
+    import subprocess
+    import time
+
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = moe
+    os.environ["QB_QMAP"] = "0"
+    os.environ["QB_INSTR"] = "1"
+    os.environ["QB_CALIB_FILE"] = calib_file
+    os.environ["QB_RUNTAG"] = tag
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    def smi():
+        q = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
+        out = subprocess.run(q, capture_output=True, text=True).stdout
+        return [int(ln) for ln in out.strip().splitlines()]
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    t0 = time.time()
+    llm = LLM(model=MODEL, tokenizer_mode="deepseek_v4", tensor_parallel_size=tp,
+              enforce_eager=True, trust_remote_code=True, max_model_len=max_len,
+              gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope},
+              disable_log_stats=True)
+    tok = llm.get_tokenizer()
+    mem = smi()
+    print(f"# downstream tag={tag} moe={moe} dense_layers=[{dense_layers}] calib={calib_file} "
+          f"limit={limit} loaded {time.time() - t0:.0f}s per-GPU-MB={mem}", flush=True)
+
+    # generation sanity (same 5 prompts as qmap)
+    gp = ["The capital of France is", "def fibonacci(n):", "The three primary colors are",
+          "Water is made of hydrogen and", "The opposite of hot is"]
+    gouts = llm.generate(gp, SamplingParams(temperature=0.0, max_tokens=24, min_tokens=6))
+    print("# --- generation sanity ---", flush=True)
+    for p, o in zip(gp, gouts, strict=False):
+        print(f"  [{p!r}] -> {o.outputs[0].text!r}", flush=True)
+
+    # PPL (self-report, must match the qmap Pareto number for this policy)
+    passage = (
+        "The mitochondria is the powerhouse of the cell. Photosynthesis converts sunlight, water, "
+        "and carbon dioxide into glucose and oxygen. The Earth orbits the Sun once every year, and "
+        "the Moon orbits the Earth roughly every twenty-eight days. Water boils at one hundred "
+        "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
+        "through arteries and veins, delivering oxygen to every tissue in the body. Shakespeare "
+        "wrote many famous plays, including Hamlet, Macbeth, and Romeo and Juliet. The speed of "
+        "light in a vacuum is approximately three hundred thousand kilometres per second.")
+    pids = tok.encode(passage)
+    pout = llm.generate([{"prompt_token_ids": pids}],
+                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+    plp = pout[0].prompt_logprobs or []
+    nlls = [-plp[i][t].logprob for i, t in enumerate(pids)
+            if i > 0 and plp[i] and t in plp[i] and math.isfinite(plp[i][t].logprob)]
+    ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
+    print(f"# PPL {ppl:.3f}", flush=True)
+
+    # ---- loglikelihood MC scoring ----
+    # request tuple: (item_key, choice_idx, prompt_token_ids, span_start, cont_char_len)
+    def build(ctx: str, conts: list[str]):
+        cids = tok.encode(ctx)
+        out = []
+        for c in conts:
+            tail = tok.encode(c, add_special_tokens=False)
+            out.append((cids + tail, len(cids), len(c)))
+        return out
+
+    def run_task(name: str, items: list):
+        # items: list of (conts:list[str], gold:int, requests:list[(ids,start,clen)])
+        reqs, meta = [], []
+        for qi, (_, _, rq) in enumerate(items):
+            for ci, (ids, start, clen) in enumerate(rq):
+                reqs.append({"prompt_token_ids": ids})
+                meta.append((qi, ci, start, clen))
+        outs = llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+        scores: dict = {}
+        for (qi, ci, start, clen), o in zip(meta, outs, strict=False):
+            lp = o.prompt_logprobs or []
+            # prompt_logprobs=0 -> each position dict holds only the ACTUAL token's logprob;
+            # sum over the continuation span [start:] (position 0 is None/BOS, always < start).
+            s = sum(next(iter(d.values())).logprob for i, d in enumerate(lp) if i >= start and d)
+            scores.setdefault(qi, {})[ci] = (s, clen)
+        acc = accn = 0
+        for qi, (_, gold, _) in enumerate(items):
+            sc = scores.get(qi, {})
+            if not sc:
+                continue
+            best = max(sc, key=lambda c: sc[c][0])
+            bestn = max(sc, key=lambda c: sc[c][0] / max(1, sc[c][1]))
+            acc += int(best == gold)
+            accn += int(bestn == gold)
+        n = len(items)
+        print(f"# TASK {name} n={n} acc={acc / n:.4f} acc_norm={accn / n:.4f}", flush=True)
+        return {"task": name, "n": n, "acc": acc / n, "acc_norm": accn / n}
+
+    from datasets import load_dataset  # noqa: PLC0415
+
+    results = []
+
+    def try_load(cands):
+        for repo, kw in cands:
+            try:
+                return load_dataset(repo, **kw), repo
+            except Exception as e:  # noqa: BLE001
+                print(f"  load {repo} failed: {str(e)[:120]}", flush=True)
+        return None, None
+
+    # ARC-Challenge (acc_norm primary). template: "Question: {q}\nAnswer:" cont=" {choice}"
+    ds, src = try_load([("allenai/ai2_arc", {"name": "ARC-Challenge", "split": "test"})])
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            ch = r["choices"]["text"]
+            labels = r["choices"]["label"]
+            gold = labels.index(r["answerKey"]) if r["answerKey"] in labels else 0
+            conts = [" " + t for t in ch]
+            items.append((conts, gold, build(f"Question: {r['question']}\nAnswer:", conts)))
+        results.append(run_task(f"arc_c[{src}]", items))
+
+    # HellaSwag (acc_norm primary). lm-eval preprocess + ctx = activity + ctx_a/ctx_b
+    ds, src = try_load([("Rowan/hellaswag", {"split": "validation"})])
+    if ds is not None:
+        import re
+
+        def pp(t):
+            t = t.strip().replace(" [title]", ". ")
+            t = re.sub("\\[.*?\\]", "", t)
+            return t.replace("  ", " ")
+        items = []
+        for r in list(ds)[:limit]:
+            ctx = pp(r["activity_label"] + ": " + r["ctx_a"] + " " + r["ctx_b"].capitalize())
+            conts = [" " + pp(e) for e in r["endings"]]
+            gold = int(r["label"]) if r["label"] != "" else 0
+            items.append((conts, gold, build(ctx, conts)))
+        results.append(run_task(f"hellaswag[{src}]", items))
+
+    # PIQA (acc_norm primary)
+    ds, src = try_load([("ybisk/piqa", {"split": "validation", "trust_remote_code": True}),
+                        ("piqa", {"split": "validation", "trust_remote_code": True})])
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            conts = [" " + r["sol1"], " " + r["sol2"]]
+            items.append((conts, int(r["label"]), build(f"Question: {r['goal']}\nAnswer:", conts)))
+        results.append(run_task(f"piqa[{src}]", items))
+
+    # Winogrande (acc). partial scoring: ctx=prefix+option, cont=suffix after blank
+    ds, src = try_load([("allenai/winogrande", {"name": "winogrande_xl", "split": "validation",
+                                                "trust_remote_code": True})])
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            s = r["sentence"]
+            idx = s.index("_")
+            suffix = s[idx + 1:]
+            reqs, conts = [], []
+            for opt in (r["option1"], r["option2"]):
+                cids = tok.encode(s[:idx] + opt)
+                tail = tok.encode(suffix, add_special_tokens=False)
+                reqs.append((cids + tail, len(cids), len(suffix)))
+                conts.append(suffix)
+            gold = int(r["answer"]) - 1
+            items.append((conts, gold, reqs))
+        results.append(run_task(f"winogrande[{src}]", items))
+
+    # MMLU subset (acc), 0-shot
+    subjects = ["abstract_algebra", "college_computer_science", "high_school_world_history",
+                "professional_medicine", "moral_scenarios"]
+    mmlu_scores = []
+    for subj in subjects:
+        ds, src = try_load([("cais/mmlu", {"name": subj, "split": "test"})])
+        if ds is None:
+            continue
+        readable = subj.replace("_", " ")
+        items = []
+        for r in list(ds)[: max(50, limit // 4)]:
+            q = r["question"]
+            opts = r["choices"]
+            head = (f"The following are multiple choice questions (with answers) about "
+                    f"{readable}.\n\n{q}\n")
+            for i, o in enumerate(opts):
+                head += f"{chr(65 + i)}. {o}\n"
+            head += "Answer:"
+            conts = [f" {chr(65 + i)}" for i in range(len(opts))]
+            items.append((conts, int(r["answer"]), build(head, conts)))
+        rr = run_task(f"mmlu:{subj}", items)
+        mmlu_scores.append(rr["acc"])
+    if mmlu_scores:
+        mmlu_avg = sum(mmlu_scores) / len(mmlu_scores)
+        print(f"# TASK mmlu_subset n_subj={len(mmlu_scores)} acc={mmlu_avg:.4f}", flush=True)
+        results.append({"task": "mmlu_subset", "n": len(mmlu_scores), "acc": mmlu_avg,
+                        "acc_norm": mmlu_avg})
+
+    # primary metric per task (acc_norm for arc/hellaswag/piqa, acc for winogrande/mmlu)
+    def primary(r):
+        return r["acc"] if r["task"].startswith(("winogrande", "mmlu")) else r["acc_norm"]
+    prim = [primary(r) for r in results]
+    avg = sum(prim) / len(prim) if prim else float("nan")
+    print("# ================ DOWNSTREAM SUMMARY ================", flush=True)
+    print(f"# tag={tag} PPL={ppl:.3f} per-GPU-MB={mem}", flush=True)
+    for r in results:
+        print(f"#   {r['task']:<28} acc={r['acc']:.4f} acc_norm={r['acc_norm']:.4f} "
+              f"primary={primary(r):.4f} (n={r['n']})", flush=True)
+    print(f"# AVG normalized primary = {avg:.4f}", flush=True)
+    with open(f"/cache/qb_downstream_{tag}.csv", "w") as f:
+        f.write("task,n,acc,acc_norm,primary\n")
+        for r in results:
+            f.write(f"{r['task']},{r['n']},{r['acc']:.4f},{r['acc_norm']:.4f},{primary(r):.4f}\n")
+        f.write(f"AVG,,,,{avg:.4f}\n")
+    print(f"# downstream CSV -> /cache/qb_downstream_{tag}.csv", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000:2", timeout=120 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def downstream(tag: str = "ds", moe: str = "dense", dense_layers: str = "", calib_file: str = "",
+               limit: int = 400, max_len: int = 2048) -> None:
+    _downstream_impl(2, tag, moe, dense_layers, calib_file, limit, max_len)
+
+
 @app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048, moe: str = "dense",
@@ -1000,7 +1230,7 @@ def calib(tag: str = "cal1", max_len: int = 2048) -> None:
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8", moe: str = "off",
          tag: str = "qm", dense_layers: str = "", probe_layers: str = "0,20,40",
-         calib_file: str = "") -> None:
+         calib_file: str = "", limit: int = 400) -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "versions":
@@ -1028,5 +1258,9 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
                     calib_file=calib_file)
     elif mode == "calib":
         calib.remote(tag=tag, max_len=max_len)
+    elif mode == "downstream":
+        downstream.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
+                          dense_layers=dense_layers, calib_file=calib_file, limit=limit,
+                          max_len=max_len)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
