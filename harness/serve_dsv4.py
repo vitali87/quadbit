@@ -778,8 +778,9 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int) -> None:
     exp = {}   # layer -> [expert cos, ...]
     for r in rows:
         if r["expert"] == -1:
-            blk.setdefault(r["layer"], []).append(r["block_cos"])
-        else:
+            if math.isfinite(r["block_cos"]):
+                blk.setdefault(r["layer"], []).append(r["block_cos"])
+        elif math.isfinite(r["cos"]):
             exp.setdefault(r["layer"], []).append(r["cos"])
 
     csv_path = f"/cache/qb_qmap_{tag}.csv"

@@ -283,11 +283,17 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y_sparse, on_input):
         wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]).float()
         xf = xe.float()
         oe_d = (F.silu(xf @ wg.t()) * (xf @ wu.t())) @ wd.t()
-        # quadbit 2:4-sparse-FP4 operator on the same rows
-        eblk = torch.full((1,), le, dtype=torch.int32, device=x.device)
-        gu_s = sp.seg_gemm(xe, layer._qb_gu, 2 * ii, h, eblk)
+        # quadbit 2:4-sparse-FP4 operator on the same rows. The seg kernel tiles N in _BN-row blocks
+        # and reads one expert id per block from eblk, so rows MUST be padded up to a _BN multiple
+        # (with a matching all-`le` eblk); otherwise blocks past the first read OOB -> NaN.
+        n = xe.shape[0]
+        npad = ((n + _BN - 1) // _BN) * _BN
+        xep = F.pad(xe, (0, 0, 0, npad - n)) if npad != n else xe
+        nb = npad // _BN
+        eblk = torch.full((nb,), le, dtype=torch.int32, device=x.device)
+        gu_s = sp.seg_gemm(xep, layer._qb_gu, 2 * ii, h, eblk)
         hh_s = (F.silu(gu_s[:, :ii].float()) * gu_s[:, ii:].float()).to(torch.bfloat16)
-        oe_s = sp.seg_gemm(hh_s, layer._qb_dn, h, ii, eblk).float()
+        oe_s = sp.seg_gemm(hh_s, layer._qb_dn, h, ii, eblk)[:n].float()
         c = F.cosine_similarity(oe_s.flatten(), oe_d.flatten(), dim=0).item()
         contrib = oe_d if on_input else oe_d * ws[:, None]
         _QMAP_ROWS.append({"layer": li, "expert": int(le), "cos": round(c, 5),
