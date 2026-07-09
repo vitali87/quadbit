@@ -175,6 +175,15 @@ _QMAP_LAYERS = {int(x) for x in os.environ.get("QB_QMAP_LAYERS", "").split(",") 
 _QMAP_ROWS = []  # real-activation A0 map rows (block + per-expert)
 _QMAP_SEEN = {}  # layer_idx -> forwards probed so far
 
+# NaN-robustness guardrail (Step 1): the sparse two-level activation quant turns an inf hidden value
+# into an inf global scale g=rowamax/2688, and the mma epilogue's g-rescale then yields nan, which
+# cascades through the residual over long context. Keep every sparse-block input/output FINITE and
+# BOUNDED so no inf can ever form. QB_SANITIZE=0 disables (to capture the raw failure).
+_SANITIZE = os.environ.get("QB_SANITIZE", "1") != "0"
+_SAN_BOUND = float(os.environ.get("QB_SAN_BOUND", "10000"))  # activations O(1-100); 1e4 = pure guard
+_NAN_DIAG = []  # fire-once-per-(layer,tensor): first nonfinite occurrence for root-cause
+_NAN_SEEN = set()
+
 
 def _ev_start():
     import torch
@@ -208,12 +217,36 @@ def _flush_metrics():
     data = {"rank_dev": dev, "t_ms": _T, "counts": _CNT, "stats": STATS,
             "imbalance_mean": (sum(_IMB) / len(_IMB)) if _IMB else 0.0,
             "imbalance_max": (max(_IMB) if _IMB else 0.0),
-            "tax_cos": _TAX_COS, "qmap": _QMAP_ROWS}
+            "tax_cos": _TAX_COS, "qmap": _QMAP_ROWS, "nan_diag": _NAN_DIAG}
     try:
         with open(f"/cache/qb_metrics_{_RUNTAG}_dev{dev}.json", "w") as f:
             json.dump(data, f)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _sanitize(t, layer_idx, name):
+    # Guardrail: bound sparse-block tensors to finite [-B,B] so no inf can reach the two-level quant's
+    # global scale (rowamax/2688) and nan the mma epilogue. nan->0, +/-inf->+/-B, then clamp. Cheap
+    # (elementwise, no sync); the fire-once diagnostic (needs a sync) runs only under QB_INSTR.
+    import torch
+
+    if not _SANITIZE:
+        return t
+    if _INSTR:
+        key = (layer_idx, name)
+        if key not in _NAN_SEEN:
+            finite = torch.isfinite(t)
+            if not bool(finite.all()):
+                _NAN_SEEN.add(key)
+                ft = t[finite]
+                _NAN_DIAG.append({"layer": layer_idx, "tensor": name,
+                                  "nonfinite": int((~finite).sum().item()),
+                                  "finite_max_abs": round(
+                                      float(ft.abs().max().item()) if ft.numel() else -1.0, 3)})
+                _flush_metrics()
+    return torch.nan_to_num(t, nan=0.0, posinf=_SAN_BOUND,
+                            neginf=-_SAN_BOUND).clamp_(-_SAN_BOUND, _SAN_BOUND)
 
 
 def _run_tax_probe(layer, sp, i, e, layer_idx):
@@ -803,9 +836,12 @@ def _install_moe() -> None:
             if on_input:
                 xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
             se = _ev_start() if _INSTR else None
-            gu = sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk)
-            hh = (F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16)
-            dseg = sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk)
+            li = getattr(layer, "_qb_layer_idx", -1)
+            xs = _sanitize(xs, li, "x_in")
+            gu = _sanitize(sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk), li, "gate_up")
+            hh = _sanitize((F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16),
+                           li, "swiglu")
+            dseg = _sanitize(sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk), li, "down")
             if _INSTR:
                 _ev_end("expert", se)
                 _CNT["expert_calls"] += 1

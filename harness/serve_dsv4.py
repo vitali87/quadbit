@@ -743,6 +743,7 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     # probe_layers="none" -> pure coherence run (no map probe, no resident codes on sparse layers)
     os.environ["QB_QMAP"] = "0" if probe_layers == "none" else "1"
     os.environ["QB_QMAP_LAYERS"] = "" if probe_layers == "none" else probe_layers
+    os.environ["QB_INSTR"] = "1"  # captures the fire-once NaN diagnostics from the guardrail
     os.environ["QB_RUNTAG"] = tag
     os.environ["QB_DENSE_LAYERS"] = dense_layers
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -799,11 +800,20 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
           f"(mean NLL {sum(nlls) / len(nlls):.4f} nats)" if nlls else "# PPL: no valid logprobs",
           flush=True)
 
-    # aggregate the real-activation map flushed by every worker
-    rows = []
+    # aggregate the real-activation map + NaN diagnostics flushed by every worker
+    rows, nan_diag = [], []
     for mf in sorted(glob.glob(f"/cache/qb_metrics_{tag}_dev*.json")):
         with open(mf) as f:
-            rows += json.load(f).get("qmap", [])
+            d = json.load(f)
+            rows += d.get("qmap", [])
+            nan_diag += d.get("nan_diag", [])
+    print("# --- NaN guardrail diagnostics (first nonfinite per layer/tensor) ---", flush=True)
+    if nan_diag:
+        for d in sorted(nan_diag, key=lambda r: (r["layer"], r["tensor"])):
+            print(f"  layer {d['layer']:>3} {d['tensor']:<8} nonfinite={d['nonfinite']} "
+                  f"finite_max_abs={d['finite_max_abs']}", flush=True)
+    else:
+        print("  (none — no nonfinite tensors intercepted in the sparse path)", flush=True)
     blk = {}   # layer -> [block_cos, ...]
     exp = {}   # layer -> [expert cos, ...]
     for r in rows:
