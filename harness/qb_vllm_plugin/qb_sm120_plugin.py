@@ -145,6 +145,90 @@ _SPARSE_SO = "/cache/sparse_fp4.so"
 _BN = 128
 _SPARSE = None
 
+# --- instrumentation (QB_INSTR=1) + in-situ per-layer tax probe (QB_TAXPROBE=1) ---
+# Worker processes accumulate timing/tax here and flush to /cache so the driver can aggregate
+# across ranks (vLLM V1 runs the model in worker procs; STATS/timers live per-worker).
+_INSTR = os.environ.get("QB_INSTR") == "1"
+_TAX = os.environ.get("QB_TAXPROBE") == "1"
+_RUNTAG = os.environ.get("QB_RUNTAG", "run")
+_TAX_LAYERS = 8  # probe every _TAX_LAYERS-th MoE layer
+_T = {"expert": 0.0, "dense": 0.0, "forward": 0.0}  # accumulated ms
+_EV = {}  # cat -> list[(start_event, end_event)] pending elapsed_time read
+_CNT = {"expert_calls": 0, "dense_calls": 0}
+_IMB = []  # per-apply expert imbalance (max/mean tokens-per-expert)
+_TAX_COS = []  # per-(layer,expert) cos(sparse, dense) from the probe
+_PW_IDX = 0  # MoE layer counter (load order) per worker
+
+
+def _ev_start():
+    import torch
+
+    e = torch.cuda.Event(enable_timing=True)
+    e.record()
+    return e
+
+
+def _ev_end(cat, s):
+    import torch
+
+    e = torch.cuda.Event(enable_timing=True)
+    e.record()
+    _EV.setdefault(cat, []).append((s, e))
+
+
+def _flush_metrics():
+    # sum pending CUDA-event elapsed times, merge into _T, and write this worker's metrics to
+    # /cache keyed by device so the driver can read them after generation.
+    import json
+
+    import torch
+
+    if _EV:
+        torch.cuda.synchronize()
+        for cat, pairs in _EV.items():
+            _T[cat] = _T.get(cat, 0.0) + sum(s.elapsed_time(e) for s, e in pairs)
+        _EV.clear()
+    dev = torch.cuda.current_device()
+    data = {"rank_dev": dev, "t_ms": _T, "counts": _CNT, "stats": STATS,
+            "imbalance_mean": (sum(_IMB) / len(_IMB)) if _IMB else 0.0,
+            "imbalance_max": (max(_IMB) if _IMB else 0.0),
+            "tax_cos": _TAX_COS}
+    try:
+        with open(f"/cache/qb_metrics_{_RUNTAG}_dev{dev}.json", "w") as f:
+            json.dump(data, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_tax_probe(layer, sp, i, e, layer_idx):
+    # In-situ per-expert tax: for a sample of experts in this layer, run R=128 realistic random
+    # rows through the DENSE path (NVFP4->bf16, no 2:4) and the quadbit 2:4-sparse-FP4 kernel path
+    # (the packed weights already on the layer), then cos(sparse_out, dense_out). This is the exact
+    # per-expert operator tax (weight+activation quant) that compounds across the 43 layers.
+    import torch
+    import torch.nn.functional as F
+
+    w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
+    w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
+    h = w13.shape[2] * 2  # packed uint8 -> hidden dim
+    dev = w13.device
+    experts = list(range(0, e, max(1, e // 8)))[:8]  # ~8 experts spread across the layer
+    for le in experts:
+        x = (torch.randn(_BN, h, device=dev, dtype=torch.bfloat16) * (h ** -0.5) * 4)
+        # dense reference (NVFP4 -> bf16, dense matmul) -- the S1-validated path
+        gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0]).float()
+        dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]).float()
+        xf = x.float()
+        hh_d = F.silu(xf @ gu[:i].t()) * (xf @ gu[i:].t())
+        out_d = hh_d @ dn.t()
+        # quadbit 2:4-sparse-FP4 path through the real packed weights (eblk selects expert le)
+        eblk = torch.full((1,), le, dtype=torch.int32, device=dev)
+        gu_s = sp.seg_gemm(x, layer._qb_gu, 2 * i, h, eblk)
+        hh_s = (F.silu(gu_s[:, :i].float()) * gu_s[:, i:].float()).to(torch.bfloat16)
+        out_s = sp.seg_gemm(hh_s, layer._qb_dn, h, i, eblk)
+        c = F.cosine_similarity(out_s.float().flatten(), out_d.flatten(), dim=0).item()
+        _TAX_COS.append({"layer": layer_idx, "expert": le, "cos": c})
+
 
 def _load_sparse_moe():
     # Lazily ctypes-load the staged sm_120 quadbit 2:4-sparse-FP4 kernel (.so) and build the
@@ -340,6 +424,14 @@ def install() -> None:
         return None
 
     def patched_apply(self, layer, x, bias=None):
+        de = _ev_start() if _INSTR else None
+        out = _patched_apply_inner(self, layer, x, bias)
+        if _INSTR:
+            _ev_end("dense", de)
+            _CNT["dense_calls"] += 1
+        return out
+
+    def _patched_apply_inner(self, layer, x, bias=None):
         nv = getattr(layer, "_qb_nv", None)
         if nv is not None:
             STATS["fp8_calls"] += 1
@@ -503,6 +595,10 @@ def install() -> None:
 
     _install_moe()
 
+    if _INSTR or _TAX:
+        import atexit
+
+        atexit.register(_flush_metrics)
     print(f"[qb_sm120] installed in pid={os.getpid()} (method={method})", flush=True)
 
 
@@ -564,6 +660,13 @@ def _install_moe() -> None:
             layer._qb_i = i
             layer._qb_e = e
             del gu_packs, dn_packs
+            global _PW_IDX
+            layer_idx = _PW_IDX
+            _PW_IDX += 1
+            # in-situ per-layer tax probe on sampled layers -- MUST run before freeing NVFP4
+            if _TAX and (layer_idx % _TAX_LAYERS == 0):
+                _run_tax_probe(layer, sp, i, e, layer_idx)
+                _flush_metrics()
             # Free this layer's raw NVFP4 experts now that they are packed: sparse codes (~1.15GB)
             # are smaller than the NVFP4 experts (~1.7GB) per layer, so freeing keeps peak memory at
             # the already-working dense load (~84GB) and it drops as packing proceeds. Without this
@@ -602,9 +705,19 @@ def _install_moe() -> None:
             xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
             if on_input:
                 xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+            se = _ev_start() if _INSTR else None
             gu = sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk)
             hh = (F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16)
             dseg = sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk)
+            if _INSTR:
+                _ev_end("expert", se)
+                _CNT["expert_calls"] += 1
+                cnt = torch.bincount(assign, minlength=ee).float()
+                nz = cnt[cnt > 0]
+                if nz.numel():
+                    _IMB.append((cnt.max() / nz.mean()).item())
+                if _CNT["expert_calls"] % 200 == 0:
+                    _flush_metrics()
             rw = valid.float() if on_input else (w_of[srcc] * valid.float())
             y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(x.dtype))
             STATS["sparse_expert_calls"] += int(valid.sum().item())

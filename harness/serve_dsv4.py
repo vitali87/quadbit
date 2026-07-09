@@ -529,6 +529,188 @@ def probe() -> None:
             print(f"  CALL p._dequant_block w={wh} s={sshape} -> {type(ex).__name__}: {ex}", flush=True)
 
 
+def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
+                max_len: int) -> None:
+    """WS3: quadbit 2:4 sparse-FP4 expert performance sweep. Loads DeepSeek-V4-Flash-NVFP4 once with
+    QB_MOE=sparse on `tp` GPUs, then times a prompt x gen x batch matrix, emitting figure-ready CSV
+    rows + a compute/comm breakdown (from the plugin's per-worker instrumentation flushed to /cache)
+    + the in-situ per-layer tax probe. Eager only (graph capture unproven on this SM120 path)."""
+    import glob
+    import json
+    import os
+    import statistics as st
+    import subprocess
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "bf16"
+    os.environ["QB_MOE"] = "sparse"
+    os.environ["QB_RUNTAG"] = runtag
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    if instr:
+        os.environ["QB_INSTR"] = "1"
+    if tax:
+        os.environ["QB_TAXPROBE"] = "1"
+    # clear stale per-worker metric files for this runtag
+    for f in glob.glob(f"/cache/qb_metrics_{runtag}_dev*.json"):
+        os.remove(f)
+
+    ngpu = torch.cuda.device_count()
+    print(f"# WS3 sweep tp={tp} runtag={runtag} instr={instr} tax={tax} on {ngpu}x RTX-PRO-6000; "
+          f"commit=$(git) matrix={matrix}", flush=True)
+
+    def smi():
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.free",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
+        used, free = [], []
+        for line in out.strip().splitlines():
+            u, fr = line.split(",")
+            used.append(int(u))
+            free.append(int(fr))
+        return used, free
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope},
+              disable_log_stats=False)
+    t0 = time.time()
+    llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    load_s = time.time() - t0
+    load_used, load_free = smi()
+    print(f"  loaded in {load_s:.0f}s; per-GPU used MB={load_used} free MB={load_free}", flush=True)
+
+    tok = llm.get_tokenizer()
+    base = tok.encode("The quick brown fox jumps over the lazy dog and then keeps running. ")
+
+    def make_prompt(n):
+        ids = (base * (n // len(base) + 1))[:n]
+        return {"prompt_token_ids": ids}
+
+    # single global warmup so per-config timings exclude first-call JIT/autotune
+    llm.generate([make_prompt(128)], SamplingParams(temperature=0.0, max_tokens=8, min_tokens=8))
+
+    rows = []
+    peak_used = list(load_used)
+    for (P, G, B) in matrix:
+        prompts = [make_prompt(P) for _ in range(B)]
+        sp = SamplingParams(temperature=0.0, max_tokens=G, min_tokens=G, ignore_eos=True)
+        torch.cuda.synchronize()
+        t1 = time.time()
+        outs = llm.generate(prompts, sp)
+        wall = time.time() - t1
+        u, _fr = smi()
+        peak_used = [max(a, b) for a, b in zip(peak_used, u)]
+        # per-request metrics (vLLM RequestOutput.metrics)
+        ttfts, decs, tpots, lats = [], [], [], []
+        gen_tok = 0
+        for o in outs:
+            gen_tok += len(o.outputs[0].token_ids)
+            m = o.metrics
+            if m is None:
+                continue
+            arr, ft, lt = m.arrival_time, m.first_token_time, m.last_token_time
+            fin = getattr(m, "finished_time", None) or lt
+            if ft and arr:
+                ttfts.append(ft - arr)
+            if fin and ft and G > 1:
+                d = fin - ft
+                decs.append(d)
+                tpots.append(d / (G - 1))
+            if fin and arr:
+                lats.append(fin - arr)
+
+        def med(x):
+            return st.median(x) if x else 0.0
+
+        ttft = med(ttfts)
+        tpot = med(tpots)
+        prefill_tps = (B * P) / ttft if ttft > 0 else 0.0
+        dec_tps = (B * (G - 1)) / med(decs) if decs and med(decs) > 0 else 0.0
+        tot_tps = gen_tok / wall if wall > 0 else 0.0
+        row = {"tp": tp, "prompt": P, "gen": G, "batch": B, "wall_s": round(wall, 3),
+               "ttft_s": round(ttft, 4), "tpot_ms": round(tpot * 1000, 3),
+               "prefill_tps": round(prefill_tps, 1), "decode_tps": round(dec_tps, 1),
+               "total_tps": round(tot_tps, 1), "req_latency_s": round(med(lats), 3),
+               "gen_tok": gen_tok}
+        rows.append(row)
+        print(f"  [cfg] P={P} G={G} B={B}: wall={wall:.1f}s ttft={ttft:.3f}s "
+              f"tpot={tpot * 1000:.1f}ms prefill={prefill_tps:.1f}tok/s decode={dec_tps:.1f}tok/s "
+              f"total={tot_tps:.1f}tok/s", flush=True)
+
+    print(f"  peak per-GPU used MB={peak_used}", flush=True)
+
+    # aggregate per-worker instrumentation + tax from /cache
+    metric_files = sorted(glob.glob(f"/cache/qb_metrics_{runtag}_dev*.json"))
+    agg = {"expert_ms": 0.0, "dense_ms": 0.0, "expert_calls": 0, "sparse_expert_calls": 0,
+           "imbalance_mean": [], "imbalance_max": [], "tax_cos": []}
+    for mf in metric_files:
+        with open(mf) as f:
+            d = json.load(f)
+        agg["expert_ms"] += d["t_ms"].get("expert", 0.0)
+        agg["dense_ms"] += d["t_ms"].get("dense", 0.0)
+        agg["expert_calls"] += d["counts"].get("expert_calls", 0)
+        agg["sparse_expert_calls"] += d["stats"].get("sparse_expert_calls", 0)
+        agg["imbalance_mean"].append(d.get("imbalance_mean", 0.0))
+        agg["imbalance_max"].append(d.get("imbalance_max", 0.0))
+        agg["tax_cos"].extend(d.get("tax_cos", []))
+    print(f"\n# --- instrumentation (ranks={len(metric_files)}) ---", flush=True)
+    print(f"  expert-kernel ms(sum over ranks)={agg['expert_ms']:.1f} "
+          f"dense/attn ms={agg['dense_ms']:.1f} expert_calls={agg['expert_calls']} "
+          f"SPARSE_EXPERT_CALLS={agg['sparse_expert_calls']}", flush=True)
+    if agg["imbalance_mean"]:
+        print(f"  expert imbalance (max/mean tokens-per-expert): "
+              f"mean={st.mean(agg['imbalance_mean']):.3f} max={max(agg['imbalance_max']):.3f}",
+              flush=True)
+    cosv = sorted(c["cos"] for c in agg["tax_cos"])
+    if cosv:
+        def pct(p):
+            return cosv[min(len(cosv) - 1, int(p * len(cosv)))]
+        worst = min(agg["tax_cos"], key=lambda c: c["cos"])
+        print(f"\n# --- in-situ per-layer tax cos(sparse,dense) (n={len(cosv)}) ---", flush=True)
+        print(f"  median={st.median(cosv):.4f} p10={pct(0.1):.4f} p90={pct(0.9):.4f} "
+              f"min={cosv[0]:.4f} max={cosv[-1]:.4f}", flush=True)
+        print(f"  worst: layer={worst['layer']} expert={worst['expert']} cos={worst['cos']:.4f}",
+              flush=True)
+
+    # figure-ready CSV to /cache
+    csv_path = f"/cache/qb_sweep_{runtag}.csv"
+    cols = ["tp", "prompt", "gen", "batch", "wall_s", "ttft_s", "tpot_ms", "prefill_tps",
+            "decode_tps", "total_tps", "req_latency_s", "gen_tok"]
+    with open(csv_path, "w") as f:
+        f.write(",".join(cols) + "\n")
+        for r in rows:
+            f.write(",".join(str(r[c]) for c in cols) + "\n")
+    print(f"\n# CSV rows ({csv_path}):", flush=True)
+    print(",".join(cols), flush=True)
+    for r in rows:
+        print(",".join(str(r[c]) for c in cols), flush=True)
+    print(f"# sweep DONE tp={tp} runtag={runtag} load={load_s:.0f}s "
+          f"load_used_MB={load_used} peak_used_MB={peak_used}", flush=True)
+
+
+# default matrix: representative, bounded for eager (~3 tok/s) within the Modal timeout.
+_SWEEP_MATRIX = [(512, 32, 1), (512, 128, 1), (512, 32, 8), (512, 128, 8),
+                 (2048, 32, 1), (2048, 128, 1), (2048, 32, 8),
+                 (512, 512, 1), (8192, 32, 1)]
+
+
+@app.function(gpu="RTX-PRO-6000:2", timeout=150 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def sweep2(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
+    _sweep_impl(2, "tp2", _SWEEP_MATRIX, instr, tax, max_len)
+
+
+@app.function(gpu="RTX-PRO-6000:4", timeout=150 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def sweep4(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
+    _sweep_impl(4, "tp4", _SWEEP_MATRIX, instr, tax, max_len)
+
+
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8", moe: str = "off") -> None:
@@ -549,5 +731,9 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         # `modal run --detach` so the job still survives client disconnect. spawn's detached logs
         # get truncated to a short tail once the app stops, hiding the worker root-cause traceback.
         unblock.remote(tp=tp, eager=eager, max_len=max_len, dense=dense, kv=kv, moe=moe)
+    elif mode == "sweep2":
+        sweep2.remote()
+    elif mode == "sweep4":
+        sweep4.remote()
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
