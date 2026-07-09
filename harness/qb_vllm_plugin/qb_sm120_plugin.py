@@ -405,6 +405,9 @@ def _install_moe() -> None:
 
     try:
         from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4FusedMoE
+        from vllm.model_executor.layers.fused_moe.runner.shared_experts import (
+            SharedExpertsOrder,
+        )
     except Exception as ex:  # noqa: BLE001
         print(f"[qb_sm120] MoE patch skipped (import): {type(ex).__name__}: {ex}", flush=True)
         return
@@ -459,9 +462,14 @@ def _install_moe() -> None:
                 oe = oe * ws[:, None]
             y.index_add_(0, rows, oe.to(x.dtype))
             STATS["sparse_expert_calls"] += 1
+        # The MoERunner owns shared-expert execution: it calls shared_experts with NO_OVERLAP
+        # (before) and MULTI_STREAM_OVERLAPPED (after) itself, then reads shared_experts.output
+        # and combines it with our fused_out. We only fire the MK_INTERNAL_OVERLAPPED slot the
+        # modular apply is contracted to fire; it is a no-op unless that order was selected (it
+        # never is here, since we stubbed maybe_make_prepare_finalize -> no modular kernel). So
+        # we must NOT add shared output to y, or it would be double-counted.
         if shared_experts is not None and shared_experts_input is not None:
-            se = shared_experts(shared_experts_input)
-            y = y + (se[0] if isinstance(se, tuple) else se)
+            shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
         return y
 
     ModelOptNvFp4FusedMoE.process_weights_after_loading = patched_moe_pw

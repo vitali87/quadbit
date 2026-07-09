@@ -452,24 +452,39 @@ def dumpsrc() -> None:
 
     import subprocess as _sp
 
+    # SharedExperts.forward wants an `order` positional arg. Dump its signature + how the
+    # native modelopt apply / model calls it so our patched_moe_apply passes `order` correctly.
+    dv = base / "models/deepseek_v4/nvidia/model.py"
+    dtext = dv.read_text().splitlines()
+    for key in ["class SharedExperts", "def _forward_fused_moe", "shared_experts(",
+                "SharedExperts(", "order"]:
+        hits = [i for i, ln in enumerate(dtext) if key in ln]
+        for h in hits[:6]:
+            lo, hi = max(0, h - 1), min(len(dtext), h + 20)
+            print(f"\n--- model.py '{key}' @ {h + 1} ---", flush=True)
+            print("\n".join(f"{i + 1:4} {dtext[i]}" for i in range(lo, hi)), flush=True)
+    # find the SharedExperts class def + its forward(order) signature, tree-wide
+    r = _sp.run(["grep", "-rn", r"class SharedExperts", str(base)], capture_output=True, text=True)
+    print(f"\n### class SharedExperts defs ###\n{r.stdout}", flush=True)
+    for ln in r.stdout.strip().splitlines():
+        fp = ln.split(":")[0]
+        if not fp.endswith(".py"):
+            continue
+        stext = Path(fp).read_text().splitlines()
+        cs = [i for i, l in enumerate(stext) if "class SharedExperts" in l]
+        for c in cs:
+            print(f"\n--- {fp} SharedExperts [{c + 1}] ---", flush=True)
+            print("\n".join(f"{i + 1:4} {stext[i]}" for i in range(c, min(len(stext), c + 55))), flush=True)
+    # full shared_experts.py (forward + retrieval) and moe_runner apply/_maybe_apply 500-585
+    se = base / "model_executor/layers/fused_moe/runner/shared_experts.py"
+    stext = se.read_text().splitlines()
+    print(f"\n### shared_experts.py [90-{len(stext)}] ###", flush=True)
+    print("\n".join(f"{i + 1:4} {stext[i]}" for i in range(89, len(stext))), flush=True)
     mr = base / "model_executor/layers/fused_moe/runner/moe_runner.py"
-    text = mr.read_text().splitlines()
-    r = _sp.run(["grep", "-n", r"def maybe_init_modular_kernel\|def apply\|def forward\|"
-                 r"self.fused_experts\|self.modular\|prepare_finalize\|def run\|self.moe_runner",
-                 str(mr)], capture_output=True, text=True)
-    print(f"\n### moe_runner.py index ###\n{r.stdout}", flush=True)
-    # show maybe_init_modular_kernel body
-    starts = [i for i, ln in enumerate(text) if "def maybe_init_modular_kernel" in ln]
-    for s in starts:
-        print(f"\n### maybe_init_modular_kernel [{s + 1}] ###", flush=True)
-        for i in range(s, min(len(text), s + 55)):
-            print(f"{i + 1:4} {text[i]}", flush=True)
-    # how does the FusedMoE layer call apply? grep layer.py for quant_method.apply / moe_runner
-    lp = base / "model_executor/layers/fused_moe/layer.py"
-    r2 = _sp.run(["grep", "-n", r"quant_method.apply\|moe_runner\|\.run(\|maybe_init_modular\|def forward",
-                  str(lp)], capture_output=True, text=True)
-    print(f"\n### layer.py dispatch refs ###\n{r2.stdout[:2000]}", flush=True)
-    return  # MoE recon only this run
+    mt = mr.read_text().splitlines()
+    print(f"\n### moe_runner.py [520-590] ###", flush=True)
+    print("\n".join(f"{i + 1:4} {mt[i]}" for i in range(519, min(len(mt), 590))), flush=True)
+    return  # SharedExperts recon only this run
 
     show_range2("flashinfer_sparse.py _forward_prefill call", base
                 / "models/deepseek_v4/nvidia/flashinfer_sparse.py", 820, 895)
