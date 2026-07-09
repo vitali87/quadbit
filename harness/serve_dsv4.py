@@ -51,7 +51,7 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "bf16",
-            kv: str = "fp8") -> None:
+            kv: str = "fp8", moe: str = "off") -> None:
     """WS0/WS1 end-to-end unblock: SM120-safe dense/attention (dense='bf16' or 'nvfp4') + native
     NVFP4 MoE. The replacement is installed by the qb_sm120 vLLM plugin (survives worker spawn); we
     only select it via QB_DENSE here. eager=True first (correctness), then flip for graph-capture."""
@@ -62,6 +62,7 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ["QB_DENSE"] = dense  # read by the qb_sm120 plugin in every spawned worker
+    os.environ["QB_MOE"] = moe  # off|dense|sparse: quadbit sparse-expert injection selector
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"  # quiet load bars so worker tracebacks survive
     print(f"# WS0/1 unblock: dense={dense} tp={tp} eager={eager} on "
           f"{torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
@@ -108,8 +109,10 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
     label = {"bf16": "bf16 dense fallback", "nvfp4": "NVFP4 dense (mm_fp4 cutlass)",
              "off": "native SM120 path"}.get(dense, dense)
-    print(f"# WS0/1 unblock {'PASS' if ok else 'FAIL'} dense={dense} "
-          f"({label} + native NVFP4 MoE + bf16 DSA indexer, "
+    moe_label = {"off": "native NVFP4 MoE", "dense": "NVFP4->bf16 dequant experts (dense)",
+                 "sparse": "quadbit 2:4 sparse-FP4 experts"}.get(moe, moe)
+    print(f"# unblock {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
+          f"({label} + {moe_label} + bf16 DSA indexer, "
           f"graph={'eager' if eager else 'captured'})", flush=True)
 
 
@@ -449,15 +452,21 @@ def dumpsrc() -> None:
 
     import subprocess as _sp
 
-    print("\n### deepseek_v4 quant_config.py FULL ###", flush=True)
-    qc = base / "models/deepseek_v4/quant_config.py"
-    text = qc.read_text().splitlines()
-    print("\n".join(f"{i + 1:4} {ln}" for i, ln in enumerate(text)), flush=True)
-    # find MoE-method class + its apply signature referenced from quant_config
-    for pat in ["MoEMethod", "moe_method", "get_quant_method", "fp4", "FusedMoE", "expert"]:
-        r = _sp.run(["grep", "-rn", "--include=*.py", pat, str(base / "models/deepseek_v4")],
-                    capture_output=True, text=True)
-        print(f"\n--- grep '{pat}' in deepseek_v4 ---\n{r.stdout.strip()[:1400]}", flush=True)
+    mo = base / "model_executor/layers/quantization/modelopt.py"
+    text = mo.read_text().splitlines()
+    # locate the class + its key methods, then print each method body
+    r = _sp.run(["grep", "-n", r"class ModelOptNvFp4FusedMoE\|    def create_weights\|    def apply\|"
+                 r"    def process_weights_after_loading\|    def __init__\|    def get_fused_moe_quant_config",
+                 str(mo)], capture_output=True, text=True)
+    print(f"\n### ModelOptNvFp4FusedMoE method index ###\n{r.stdout}", flush=True)
+    # print the class span (find class start, then next 'class ' at col 0)
+    starts = [i for i, ln in enumerate(text) if ln.startswith("class ModelOptNvFp4FusedMoE")]
+    if starts:
+        s = starts[0]
+        end = next((i for i in range(s + 1, len(text)) if text[i].startswith("class ")), len(text))
+        print(f"\n### ModelOptNvFp4FusedMoE [{s + 1}-{end}] ###", flush=True)
+        for i in range(s, min(end, s + 340)):
+            print(f"{i + 1:4} {text[i]}", flush=True)
     return  # MoE recon only this run
 
     show_range2("flashinfer_sparse.py _forward_prefill call", base
@@ -505,7 +514,7 @@ def probe() -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
-         dense: str = "bf16", kv: str = "fp8") -> None:
+         dense: str = "bf16", kv: str = "fp8", moe: str = "off") -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "versions":
@@ -522,6 +531,6 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         # .remote() (not .spawn()) so the FULL worker log streams to this client; launch under
         # `modal run --detach` so the job still survives client disconnect. spawn's detached logs
         # get truncated to a short tail once the app stops, hiding the worker root-cause traceback.
-        unblock.remote(tp=tp, eager=eager, max_len=max_len, dense=dense, kv=kv)
+        unblock.remote(tp=tp, eager=eager, max_len=max_len, dense=dense, kv=kv, moe=moe)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)

@@ -62,6 +62,29 @@ def _dequant_block(w, s, bs):
     return (w.to(torch.float32) * se).to(torch.bfloat16)
 
 
+# e2m1 FP4 value LUT (codes 0-15: sign bit 8): matches moe_layer.py / mxfp4 decode.
+_FP4_VALS = [0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6]
+
+
+def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
+    # NVFP4 (modelopt) dequant of one expert weight to bf16:
+    #   W[o,k] = FP4_LUT[nibble] * blockscale_e4m3[o, k//group].float() * per_tensor_scale
+    # w_u8 [O, K/2] uint8 (2 nibbles/byte; low=even k, high=odd k), w_scale_e4m3 [O, K/group]
+    # float8_e4m3fn, w_scale_2 scalar float32.
+    import torch
+
+    lut = torch.tensor(_FP4_VALS, dtype=torch.float32, device=w_u8.device)
+    o, kh = w_u8.shape
+    k = kh * 2
+    bb = w_u8.to(torch.int32) & 0xFF
+    codes = torch.empty(o, k, dtype=torch.long, device=w_u8.device)
+    codes[:, 0::2] = bb & 0xF
+    codes[:, 1::2] = (bb >> 4) & 0xF
+    vals = lut[codes]
+    bs = w_scale_e4m3.float().repeat_interleave(group, dim=1)[:, :k]
+    return (vals * bs * float(w_scale_2)).to(torch.bfloat16)
+
+
 def _mqa_logits_bf16(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=False):
     # SM120-safe replacement for DeepGEMM fp8_fp4_mqa_logits (prefill). FP8 path only.
     # logits[m,n] = sum_h w[m,h] * sum_d q[m,h,d]*k[n,d]  == (sum_h w[m,h]*q[m,h,d]) . k[n,:]
@@ -361,4 +384,86 @@ def install() -> None:
     except Exception as ex:  # noqa: BLE001
         print(f"[qb_sm120] topk override skipped: {type(ex).__name__}: {ex}", flush=True)
 
+    _install_moe()
+
     print(f"[qb_sm120] installed in pid={os.getpid()} (method={method})", flush=True)
+
+
+def _install_moe() -> None:
+    # QB_MOE selects the MoE expert path (ModelOptNvFp4FusedMoE):
+    #   off    (default) native vLLM NVFP4 MoE -- WS0/WS1 unaffected.
+    #   dense  dequant NVFP4 experts -> bf16 on-the-fly per routed expert (validates dequant + the
+    #          apply-replacement + expert-parallel handling; ~native quality, slow eager loop).
+    #   sparse quadbit 2:4 sparse-FP4 experts via the staged sm_120 kernel (.so) -- the thesis path;
+    #          sets SPARSE_EXPERT_CALLS>0 (falls back to dense if the .so path is unavailable).
+    qb_moe = os.environ.get("QB_MOE", "off").lower()
+    if qb_moe not in ("dense", "sparse"):
+        return
+
+    import torch
+    import torch.nn.functional as F
+
+    try:
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4FusedMoE
+    except Exception as ex:  # noqa: BLE001
+        print(f"[qb_sm120] MoE patch skipped (import): {type(ex).__name__}: {ex}", flush=True)
+        return
+
+    STATS["moe_calls"] = 0
+    STATS["sparse_expert_calls"] = 0
+
+    def patched_moe_pw(self, layer):
+        # Keep the RAW NVFP4 expert weights on the layer (dequant on the fly in apply); do NOT run
+        # the native conversion/kernel build (it would rewrite w13_weight into CUTLASS layout and
+        # ~double expert memory). Mark experts so apply knows the raw layout is intact.
+        self.moe_kernel = None
+        layer._qb_moe = True
+        i = layer.w13_weight.shape[1] // 2
+        if STATS["moe_calls"] == 0:
+            print(f"[qb_sm120] MoE {qb_moe} path: raw NVFP4 kept "
+                  f"w13={tuple(layer.w13_weight.shape)} w2={tuple(layer.w2_weight.shape)} "
+                  f"I={i} experts={layer.w13_weight.shape[0]} "
+                  f"emap={'y' if getattr(layer, 'expert_map', None) is not None else 'n'}", flush=True)
+        return None
+
+    def patched_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
+                          shared_experts_input=None):
+        STATS["moe_calls"] += 1
+        t, h = x.shape
+        y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+        w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
+        w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
+        i = w13.shape[1] // 2
+        emap = getattr(layer, "expert_map", None)
+        topk = topk_ids.shape[1]
+        flat_ids = topk_ids.reshape(-1)
+        flat_w = topk_weights.reshape(-1).to(torch.float32)
+        tok = torch.arange(t, device=x.device).repeat_interleave(topk)
+        local = emap[flat_ids] if emap is not None else flat_ids
+        on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
+        for le in torch.unique(local).tolist():
+            if le < 0:
+                continue
+            sel = local == le
+            rows = tok[sel]
+            ws = flat_w[sel]
+            xe = x[rows].float()
+            if on_input:
+                xe = xe * ws[:, None]
+            wg = _dequant_nvfp4_expert(w13[le, :i], w13s[le, :i], w13s2[le, 0]).float()
+            wu = _dequant_nvfp4_expert(w13[le, i:], w13s[le, i:], w13s2[le, 0]).float()
+            wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]).float()
+            hh = F.silu(xe @ wg.t()) * (xe @ wu.t())
+            oe = hh @ wd.t()
+            if not on_input:
+                oe = oe * ws[:, None]
+            y.index_add_(0, rows, oe.to(x.dtype))
+            STATS["sparse_expert_calls"] += 1
+        if shared_experts is not None and shared_experts_input is not None:
+            se = shared_experts(shared_experts_input)
+            y = y + (se[0] if isinstance(se, tuple) else se)
+        return y
+
+    ModelOptNvFp4FusedMoE.process_weights_after_loading = patched_moe_pw
+    ModelOptNvFp4FusedMoE.apply = patched_moe_apply
+    print(f"[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE={qb_moe}) pid={os.getpid()}", flush=True)
