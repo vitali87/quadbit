@@ -715,8 +715,74 @@ def sweep4(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
     _sweep_impl(4, "tp4", _SWEEP_MATRIX, instr, tax, max_len)
 
 
+def _calib_impl(tp: int, tag: str, max_len: int) -> None:
+    """A2 Step-2 calibration: run DeepSeek-V4-Flash DENSE (coherent) over a text corpus and let the
+    plugin accumulate per-expert per-projection column activation norms from REAL routed tokens,
+    dumped per-rank to /cache/qb_calib_{tag}_dev*.pt for the Wanda 2:4 mask in a later sparse run."""
+    import os
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "dense"
+    os.environ["QB_CALIB"] = "1"
+    os.environ["QB_RUNTAG"] = tag
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    print(f"# calib tp={tp} tag={tag} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    t0 = time.time()
+    llm = LLM(model=MODEL, tokenizer_mode="deepseek_v4", tensor_parallel_size=tp,
+              enforce_eager=True, trust_remote_code=True, max_model_len=max_len,
+              gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope})
+    print(f"  loaded in {time.time() - t0:.0f}s", flush=True)
+
+    tok = llm.get_tokenizer()
+    corpus = [
+        "The history of science spans many centuries and cultures, from ancient astronomy to modern "
+        "quantum mechanics. Researchers formulate hypotheses, design experiments, and revise theories "
+        "as new evidence emerges. The scientific method relies on reproducibility and peer review.",
+        "In computer science, algorithms and data structures form the foundation of efficient software. "
+        "A sorting algorithm arranges elements in order; a hash table offers average constant-time "
+        "lookup. def quicksort(a):\n    if len(a) <= 1:\n        return a\n    p = a[len(a)//2]\n    "
+        "return quicksort([x for x in a if x < p]) + [x for x in a if x == p] + quicksort([x for x in a if x > p])",
+        "Economics studies how societies allocate scarce resources. Supply and demand determine prices "
+        "in competitive markets, while central banks influence interest rates and inflation. Trade "
+        "allows nations to specialize according to comparative advantage.",
+        "The novel opened on a grey morning in a small coastal town, where the fishermen mended their "
+        "nets and the gulls circled overhead. She walked along the pier, thinking of the letter she had "
+        "never sent, the words still forming and dissolving in her mind like the tide.",
+        "Photosynthesis is the process by which plants convert light energy into chemical energy. "
+        "Chlorophyll absorbs sunlight, water is split into hydrogen and oxygen, and carbon dioxide is "
+        "fixed into glucose. This process sustains nearly all life on Earth through the food chain.",
+        "Mathematics is the study of numbers, structure, space, and change. A prime number has exactly "
+        "two divisors. The Pythagorean theorem relates the sides of a right triangle: a squared plus b "
+        "squared equals c squared. Calculus formalizes rates of change and accumulation.",
+    ]
+    ids = [{"prompt_token_ids": tok.encode(c)} for c in corpus]
+    ntok = sum(len(d["prompt_token_ids"]) for d in ids)
+    print(f"  calibrating over {len(corpus)} chunks / {ntok} tokens (dense forwards)...", flush=True)
+    llm.generate(ids, SamplingParams(temperature=0.0, max_tokens=1))
+    # Each WORKER accumulates + dumps its own shard (periodically during the forwards + atexit on
+    # shutdown); the driver has no model state. Free the engine to trigger worker shutdown, then check.
+    del llm
+    import gc
+    import glob
+
+    gc.collect()
+    time.sleep(5)
+    files = sorted(glob.glob(f"/cache/qb_calib_{tag}_dev*.pt"))
+    sizes = [f"{os.path.basename(f)}={os.path.getsize(f) // 1024}KB" for f in files]
+    print(f"# calib DONE tag={tag}: per-rank files {sizes or 'MISSING'}", flush=True)
+
+
 def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "dense",
-               probe_layers: str = "0,20,40") -> None:
+               probe_layers: str = "0,20,40", calib_file: str = "") -> None:
     """WORKSTREAM A0+A1#1: real-routed-activation quality map + dense-anchor-layer policy.
     Loads DeepSeek-V4-Flash-NVFP4 with QB_MOE=sparse, keeps NVFP4 resident on probe layers (and on
     dense-anchor layers), runs coherence prompts, and records per-layer *block* cosine + per-expert
@@ -744,6 +810,7 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     os.environ["QB_QMAP"] = "0" if probe_layers == "none" else "1"
     os.environ["QB_QMAP_LAYERS"] = "" if probe_layers == "none" else probe_layers
     os.environ["QB_INSTR"] = "1"  # captures the fire-once NaN diagnostics from the guardrail
+    os.environ["QB_CALIB_FILE"] = calib_file  # A2: tag of a calib run -> Wanda 2:4 masks in pack()
     os.environ["QB_RUNTAG"] = tag
     os.environ["QB_DENSE_LAYERS"] = dense_layers
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -868,14 +935,21 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
 @app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048, moe: str = "dense",
-         probe_layers: str = "0,20,40") -> None:
-    _qmap_impl(2, tag, dense_layers, max_len, moe, probe_layers)
+         probe_layers: str = "0,20,40", calib_file: str = "") -> None:
+    _qmap_impl(2, tag, dense_layers, max_len, moe, probe_layers, calib_file)
+
+
+@app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def calib(tag: str = "cal1", max_len: int = 2048) -> None:
+    _calib_impl(2, tag, max_len)
 
 
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8", moe: str = "off",
-         tag: str = "qm", dense_layers: str = "", probe_layers: str = "0,20,40") -> None:
+         tag: str = "qm", dense_layers: str = "", probe_layers: str = "0,20,40",
+         calib_file: str = "") -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "versions":
@@ -899,6 +973,9 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         sweep4.remote()
     elif mode == "qmap":
         qmap.remote(tag=tag, dense_layers=dense_layers, max_len=max_len,
-                    moe=(moe if moe != "off" else "dense"), probe_layers=probe_layers)
+                    moe=(moe if moe != "off" else "dense"), probe_layers=probe_layers,
+                    calib_file=calib_file)
+    elif mode == "calib":
+        calib.remote(tag=tag, max_len=max_len)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)

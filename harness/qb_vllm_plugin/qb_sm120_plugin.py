@@ -184,6 +184,17 @@ _SAN_BOUND = float(os.environ.get("QB_SAN_BOUND", "10000"))  # activations O(1-1
 _NAN_DIAG = []  # fire-once-per-(layer,tensor): first nonfinite occurrence for root-cause
 _NAN_SEEN = set()
 
+# A2 routed-activation calibration: collect per-expert per-projection column activation energy
+# (sum of squares over routed tokens) from a DENSE (coherent) forward, so the sparse 2:4 mask can be
+# activation-aware (Wanda) instead of pure magnitude. QB_CALIB=1 accumulates; dump_calib() writes it.
+# QB_CALIB_FILE (in pack) loads it and picks the 2:4 pairs that minimize routed output error.
+_CALIB = os.environ.get("QB_CALIB") == "1"
+_CALIB_FILE = os.environ.get("QB_CALIB_FILE", "")
+_CALIB_GU = {}  # layer_idx -> tensor[E, H]  sum of squares of gate/up input cols
+_CALIB_DN = {}  # layer_idx -> tensor[E, I]  sum of squares of down input cols
+_CALIB_N = {}   # layer_idx -> tensor[E]     routed-token count per expert
+_CALIB_LOADED = None  # loaded colnorm dict for pass 2
+
 
 def _ev_start():
     import torch
@@ -247,6 +258,62 @@ def _sanitize(t, layer_idx, name):
                 _flush_metrics()
     return torch.nan_to_num(t, nan=0.0, posinf=_SAN_BOUND,
                             neginf=-_SAN_BOUND).clamp_(-_SAN_BOUND, _SAN_BOUND)
+
+
+_CALIB_CALLS = 0
+
+
+def _calib_path(tag):
+    import torch
+
+    return f"/cache/qb_calib_{tag}_dev{torch.cuda.current_device()}.pt"
+
+
+def _calib_accum(li, le, xe_gu, xe_dn):
+    # accumulate per-expert column energy (sum of squares) for gate/up and down inputs. Periodic dump
+    # so a near-complete file survives worker SIGTERM (accumulators are per-worker; no driver access).
+    global _CALIB_CALLS
+    import torch
+
+    E = 256
+    if li not in _CALIB_GU:
+        dev = xe_gu.device
+        _CALIB_GU[li] = torch.zeros(E, xe_gu.shape[1], dtype=torch.float32, device=dev)
+        _CALIB_DN[li] = torch.zeros(E, xe_dn.shape[1], dtype=torch.float32, device=dev)
+        _CALIB_N[li] = torch.zeros(E, dtype=torch.float32, device=dev)
+    _CALIB_GU[li][le] += (xe_gu.float() ** 2).sum(0)
+    _CALIB_DN[li][le] += (xe_dn.float() ** 2).sum(0)
+    _CALIB_N[li][le] += xe_gu.shape[0]
+    _CALIB_CALLS += 1
+    if _CALIB_CALLS % 256 == 0:
+        dump_calib()
+
+
+def dump_calib():
+    # per-rank dump: colnorm[proj][layer] = sqrt(mean col energy over routed tokens) = ||X_col||_rms
+    import torch
+
+    out = {"gu": {}, "dn": {}, "n": {}}
+    for li in _CALIB_GU:
+        n = _CALIB_N[li].clamp_min(1.0)
+        out["gu"][li] = (_CALIB_GU[li] / n[:, None]).sqrt().cpu()
+        out["dn"][li] = (_CALIB_DN[li] / n[:, None]).sqrt().cpu()
+        out["n"][li] = _CALIB_N[li].cpu()
+    try:
+        torch.save(out, _calib_path(_RUNTAG))
+    except Exception:  # noqa: BLE001
+        pass
+    return len(_CALIB_GU)
+
+
+def _load_calib():
+    # pass 2: QB_CALIB_FILE holds the calibration run's tag; each rank loads its own shard's colnorm.
+    global _CALIB_LOADED
+    if _CALIB_LOADED is None and _CALIB_FILE:
+        import torch
+
+        _CALIB_LOADED = torch.load(_calib_path(_CALIB_FILE), map_location="cuda", weights_only=True)
+    return _CALIB_LOADED
 
 
 def _run_tax_probe(layer, sp, i, e, layer_idx):
@@ -389,11 +456,18 @@ def _load_sparse_moe():
         code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
         return torch.where(s > 0, code, torch.zeros_like(code))
 
-    def pack(w):
+    def pack(w, colnorm=None):
         out_f, in_f = w.shape
         ks = in_f // 128
         wg = w.float().view(out_f, ks, 16, 4, 2)
-        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        # 2:4 pair selection: keep the 2 of every 4 pairs with the largest importance. colnorm=None ->
+        # magnitude (|W| summed over the pair). colnorm (Wanda) -> |W|*||X_col|| summed over the pair,
+        # which directly minimizes the routed output error ||X(W_dense - W_sparse)||.
+        if colnorm is None:
+            imp = wg.abs().sum(-1)
+        else:
+            imp = (wg.abs() * colnorm.view(1, ks, 16, 4, 2)).sum(-1)
+        i01, _ = imp.topk(2, dim=-1).indices.sort(dim=-1)
         kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
         ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
         blk = kept.reshape(out_f, ks, 4, 8, 2)
@@ -715,6 +789,10 @@ def install() -> None:
         import atexit
 
         atexit.register(_flush_metrics)
+    if _CALIB:
+        import atexit
+
+        atexit.register(dump_calib)
     print(f"[qb_sm120] installed in pid={os.getpid()} (method={method})", flush=True)
 
 
@@ -783,12 +861,18 @@ def _install_moe() -> None:
         e = layer.w13_weight.shape[0]
         w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
         w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
+        # A2: if a calibration file is loaded, use activation-aware (Wanda) 2:4 masks; else magnitude.
+        cal = _load_calib()
+        cn_gu = cal["gu"][layer_idx] if cal and layer_idx in cal["gu"] else None
+        cn_dn = cal["dn"][layer_idx] if cal and layer_idx in cal["dn"] else None
+        if first and cn_gu is not None:
+            print(f"[qb_sm120] A2 Wanda masks from calib for layer {layer_idx}", flush=True)
         gu_packs, dn_packs = [], []
         for le in range(e):
             gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
             dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
-            gu_packs.append(sp.pack(gu))
-            dn_packs.append(sp.pack(dn))
+            gu_packs.append(sp.pack(gu, None if cn_gu is None else cn_gu[le]))
+            dn_packs.append(sp.pack(dn, None if cn_dn is None else cn_dn[le]))
         layer._qb_gu = sp.stack(gu_packs)
         layer._qb_dn = sp.stack(dn_packs)
         layer._qb_i = i
@@ -887,6 +971,8 @@ def _install_moe() -> None:
                 oe = oe * ws[:, None]
             y.index_add_(0, rows, oe.to(x.dtype))
             STATS["sparse_expert_calls"] += 1
+            if _CALIB:
+                _calib_accum(getattr(layer, "_qb_layer_idx", -1), le, xe, hh)
         # A0 map: this dense (coherent) forward feeds HEALTHY activations; on probe layers measure
         # the sparse operator against the dense one here (after the real dense y is produced).
         if _QMAP and getattr(layer, "_qb_probe", False):
