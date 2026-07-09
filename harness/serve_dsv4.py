@@ -216,6 +216,111 @@ def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
     print("\n# inspect_moe done", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=20 * MIN, volumes={"/cache": vol})
+def test_so() -> None:
+    # Step A de-risk: does the staged sm_120 quadbit kernel .so (built under CUDA 12.8) ctypes-load
+    # and RUN on the CUDA-13 serve image / sm_120? Port moe_layer.py's pack/quant_act/seg_gemm and
+    # run one synthetic segmented MoE matmul vs a bf16 reference. Expect finite output + the ~0.88
+    # 2:4-FP4 accuracy tax (NOT ~1.0 -- sparse is lossy by design). Crash/garbage => must rebuild .so.
+    import ctypes
+
+    import torch
+    import torch.nn.functional as F
+
+    bn = 128
+    dev = torch.device("cuda")
+    print(f"# test_so: torch {torch.__version__} cuda {torch.version.cuda} "
+          f"cap {torch.cuda.get_device_capability()}", flush=True)
+    so = None
+    for cand in ("/cache/sparse_fp4_sm120.so", "/cache/sparse_fp4.so"):
+        try:
+            lib = ctypes.CDLL(cand)
+            so = cand
+            break
+        except Exception as ex:  # noqa: BLE001
+            print(f"  CDLL {cand} failed: {type(ex).__name__}: {ex}", flush=True)
+    if so is None:
+        print("# test_so FAIL: no loadable .so", flush=True)
+        return
+    print(f"  loaded {so}", flush=True)
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
+                                       + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.qb_init_moe_attrs()
+    torch.manual_seed(0)
+
+    fp4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    bnd = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    cc = torch.arange(128, device=dev)
+    e_, m_ = (cc >> 3) & 0xf, cc & 7
+    ue4m3 = torch.where(e_ == 0, m_.float() * 0.001953125,
+                        (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), bnd) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30))
+        mm = 2.0 * mant_f
+        biased = (e - 1) + 7
+        mant = torch.round((mm - 1.0) * 8.0).long()
+        carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant)
+        biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):
+        out_f, in_f = w.shape
+        ks = in_f // 128
+        wg = w.float().to(dev).view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2)
+        scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga)
+        sdeq = ue4m3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(),
+                ga.reshape(out_f).float().contiguous())
+
+    def quant_act(x):
+        r, in_f = x.shape
+        ks = in_f // 128
+        x = x.to(torch.bfloat16).contiguous()
+        bb = torch.empty((r, in_f // 2), dtype=torch.uint8, device=dev)
+        sb = torch.empty((ks, r, 4), dtype=torch.uint8, device=dev)
+        gb = torch.empty((r,), dtype=torch.float32, device=dev)
+        lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), r, in_f)
+        return bb, sb, gb
+
+    # single-expert segmented call (eblk all-zero -> one expert, Mpe=M) as the minimal kernel exercise
+    m_out, k_in, rows = 512, 1024, 256
+    w = (torch.randn(m_out, k_in, device=dev) * (k_in ** -0.5)).to(torch.bfloat16)
+    x = (torch.randn(rows, k_in, device=dev) * (k_in ** -0.5) * 4).to(torch.bfloat16)
+    ac, meta, scale_a, ga = pack(w)
+    bb, sb, gb = quant_act(x)
+    c = torch.empty((rows, m_out), dtype=torch.bfloat16, device=dev)
+    eblk = torch.zeros(rows // bn, dtype=torch.int32, device=dev)
+    lib.sparse_moe_mm_2lvl(ac.data_ptr(), bb.data_ptr(), scale_a.data_ptr(), sb.data_ptr(),
+                           meta.data_ptr(), c.data_ptr(), ac.shape[0], m_out, rows, k_in,
+                           ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, 0)
+    torch.cuda.synchronize()
+    ref = F.linear(x.float(), w.float())
+    nonfin = int((~torch.isfinite(c)).sum().item())
+    cos = F.cosine_similarity(c.float().flatten(), ref.flatten(), dim=0).item()
+    print(f"  seg_gemm ran: out={tuple(c.shape)} nonfin={nonfin} cos(seg,dense-bf16)={cos:.4f}", flush=True)
+    ok = nonfin == 0 and cos > 0.8
+    print(f"# test_so {'PASS' if ok else 'FAIL'} (staged sm_120 .so runs on CUDA-13 serve image)", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
@@ -342,6 +447,19 @@ def dumpsrc() -> None:
         text = p.read_text().splitlines()
         print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True)
 
+    import subprocess as _sp
+
+    print("\n### deepseek_v4 quant_config.py FULL ###", flush=True)
+    qc = base / "models/deepseek_v4/quant_config.py"
+    text = qc.read_text().splitlines()
+    print("\n".join(f"{i + 1:4} {ln}" for i, ln in enumerate(text)), flush=True)
+    # find MoE-method class + its apply signature referenced from quant_config
+    for pat in ["MoEMethod", "moe_method", "get_quant_method", "fp4", "FusedMoE", "expert"]:
+        r = _sp.run(["grep", "-rn", "--include=*.py", pat, str(base / "models/deepseek_v4")],
+                    capture_output=True, text=True)
+        print(f"\n--- grep '{pat}' in deepseek_v4 ---\n{r.stdout.strip()[:1400]}", flush=True)
+    return  # MoE recon only this run
+
     show_range2("flashinfer_sparse.py _forward_prefill call", base
                 / "models/deepseek_v4/nvidia/flashinfer_sparse.py", 820, 895)
     show_defs("vllm flashinfer.py wrapper",
@@ -388,7 +506,9 @@ def probe() -> None:
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8") -> None:
-    if mode == "versions":
+    if mode == "test_so":
+        test_so.remote()
+    elif mode == "versions":
         versions.remote()
     elif mode == "dumpsrc":
         dumpsrc.remote()
