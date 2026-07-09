@@ -141,6 +141,123 @@ def _paged_mqa_logits_bf16(q, kv_cache, weights, context_lens, block_tables, sch
     return out
 
 
+_SPARSE_SO = "/cache/sparse_fp4.so"
+_BN = 128
+_SPARSE = None
+
+
+def _load_sparse_moe():
+    # Lazily ctypes-load the staged sm_120 quadbit 2:4-sparse-FP4 kernel (.so) and build the
+    # pack/quant_act/seg_gemm/build_routing helpers (ported verbatim from moe_layer.py / test_so,
+    # which validated this .so on the CUDA-13 serve image: finite output, ~0.88 sparse-FP4 tax).
+    # Cached per worker process.
+    global _SPARSE
+    if _SPARSE is not None:
+        return _SPARSE
+    import ctypes
+    from types import SimpleNamespace
+
+    import torch
+
+    lib = ctypes.CDLL(_SPARSE_SO)
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
+                                       + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.qb_init_moe_attrs()
+    dev = torch.device("cuda")
+
+    fp4 = torch.tensor(_FP4_VALS, device=dev)
+    bnd = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    cc = torch.arange(128, device=dev)
+    e_, m_ = (cc >> 3) & 0xf, cc & 7
+    ue4m3 = torch.where(e_ == 0, m_.float() * 0.001953125,
+                        (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), bnd) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30))
+        biased = (e - 1) + 7
+        mant = torch.round((2.0 * mant_f - 1.0) * 8.0).long()
+        carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant)
+        biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):
+        out_f, in_f = w.shape
+        ks = in_f // 128
+        wg = w.float().view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2)
+        scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga)
+        sdeq = ue4m3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(),
+                ga.reshape(out_f).float().contiguous())
+
+    def stack(packs):
+        return (torch.cat([p[0] for p in packs], 0).contiguous(),
+                torch.cat([p[1] for p in packs], 1).contiguous(),
+                torch.cat([p[2] for p in packs], 1).contiguous(),
+                torch.cat([p[3] for p in packs], 0).contiguous())
+
+    def quant_act(x):
+        r, in_f = x.shape
+        ks = in_f // 128
+        x = x.to(torch.bfloat16).contiguous()
+        bb = torch.empty((r, in_f // 2), dtype=torch.uint8, device=dev)
+        sb = torch.empty((ks, r, 4), dtype=torch.uint8, device=dev)
+        gb = torch.empty((r,), dtype=torch.float32, device=dev)
+        lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), r, in_f)
+        return bb, sb, gb
+
+    def seg_gemm(x, w, mpe, in_f, eblk):
+        r = x.shape[0]
+        ac, meta, scale_a, ga = w
+        bb, sb, gb = quant_act(x)
+        c = torch.empty((r, mpe), dtype=torch.bfloat16, device=dev)
+        lib.sparse_moe_mm_2lvl(ac.data_ptr(), bb.data_ptr(), scale_a.data_ptr(), sb.data_ptr(),
+                               meta.data_ptr(), c.data_ptr(), ac.shape[0], mpe, r, in_f,
+                               ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, 0)
+        return c
+
+    def build_routing(assign, e):
+        order = torch.argsort(assign, stable=True)
+        counts = torch.bincount(assign, minlength=e)
+        padc = (counts + _BN - 1) // _BN * _BN
+        r_pad = int(padc.sum().item())
+        src = torch.full((r_pad,), -1, dtype=torch.long, device=dev)
+        eblk = torch.zeros(r_pad // _BN, dtype=torch.int32, device=dev)
+        off = 0
+        oi = 0
+        for ex in range(e):
+            ce = int(counts[ex].item())
+            pe = int(padc[ex].item())
+            if pe == 0:
+                continue
+            src[off:off + ce] = order[oi:oi + ce]
+            oi += ce
+            eblk[off // _BN:(off + pe) // _BN] = ex
+            off += pe
+        return src, eblk, r_pad
+
+    _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
+                              seg_gemm=seg_gemm, build_routing=build_routing)
+    return _SPARSE
+
+
 def install() -> None:
     method = os.environ.get("QB_DENSE", "bf16").lower()
     if method == "off":
@@ -422,11 +539,33 @@ def _install_moe() -> None:
         self.moe_kernel = None
         layer._qb_moe = True
         i = layer.w13_weight.shape[1] // 2
-        if STATS["moe_calls"] == 0:
+        first = STATS["moe_calls"] == 0
+        if first:
             print(f"[qb_sm120] MoE {qb_moe} path: raw NVFP4 kept "
                   f"w13={tuple(layer.w13_weight.shape)} w2={tuple(layer.w2_weight.shape)} "
                   f"I={i} experts={layer.w13_weight.shape[0]} "
                   f"emap={'y' if getattr(layer, 'expert_map', None) is not None else 'n'}", flush=True)
+        if qb_moe == "sparse":
+            # Pack each NVFP4 expert -> bf16 -> quadbit 2:4-sparse-FP4 codes at load. gate+up = the
+            # full w13[e] [2I,H]; down = w2[e] [H,I]. NVFP4 stays resident (dequant is transient,
+            # one expert at a time); the packed codes (~1GB/rank) live alongside for apply.
+            sp = _load_sparse_moe()
+            e = layer.w13_weight.shape[0]
+            w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
+            w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
+            gu_packs, dn_packs = [], []
+            for le in range(e):
+                gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
+                dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
+                gu_packs.append(sp.pack(gu))
+                dn_packs.append(sp.pack(dn))
+            layer._qb_gu = sp.stack(gu_packs)
+            layer._qb_dn = sp.stack(dn_packs)
+            layer._qb_i = i
+            layer._qb_e = e
+            if first:
+                print(f"[qb_sm120] sparse-packed {e} experts: gu codes "
+                      f"{layer._qb_gu[0].shape} dn codes {layer._qb_dn[0].shape}", flush=True)
         return None
 
     def patched_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
@@ -434,16 +573,41 @@ def _install_moe() -> None:
         STATS["moe_calls"] += 1
         t, h = x.shape
         y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+        topk = topk_ids.shape[1]
+        on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
+
+        if qb_moe == "sparse" and getattr(layer, "_qb_gu", None) is not None:
+            # Route through the quadbit 2:4-sparse-FP4 segmented kernel. emap is None here (all
+            # experts present per rank, TP-sharded intermediate), so topk_ids are global==local.
+            sp = _load_sparse_moe()
+            ii, ee = layer._qb_i, layer._qb_e
+            assign = topk_ids.reshape(-1).to(torch.long)
+            tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
+            w_of = topk_weights.reshape(-1).to(torch.float32)
+            src, eblk, _r = sp.build_routing(assign, ee)
+            valid = src >= 0
+            srcc = src.clamp_min(0)
+            xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
+            if on_input:
+                xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+            gu = sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk)
+            hh = (F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16)
+            dseg = sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk)
+            rw = valid.float() if on_input else (w_of[srcc] * valid.float())
+            y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(x.dtype))
+            STATS["sparse_expert_calls"] += int(valid.sum().item())
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+            return y
+
         w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
         w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
         i = w13.shape[1] // 2
         emap = getattr(layer, "expert_map", None)
-        topk = topk_ids.shape[1]
         flat_ids = topk_ids.reshape(-1)
         flat_w = topk_weights.reshape(-1).to(torch.float32)
         tok = torch.arange(t, device=x.device).repeat_interleave(topk)
         local = emap[flat_ids] if emap is not None else flat_ids
-        on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
         for le in torch.unique(local).tolist():
             if le < 0:
                 continue
