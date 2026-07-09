@@ -613,8 +613,10 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
             m = o.metrics
             if m is None:
                 continue
-            arr, ft, lt = m.arrival_time, m.first_token_time, m.last_token_time
-            fin = getattr(m, "finished_time", None) or lt
+            arr = getattr(m, "arrival_time", None) or getattr(m, "arrival_ts", None)
+            ft = getattr(m, "first_token_time", None) or getattr(m, "first_token_ts", None)
+            lt = getattr(m, "last_token_time", None) or getattr(m, "last_token_ts", None)
+            fin = getattr(m, "finished_time", None) or getattr(m, "finished_ts", None) or lt
             if ft and arr:
                 ttfts.append(ft - arr)
             if fin and ft and G > 1:
