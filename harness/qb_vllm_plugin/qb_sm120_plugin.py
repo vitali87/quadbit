@@ -169,6 +169,9 @@ _PW_IDX = 0  # MoE layer counter (load order) per worker
 _DENSE_LAYERS = {int(x) for x in os.environ.get("QB_DENSE_LAYERS", "").split(",") if x.strip()}
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
+# explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
+# dense-mode map OOMs KV if too many probe layers hold codes). Empty -> every _TAX_LAYERS-th layer.
+_QMAP_LAYERS = {int(x) for x in os.environ.get("QB_QMAP_LAYERS", "").split(",") if x.strip()}
 _QMAP_ROWS = []  # real-activation A0 map rows (block + per-expert)
 _QMAP_SEEN = {}  # layer_idx -> forwards probed so far
 
@@ -727,7 +730,8 @@ def _install_moe() -> None:
         layer._qb_layer_idx = layer_idx
         # A0 map: probe layers keep BOTH NVFP4 and packed codes so apply can compare the two operators
         # on the SAME real routed rows. Run the map under QB_MOE=dense so `x` is a HEALTHY activation.
-        is_probe = _QMAP and (layer_idx % _TAX_LAYERS == 0)
+        is_probe = _QMAP and (layer_idx in _QMAP_LAYERS if _QMAP_LAYERS
+                              else layer_idx % _TAX_LAYERS == 0)
         # A1 policy #1: dense-anchor layers stay NVFP4-dense (apply falls through to the per-expert
         # dense path, cos=1.0 vs native -> breaks the per-layer tax compounding at these layers).
         is_anchor = qb_moe == "sparse" and layer_idx in _DENSE_LAYERS
