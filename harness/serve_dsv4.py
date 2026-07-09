@@ -715,9 +715,125 @@ def sweep4(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
     _sweep_impl(4, "tp4", _SWEEP_MATRIX, instr, tax, max_len)
 
 
+def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int) -> None:
+    """WORKSTREAM A0+A1#1: real-routed-activation quality map + dense-anchor-layer policy.
+    Loads DeepSeek-V4-Flash-NVFP4 with QB_MOE=sparse, keeps NVFP4 resident on probe layers (and on
+    dense-anchor layers), runs coherence prompts, and records per-layer *block* cosine + per-expert
+    cos / route freq / weight / contribution norm on REAL routed activations. Reports whether the
+    dense-anchor policy restores coherence and at what sparse-layer coverage."""
+    import glob
+    import json
+    import math
+    import os
+    import statistics as st
+    import subprocess
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "bf16"
+    os.environ["QB_MOE"] = "sparse"
+    os.environ["QB_QMAP"] = "1"
+    os.environ["QB_RUNTAG"] = tag
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    for f in glob.glob(f"/cache/qb_metrics_{tag}_dev*.json"):
+        os.remove(f)
+
+    ngpu = torch.cuda.device_count()
+    print(f"# qmap tp={tp} tag={tag} dense_layers=[{dense_layers}] on {ngpu}x RTX-PRO-6000", flush=True)
+
+    def smi():
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.free",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
+        return [int(ln.split(",")[0]) for ln in out.strip().splitlines()]
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    t0 = time.time()
+    llm = LLM(model=MODEL, tokenizer_mode="deepseek_v4", tensor_parallel_size=tp,
+              enforce_eager=True, trust_remote_code=True, max_model_len=max_len,
+              gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope},
+              disable_log_stats=False)
+    print(f"  loaded in {time.time() - t0:.0f}s; per-GPU used MB={smi()}", flush=True)
+
+    prompts = ["The capital of France is", "def fibonacci(n):",
+               "The three primary colors are", "Water is made of hydrogen and",
+               "The opposite of hot is"]
+    sp = SamplingParams(temperature=0.0, max_tokens=40, min_tokens=8)
+    outs = llm.generate(prompts, sp)
+    print("# --- COHERENCE (generation sanity) ---", flush=True)
+    for p, o in zip(prompts, outs, strict=False):
+        print(f"  [{p!r}] -> {o.outputs[0].text!r}", flush=True)
+
+    # aggregate the real-activation map flushed by every worker
+    rows = []
+    for mf in sorted(glob.glob(f"/cache/qb_metrics_{tag}_dev*.json")):
+        with open(mf) as f:
+            rows += json.load(f).get("qmap", [])
+    blk = {}   # layer -> [block_cos, ...]
+    exp = {}   # layer -> [expert cos, ...]
+    for r in rows:
+        if r["expert"] == -1:
+            blk.setdefault(r["layer"], []).append(r["block_cos"])
+        else:
+            exp.setdefault(r["layer"], []).append(r["cos"])
+
+    csv_path = f"/cache/qb_qmap_{tag}.csv"
+    with open(csv_path, "w") as f:
+        f.write("layer,expert,cos,freq,mean_w,contrib_norm,block_cos\n")
+        for r in rows:
+            if r["expert"] == -1:
+                f.write(f"{r['layer']},-1,,,,,{r['block_cos']}\n")
+            else:
+                f.write(f"{r['layer']},{r['expert']},{r['cos']},{r['freq']},"
+                        f"{r['mean_w']},{r['contrib_norm']},\n")
+
+    print("# --- A0 real-activation quality map ---", flush=True)
+    print("# layer  block_cos  expert_cos(median)  n_experts", flush=True)
+    prod = 1.0
+    all_exp = []
+    for li in sorted(blk):
+        bc = st.median(blk[li])
+        ec = st.median(exp.get(li, [0.0]))
+        all_exp += exp.get(li, [])
+        prod *= bc
+        print(f"  {li:>4}   {bc:.4f}     {ec:.4f}            {len(exp.get(li, []))}", flush=True)
+    n_probe = len(blk)
+    # extrapolate the probed block cosines over all sparse layers (probe covers every _TAX_LAYERS-th)
+    dense_set = {int(x) for x in dense_layers.split(",") if x.strip()}
+    n_sparse = 43 - len(dense_set)
+    if n_probe:
+        geo = math.exp(sum(math.log(max(1e-9, st.median(blk[li]))) for li in blk) / n_probe)
+        pred_end = geo ** n_sparse
+        print(f"# probed {n_probe} layers; geomean block_cos={geo:.4f}; "
+              f"predicted end-of-stack coherence signal geo^{n_sparse}={pred_end:.3e}", flush=True)
+    if all_exp:
+        all_exp.sort()
+
+        def q(p):
+            return all_exp[min(len(all_exp) - 1, int(p * len(all_exp)))]
+        print(f"# per-expert real-activation cos: median={st.median(all_exp):.4f} "
+              f"p10={q(0.1):.4f} p90={q(0.9):.4f} min={all_exp[0]:.4f} max={all_exp[-1]:.4f}",
+              flush=True)
+    print(f"# dense-anchor layers={sorted(dense_set)} ({len(dense_set)}/43 dense, "
+          f"{n_sparse}/43 sparse = {100*n_sparse/43:.0f}% layers sparse)", flush=True)
+    print(f"# qmap CSV -> {csv_path} ({len(rows)} rows)", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048) -> None:
+    _qmap_impl(2, tag, dense_layers, max_len)
+
+
 @app.local_entrypoint()
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
-         dense: str = "bf16", kv: str = "fp8", moe: str = "off") -> None:
+         dense: str = "bf16", kv: str = "fp8", moe: str = "off",
+         tag: str = "qm", dense_layers: str = "") -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "versions":
@@ -739,5 +855,7 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         sweep2.remote()
     elif mode == "sweep4":
         sweep4.remote()
+    elif mode == "qmap":
+        qmap.remote(tag=tag, dense_layers=dense_layers, max_len=max_len)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
