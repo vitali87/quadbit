@@ -195,6 +195,52 @@ _CALIB_DN = {}  # layer_idx -> tensor[E, I]  sum of squares of down input cols
 _CALIB_N = {}   # layer_idx -> tensor[E]     routed-token count per expert
 _CALIB_LOADED = None  # loaded colnorm dict for pass 2
 
+# A3 layerwise-repair I/O dump: during the DENSE (teacher) forward, capture each MoE block's input x
+# routing (topk_ids/weights) and dense output y for the sparse-candidate layers (li >= FROM), capped
+# per layer. Offline the recon trainer replays routing on x, computes student = fakequant-sparse
+# experts, and fits surviving weights/scales to match teacher y -> local KD, one layer at a time.
+_DUMP = os.environ.get("QB_DUMP") == "1"
+_DUMP_TOK = int(os.environ.get("QB_DUMP_TOK", "16384"))  # per-layer token budget
+_DUMP_FROM = int(os.environ.get("QB_DUMP_FROM", "22"))   # first sparse layer under the A2-49 policy
+_DUMP_X, _DUMP_TID, _DUMP_TW, _DUMP_Y, _DUMP_N = {}, {}, {}, {}, {}
+_DUMP_CALLS = 0
+
+
+def _dump_accum(li, x, topk_ids, topk_weights, y):
+    global _DUMP_CALLS
+    import torch
+
+    n = _DUMP_N.get(li, 0)
+    if n >= _DUMP_TOK:
+        return
+    take = min(x.shape[0], _DUMP_TOK - n)
+    _DUMP_X.setdefault(li, []).append(x[:take].to(torch.bfloat16).cpu())
+    _DUMP_TID.setdefault(li, []).append(topk_ids[:take].to(torch.int32).cpu())
+    _DUMP_TW.setdefault(li, []).append(topk_weights[:take].to(torch.float32).cpu())
+    _DUMP_Y.setdefault(li, []).append(y[:take].to(torch.bfloat16).cpu())
+    _DUMP_N[li] = n + take
+    _DUMP_CALLS += 1
+    if _DUMP_CALLS % 64 == 0:
+        dump_recon_io()
+
+
+def dump_recon_io():
+    # per-rank: {layer_idx: {x[N,H], tid[N,topk], tw[N,topk], y[N,H]}}. Periodic so a near-complete
+    # file survives worker SIGTERM (accumulators are per-worker, no driver access).
+    import torch
+
+    if not _DUMP_X:
+        return 0
+    out = {}
+    for li in _DUMP_X:
+        out[li] = {"x": torch.cat(_DUMP_X[li]), "tid": torch.cat(_DUMP_TID[li]),
+                   "tw": torch.cat(_DUMP_TW[li]), "y": torch.cat(_DUMP_Y[li])}
+    try:
+        torch.save(out, f"/cache/qb_reconio_{_RUNTAG}_dev{torch.cuda.current_device()}.pt")
+    except Exception:  # noqa: BLE001
+        pass
+    return len(out)
+
 
 def _ev_start():
     import torch
@@ -977,6 +1023,10 @@ def _install_moe() -> None:
             STATS["sparse_expert_calls"] += 1
             if _CALIB:
                 _calib_accum(getattr(layer, "_qb_layer_idx", -1), le, xe, hh)
+        if _DUMP:
+            li = getattr(layer, "_qb_layer_idx", -1)
+            if li >= _DUMP_FROM:
+                _dump_accum(li, x, topk_ids, topk_weights, y)
         # A0 map: this dense (coherent) forward feeds HEALTHY activations; on probe layers measure
         # the sparse operator against the dense one here (after the real dense y is produced).
         if _QMAP and getattr(layer, "_qb_probe", False):
