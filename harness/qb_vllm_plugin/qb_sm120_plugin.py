@@ -242,6 +242,83 @@ def dump_recon_io():
     return len(out)
 
 
+# A3 recon: QB_RECON=1 -> during load, for each layer in QB_RECON_LAYERS, fit the surviving 2:4-FP4
+# expert weights to the dumped dense teacher output (moe_recon.train_layer), pack the repaired
+# and stash them so the same process can eval the repaired model. Persisted per-rank to
+# /cache/qb_reconw_{tag}_dev{rank}.pt. QB_RECON_FILE=<tag> (in a later run) reloads them in pack().
+_RECON = os.environ.get("QB_RECON") == "1"
+_RECON_IO = os.environ.get("QB_RECON_IO", "")     # dump tag to load teacher I/O from
+_RECON_FILE = os.environ.get("QB_RECON_FILE", "")  # serving: reload repaired weights from this tag
+_RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(",") if x.strip()}
+_RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
+_RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
+_RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
+_RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
+_RECON_IO_LOADED = None
+_RECON_W_LOADED = None
+
+
+def _recon_io():
+    global _RECON_IO_LOADED
+    if _RECON_IO_LOADED is None and _RECON_IO:
+        import torch
+
+        p = f"/cache/qb_reconio_{_RECON_IO}_dev{torch.cuda.current_device()}.pt"
+        _RECON_IO_LOADED = torch.load(p, map_location="cuda", weights_only=True)
+    return _RECON_IO_LOADED
+
+
+def _recon_w():
+    global _RECON_W_LOADED
+    if _RECON_W_LOADED is None and _RECON_FILE:
+        import torch
+
+        p = f"/cache/qb_reconw_{_RECON_FILE}_dev{torch.cuda.current_device()}.pt"
+        _RECON_W_LOADED = torch.load(p, map_location="cuda", weights_only=True)
+    return _RECON_W_LOADED
+
+
+def dump_recon_w():
+    import torch
+
+    if not _RECON_W:
+        return 0
+    try:
+        torch.save(_RECON_W, f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt")
+    except Exception:  # noqa: BLE001
+        pass
+    return len(_RECON_W)
+
+
+def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_gu, cn_dn):
+    # Return (w13_use[E,2I,H], w2_use[E,H,I]) repaired bf16 to pack, or (None, None) to pack the
+    # raw dequant. Serving reloads them; a repair run trains this layer now vs the dumped teacher.
+    import torch
+
+    rw = _recon_w()
+    if rw is not None and layer_idx in rw:
+        return rw[layer_idx]["w13"].to(w13.device), rw[layer_idx]["w2"].to(w13.device)
+    if not (_RECON and layer_idx in _RECON_LAYERS):
+        return None, None
+    io = _recon_io()
+    if io is None or layer_idx not in io or cn_gu is None:
+        print(f"[qb_sm120] recon skip layer {layer_idx}: io/calib missing", flush=True)
+        return None, None
+    import moe_recon
+
+    w13_dq = torch.stack([_dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
+                          for le in range(e)])
+    w2_dq = torch.stack([_dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]) for le in range(e)])
+    res = moe_recon.train_layer(io[layer_idx], w13_dq, w2_dq, cn_gu, cn_dn, inter=i,
+                                steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE)
+    _RECON_W[layer_idx] = {"w13": res["w13"].to(torch.bfloat16).cpu(),
+                           "w2": res["w2"].to(torch.bfloat16).cpu()}
+    dump_recon_w()
+    print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
+          f"steps={_RECON_STEPS} scale={int(_RECON_SCALE)}", flush=True)
+    return res["w13"].to(w13.device), res["w2"].to(w13.device)
+
+
 def _ev_start():
     import torch
 
@@ -917,10 +994,16 @@ def _install_moe() -> None:
         cn_dn = cal["dn"][layer_idx] if cal and layer_idx in cal["dn"] else None
         if first and cn_gu is not None:
             print(f"[qb_sm120] A2 Wanda masks from calib for layer {layer_idx}", flush=True)
+        # A3 recon: repaired weights for this layer, either reloaded (serving) or trained now (repair).
+        w13_use, w2_use = _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2,
+                                         cn_gu, cn_dn)
         gu_packs, dn_packs = [], []
         for le in range(e):
-            gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
-            dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
+            if w13_use is not None:
+                gu, dn = w13_use[le], w2_use[le]
+            else:
+                gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
+                dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
             gu_packs.append(sp.pack(gu, None if cn_gu is None else cn_gu[le]))
             dn_packs.append(sp.pack(dn, None if cn_dn is None else cn_dn[le]))
         layer._qb_gu = sp.stack(gu_packs)

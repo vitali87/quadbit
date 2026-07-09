@@ -1221,6 +1221,28 @@ def downstream(tag: str = "ds", moe: str = "dense", dense_layers: str = "", cali
     _downstream_impl(2, tag, moe, dense_layers, calib_file, limit, max_len)
 
 
+@app.function(gpu="RTX-PRO-6000:2", timeout=360 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def recon(tag: str = "rc", dense_layers: str = "", calib_file: str = "cal4", recon_io: str = "",
+          recon_layers: str = "", steps: int = 200, scale_only: bool = False, limit: int = 400,
+          max_len: int = 2048) -> None:
+    """A3 layerwise repair: QB_RECON trains the listed sparse MoE layers vs the dumped teacher I/O
+    during load, packs the repaired weights, then runs downstream eval on the repaired model in the
+    same job. Repaired weights persist to /cache/qb_reconw_{tag}_dev*.pt for later serving."""
+    import os
+
+    import moe_recon
+
+    moe_recon._selfcheck()  # fail fast on a trainer logic bug before the 8-min model load
+    os.environ["QB_RECON"] = "1"
+    os.environ["QB_RECON_IO"] = recon_io
+    os.environ["QB_RECON_LAYERS"] = recon_layers
+    os.environ["QB_RECON_STEPS"] = str(steps)
+    if scale_only:
+        os.environ["QB_RECON_SCALE_ONLY"] = "1"
+    _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len)
+
+
 @app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048, moe: str = "dense",
@@ -1238,7 +1260,8 @@ def calib(tag: str = "cal1", max_len: int = 2048, dump: bool = False) -> None:
 def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
          dense: str = "bf16", kv: str = "fp8", moe: str = "off",
          tag: str = "qm", dense_layers: str = "", probe_layers: str = "0,20,40",
-         calib_file: str = "", limit: int = 400) -> None:
+         calib_file: str = "", limit: int = 400, recon_io: str = "", recon_layers: str = "",
+         steps: int = 200, scale_only: bool = False) -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "versions":
@@ -1272,5 +1295,9 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         downstream.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
                           dense_layers=dense_layers, calib_file=calib_file, limit=limit,
                           max_len=max_len)
+    elif mode == "recon":
+        recon.remote(tag=tag, dense_layers=dense_layers, calib_file=(calib_file or "cal4"),
+                     recon_io=recon_io, recon_layers=recon_layers, steps=steps,
+                     scale_only=scale_only, limit=limit, max_len=max_len)
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
