@@ -712,11 +712,12 @@ def _install_moe() -> None:
             if _INSTR:
                 _ev_end("expert", se)
                 _CNT["expert_calls"] += 1
-                cnt = torch.bincount(assign, minlength=ee).float()
-                nz = cnt[cnt > 0]
-                if nz.numel():
-                    _IMB.append((cnt.max() / nz.mean()).item())
-                if _CNT["expert_calls"] % 200 == 0:
+                # sample imbalance sparsely: the .item() forces a sync, so avoid doing it every apply
+                if _CNT["expert_calls"] % 100 == 0:
+                    cnt = torch.bincount(assign, minlength=ee).float()
+                    nz = cnt[cnt > 0]
+                    if nz.numel():
+                        _IMB.append((cnt.max() / nz.mean()).item())
                     _flush_metrics()
             rw = valid.float() if on_input else (w_of[srcc] * valid.float())
             y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(x.dtype))
