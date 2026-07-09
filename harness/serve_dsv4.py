@@ -740,8 +740,9 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     # map: run MoE dense (coherent) so probe layers see HEALTHY activations; anchor-coherence tests
     # pass moe="sparse" + dense_layers to measure real generation quality under selective sparsity.
     os.environ["QB_MOE"] = moe
-    os.environ["QB_QMAP"] = "1"
-    os.environ["QB_QMAP_LAYERS"] = probe_layers
+    # probe_layers="none" -> pure coherence run (no map probe, no resident codes on sparse layers)
+    os.environ["QB_QMAP"] = "0" if probe_layers == "none" else "1"
+    os.environ["QB_QMAP_LAYERS"] = "" if probe_layers == "none" else probe_layers
     os.environ["QB_RUNTAG"] = tag
     os.environ["QB_DENSE_LAYERS"] = dense_layers
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
