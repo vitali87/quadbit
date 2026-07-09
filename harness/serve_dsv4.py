@@ -98,9 +98,19 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     mem = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                          capture_output=True, text=True).stdout.strip()
     print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
+    # audit the actual dense path taken (nvfp4 vs per-layer bf16 fallback) for honest labeling
+    try:
+        import qb_sm120_plugin as _p
+
+        print(f"  qb STATS (driver view): {_p.STATS}", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
     ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
-    print(f"# WS0 unblock {'PASS' if ok else 'FAIL'} "
-          f"(bf16 dense fallback + native NVFP4 MoE, graph={'eager' if eager else 'captured'})", flush=True)
+    label = {"bf16": "bf16 dense fallback", "nvfp4": "NVFP4 dense (mm_fp4 cutlass)",
+             "off": "native SM120 path"}.get(dense, dense)
+    print(f"# WS0/1 unblock {'PASS' if ok else 'FAIL'} dense={dense} "
+          f"({label} + native NVFP4 MoE + bf16 DSA indexer, "
+          f"graph={'eager' if eager else 'captured'})", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
