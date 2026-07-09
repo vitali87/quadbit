@@ -801,21 +801,17 @@ def _calib_impl(tp: int, tag: str, max_len: int) -> None:
     try:
         from datasets import load_dataset  # noqa: PLC0415
 
-        wt = load_dataset("wikitext", "wikitext-103-raw-v1", split="train", streaming=True)
+        ds = load_dataset("NeelNanda/pile-10k", split="train", streaming=True)
         extra: list[str] = []
-        buf = ""
-        for row in wt:
-            line = row["text"].strip()
-            if not line:
+        for row in ds:
+            txt = row["text"].strip()
+            if len(txt) < 400:
                 continue
-            buf += line + " "
-            if len(buf) > 1200:  # ~256 tokens/chunk
-                extra.append(buf)
-                buf = ""
-            if len(extra) >= 200:  # ~50k tokens -> ~1200 tok/expert avg
+            extra.append(txt[:1400])  # ~300 tokens/chunk
+            if len(extra) >= 300:  # ~90k tokens -> ~2000 routed tok/expert avg
                 break
         corpus = corpus + extra
-        print(f"  loaded {len(extra)} wikitext chunks", flush=True)
+        print(f"  loaded {len(extra)} pile chunks", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"  dataset load failed ({e}); using inline corpus only", flush=True)
 
