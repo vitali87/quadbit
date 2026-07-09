@@ -264,7 +264,8 @@ def _recon_io():
         import torch
 
         p = f"/cache/qb_reconio_{_RECON_IO}_dev{torch.cuda.current_device()}.pt"
-        _RECON_IO_LOADED = torch.load(p, map_location="cuda", weights_only=True)
+        # Keep teacher I/O on CPU (~3.8 GiB/rank); train_layer_lazy moves one layer's slice to GPU.
+        _RECON_IO_LOADED = torch.load(p, map_location="cpu", weights_only=True)
     return _RECON_IO_LOADED
 
 
@@ -274,7 +275,7 @@ def _recon_w():
         import torch
 
         p = f"/cache/qb_reconw_{_RECON_FILE}_dev{torch.cuda.current_device()}.pt"
-        _RECON_W_LOADED = torch.load(p, map_location="cuda", weights_only=True)
+        _RECON_W_LOADED = torch.load(p, map_location="cpu", weights_only=True)
     return _RECON_W_LOADED
 
 
@@ -291,32 +292,35 @@ def dump_recon_w():
 
 
 def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_gu, cn_dn):
-    # Return (w13_use[E,2I,H], w2_use[E,H,I]) repaired bf16 to pack, or (None, None) to pack the
-    # raw dequant. Serving reloads them; a repair run trains this layer now vs the dumped teacher.
-    import torch
-
+    # Return {le: (w13form[2I,H], w2form[H,I]) bf16 on CPU} for the REPAIRED routed experts only, or
+    # None to pack every expert from the raw dequant. Repairing per-expert (dequant one at a time)
+    # keeps peak GPU scratch to a single expert; stacking all E was ~13 GiB and OOM'd the full GPU.
     rw = _recon_w()
     if rw is not None and layer_idx in rw:
-        return rw[layer_idx]["w13"].to(w13.device), rw[layer_idx]["w2"].to(w13.device)
+        return rw[layer_idx]
     if not (_RECON and layer_idx in _RECON_LAYERS):
-        return None, None
+        return None
     io = _recon_io()
     if io is None or layer_idx not in io or cn_gu is None:
         print(f"[qb_sm120] recon skip layer {layer_idx}: io/calib missing", flush=True)
-        return None, None
+        return None
     import moe_recon
 
-    w13_dq = torch.stack([_dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
-                          for le in range(e)])
-    w2_dq = torch.stack([_dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]) for le in range(e)])
-    res = moe_recon.train_layer(io[layer_idx], w13_dq, w2_dq, cn_gu, cn_dn, inter=i,
-                                steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE)
-    _RECON_W[layer_idx] = {"w13": res["w13"].to(torch.bfloat16).cpu(),
-                           "w2": res["w2"].to(torch.bfloat16).cpu()}
+    dev = w13.device
+
+    def get_expert(le):
+        wg = _dequant_nvfp4_expert(w13[le, :i], w13s[le, :i], w13s2[le, 0])
+        wu = _dequant_nvfp4_expert(w13[le, i:], w13s[le, i:], w13s2[le, 0])
+        wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
+        return wg, wu, wd
+
+    res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
+                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE)
+    _RECON_W[layer_idx] = res["repaired"]
     dump_recon_w()
     print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
           f"steps={_RECON_STEPS} scale={int(_RECON_SCALE)}", flush=True)
-    return res["w13"].to(w13.device), res["w2"].to(w13.device)
+    return res["repaired"]
 
 
 def _ev_start():
@@ -994,13 +998,14 @@ def _install_moe() -> None:
         cn_dn = cal["dn"][layer_idx] if cal and layer_idx in cal["dn"] else None
         if first and cn_gu is not None:
             print(f"[qb_sm120] A2 Wanda masks from calib for layer {layer_idx}", flush=True)
-        # A3 recon: repaired weights for this layer, either reloaded (serving) or trained now (repair).
-        w13_use, w2_use = _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2,
-                                         cn_gu, cn_dn)
+        # A3 recon: {le: (w13form, w2form)} for repaired experts (reloaded serving or trained now);
+        # un-repaired experts fall through to the raw dequant below.
+        repaired = _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2,
+                                  cn_gu, cn_dn)
         gu_packs, dn_packs = [], []
         for le in range(e):
-            if w13_use is not None:
-                gu, dn = w13_use[le], w2_use[le]
+            if repaired is not None and le in repaired:
+                gu, dn = repaired[le][0].to(w13.device), repaired[le][1].to(w13.device)
             else:
                 gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
                 dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])

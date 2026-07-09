@@ -1,0 +1,4 @@
+Metadata-Version: 2.4
+Name: qb-sm120-plugin
+Version: 0.7.2
+Summary: vLLM general plugin: SM120-safe replacement for block-FP8 (ue8m0) dense/attention GEMMs

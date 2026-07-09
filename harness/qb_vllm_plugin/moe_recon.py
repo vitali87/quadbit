@@ -221,6 +221,47 @@ def train_layer(
     }
 
 
+def train_layer_lazy(
+    io: dict,
+    get_expert,
+    cgu: torch.Tensor,
+    cdn: torch.Tensor,
+    inter: int,
+    dev: torch.device,
+    steps: int = 400,
+    lr: float = 1e-3,
+    scale_only: bool = False,
+) -> dict:
+    """Memory-lean train_layer: dequant ONE expert at a time via get_expert(le)->(wg,wu,wd) on
+    `dev`, so peak GPU scratch is a single expert (not the whole [E,...] bf16 stack, which is
+    ~13 GiB and OOMs the near-full serving GPU). Returns only the repaired routed experts as
+    {le: (w13form[2I,H], w2form[H,I]) bf16 on CPU}; caller dense-dequants the rest at pack time."""
+    x_all, tid = io["x"].to(dev), io["tid"].to(dev)
+    tok = torch.arange(x_all.shape[0], device=dev).repeat_interleave(tid.shape[1])
+    flat = tid.reshape(-1).long()
+    repaired, traces = {}, {}
+    for le in torch.unique(flat).tolist():
+        if le < 0:
+            continue
+        rows = tok[flat == le]
+        if rows.numel() < 8:
+            continue
+        wg, wu, wd = get_expert(le)
+        r = train_expert(x_all[rows], wg, wu, wd, cgu[le], cdn[le], steps, lr, scale_only)
+        repaired[le] = (
+            torch.cat([r["wg"], r["wu"]], 0).to(torch.bfloat16).cpu(),
+            r["wd"].to(torch.bfloat16).cpu(),
+        )
+        traces[le] = r["trace"][-1] if r["trace"] else None
+        del wg, wu, wd, r
+    rels = [t[1] for t in traces.values() if t]
+    return {
+        "repaired": repaired,
+        "n_experts": len(traces),
+        "rel_mean": round(sum(rels) / len(rels), 4) if rels else -1.0,
+    }
+
+
 def _selfcheck() -> None:
     # tiny CPU check: served_weight is 2:4 (half the pairs zero), STE keeps the forward value + a
     # gradient, and a per-expert fit drives the dense-match relative error down.
@@ -257,8 +298,32 @@ def _selfcheck() -> None:
     )["trace"]
     l0, l1 = tr[0][2], tr[-1][2]
     assert l1 < l0, f"training loss did not decrease: {l0} -> {l1}"
+
+    # Lazy layer path (the memory-lean plumbing used in-model): get_expert dequants one expert at a
+    # time; every routed expert (>=8 rows) comes back as (w13form[2I,H], w2form[H,I]) on CPU.
+    ne = 4
+    w13l = torch.randn(ne, 2 * inter, h) * 0.05
+    w2l = torch.randn(ne, h, inter) * 0.05
+    tid = torch.randint(0, ne, (n, 2))
+    io = {"x": x, "tid": tid}
+    lz = train_layer_lazy(
+        io,
+        lambda le: (w13l[le, :inter], w13l[le, inter:], w2l[le]),
+        x.new_ones(ne, h),
+        x.new_ones(ne, inter),
+        inter,
+        x.device,
+        steps=20,
+        lr=5e-4,
+    )
+    assert lz["n_experts"] > 0, "lazy path repaired no experts"
+    le0 = next(iter(lz["repaired"]))
+    w13f, w2f = lz["repaired"][le0]
+    assert w13f.shape == (2 * inter, h) and w2f.shape == (h, inter), f"bad shapes {w13f.shape}"
+    assert w13f.is_cpu and w2f.is_cpu, "repaired weights must be on CPU"
     print(
-        f"selfcheck OK: 2:4 kept={nz:.3f}, loss {l0:.5f}->{l1:.5f}, rel {tr[0][1]:.3f}->{tr[-1][1]:.3f}"
+        f"selfcheck OK: 2:4 kept={nz:.3f}, loss {l0:.5f}->{l1:.5f}, "
+        f"rel {tr[0][1]:.3f}->{tr[-1][1]:.3f}, lazy {lz['n_experts']}exp rel={lz['rel_mean']}"
     )
 
 
