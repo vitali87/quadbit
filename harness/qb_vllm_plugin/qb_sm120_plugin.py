@@ -466,4 +466,10 @@ def _install_moe() -> None:
 
     ModelOptNvFp4FusedMoE.process_weights_after_loading = patched_moe_pw
     ModelOptNvFp4FusedMoE.apply = patched_moe_apply
+    # We skip the native modular-kernel build (moe_kernel=None), which flips supports_internal_mk to
+    # False so MoERunner.maybe_init_modular_kernel would call maybe_make_prepare_finalize (which the
+    # class raises in). Return None instead: no prepare/finalize -> no FusedMoEModularMethod wrapping
+    # -> the runner keeps our patched quant_method.apply as the expert path.
+    ModelOptNvFp4FusedMoE.maybe_make_prepare_finalize = (
+        lambda self, routing_tables=None: None)
     print(f"[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE={qb_moe}) pid={os.getpid()}", flush=True)

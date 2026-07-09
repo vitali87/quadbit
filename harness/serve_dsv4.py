@@ -452,21 +452,23 @@ def dumpsrc() -> None:
 
     import subprocess as _sp
 
-    mo = base / "model_executor/layers/quantization/modelopt.py"
-    text = mo.read_text().splitlines()
-    # locate the class + its key methods, then print each method body
-    r = _sp.run(["grep", "-n", r"class ModelOptNvFp4FusedMoE\|    def create_weights\|    def apply\|"
-                 r"    def process_weights_after_loading\|    def __init__\|    def get_fused_moe_quant_config",
-                 str(mo)], capture_output=True, text=True)
-    print(f"\n### ModelOptNvFp4FusedMoE method index ###\n{r.stdout}", flush=True)
-    # print the class span (find class start, then next 'class ' at col 0)
-    starts = [i for i, ln in enumerate(text) if ln.startswith("class ModelOptNvFp4FusedMoE")]
-    if starts:
-        s = starts[0]
-        end = next((i for i in range(s + 1, len(text)) if text[i].startswith("class ")), len(text))
-        print(f"\n### ModelOptNvFp4FusedMoE [{s + 1}-{end}] ###", flush=True)
-        for i in range(s, min(end, s + 340)):
+    mr = base / "model_executor/layers/fused_moe/runner/moe_runner.py"
+    text = mr.read_text().splitlines()
+    r = _sp.run(["grep", "-n", r"def maybe_init_modular_kernel\|def apply\|def forward\|"
+                 r"self.fused_experts\|self.modular\|prepare_finalize\|def run\|self.moe_runner",
+                 str(mr)], capture_output=True, text=True)
+    print(f"\n### moe_runner.py index ###\n{r.stdout}", flush=True)
+    # show maybe_init_modular_kernel body
+    starts = [i for i, ln in enumerate(text) if "def maybe_init_modular_kernel" in ln]
+    for s in starts:
+        print(f"\n### maybe_init_modular_kernel [{s + 1}] ###", flush=True)
+        for i in range(s, min(len(text), s + 55)):
             print(f"{i + 1:4} {text[i]}", flush=True)
+    # how does the FusedMoE layer call apply? grep layer.py for quant_method.apply / moe_runner
+    lp = base / "model_executor/layers/fused_moe/layer.py"
+    r2 = _sp.run(["grep", "-n", r"quant_method.apply\|moe_runner\|\.run(\|maybe_init_modular\|def forward",
+                  str(lp)], capture_output=True, text=True)
+    print(f"\n### layer.py dispatch refs ###\n{r2.stdout[:2000]}", flush=True)
     return  # MoE recon only this run
 
     show_range2("flashinfer_sparse.py _forward_prefill call", base
