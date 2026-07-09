@@ -777,6 +777,28 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     for p, o in zip(prompts, outs, strict=False):
         print(f"  [{p!r}] -> {o.outputs[0].text!r}", flush=True)
 
+    # --- PPL: teacher-forced perplexity over a fixed held-out passage (quantifies the tax) ---
+    passage = (
+        "The mitochondria is the powerhouse of the cell. Photosynthesis converts sunlight, water, "
+        "and carbon dioxide into glucose and oxygen. The Earth orbits the Sun once every year, and "
+        "the Moon orbits the Earth roughly every twenty-eight days. Water boils at one hundred "
+        "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
+        "through arteries and veins, delivering oxygen to every tissue in the body. Shakespeare "
+        "wrote many famous plays, including Hamlet, Macbeth, and Romeo and Juliet. The speed of "
+        "light in a vacuum is approximately three hundred thousand kilometres per second.")
+    pids = llm.get_tokenizer().encode(passage)
+    pout = llm.generate([{"prompt_token_ids": pids}],
+                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+    plp = pout[0].prompt_logprobs or []
+    nlls = []
+    for tid, d in zip(pids[1:], plp[1:], strict=False):
+        if d and tid in d and math.isfinite(d[tid].logprob):
+            nlls.append(-d[tid].logprob)
+    ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
+    print(f"# PPL over {len(nlls)}-token held-out passage: {ppl:.3f} "
+          f"(mean NLL {sum(nlls) / len(nlls):.4f} nats)" if nlls else "# PPL: no valid logprobs",
+          flush=True)
+
     # aggregate the real-activation map flushed by every worker
     rows = []
     for mf in sorted(glob.glob(f"/cache/qb_metrics_{tag}_dev*.json")):
