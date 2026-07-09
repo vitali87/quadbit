@@ -1,0 +1,6 @@
+config,dense_anchors,sparse_layers,total_moe_layers,pct_moe_sparse,mask,calib_tokens,ppl_112tok,coherent
+dense,43,0,43,0,none,0,3.537,yes
+anchor_first22,22,21,43,49,wanda_cal4,85907,3.829,yes
+anchor_first11,11,32,43,74,wanda_cal4,85907,5.340,yes
+all_sparse_wanda,0,43,43,100,wanda_cal4,85907,6.881,yes
+all_sparse_magnitude,0,43,43,100,magnitude,0,7.151,partial

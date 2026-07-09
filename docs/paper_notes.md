@@ -640,3 +640,20 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
 - In-situ per-layer tax cos(sparse expert, dense NVFP4 expert) on served weights: 4-GPU clean median 0.69 (p10 0.68, p90 0.70, min 0.679, max 0.842); 2-GPU shows the same ~0.69 mode plus a spurious near-zero cluster (degenerate reference rows on the TP=2 shard, probe artifact, not scrubbed). Real per-layer tax ~0.69 is WORSE than the 0.879 synthetic estimate; 0.69^43 ~ 1e-7 => total collapse. The measured tax fully explains (over-explains) the incoherent generation; no serving/plumbing bug involved.
 - P=8192 not feasible on the current sparse path: the long chunked prefill kills the vLLM V1 EngineCore with `KeyError` in `scheduler.update_from_output` (request-bookkeeping). All other configs pass; this is the exact next blocker for long-context sparse serving.
 - Conclusion: sparse-FP4 experts serve end-to-end and are memory/throughput-measurable; does NOT scale 2->4 GPU for speed (comm-bound on PCIe, no NVLink), only for KV capacity; quality tax explained; next blockers = (1) CUDA-graph-capturable sparse path for decode speed, (2) chunked-prefill engine crash at long context, (3) training-free quality tax (QAT/selective-layer).
+
+## WS-A training-free MoE quality rescue (2026-07-09, branch `feat/moe-quality-rescue`)
+- Question: can DeepSeek-V4-Flash sparse-FP4 MoE become coherent WITHOUT weight training, using routed activations + activation-aware 2:4 masks (not magnitude, not structural placement alone)? Answer: YES.
+- **Root cause of the all-sparse collapse was NUMERICAL, not the sparse tax.** Two-level act-quant sets global scale g=rowamax/2688; once any hidden value drifts to inf over the sparse stack, g=inf -> mma epilogue g-rescale -> NaN -> cascades through the residual (enc_ue4m3 is itself nan-safe). Fix = `_sanitize()` bounds every sparse-block tensor to finite [-1e4,1e4] per layer (preventive; QB_SANITIZE=1). This alone turned all-sparse from gibberish/inf-PPL into coherent PPL 7.151 (dense 3.537).
+- A0 finding that reframes everything: per-EXPERT sparse-vs-dense cos is near-orthogonal at depth (median 0.02 @L20/L40) BUT per-LAYER BLOCK cos (weighted top-6 combine vs dense) is 0.89-0.99 and RISES with depth. The MoE combine CANCELS per-expert error -> the dense-Llama "hybrid-sparse is negative" prior does NOT transfer (MoE has error cancellation a dense model lacks).
+- A2 masks: calibrate per-expert/per-projection ||X_col|| (Hessian diagonal) from a DENSE (coherent) forward over NeelNanda/pile-10k (~86k tok, ~2000 routed tok/expert; thin ~840-tok calib gives noise and LOSES to magnitude — calibration density is decisive). Wanda 2:4 mask = topk-2-of-4 on |W|*||X_col||. Repacks into the existing sparse-FP4 kernel layout, graph-capturable path preserved.
+- **Quality/coverage Pareto (112-tok teacher-forced PPL, early-layer dense anchoring since block cos is worst at shallow layers):**
+  | MoE sparse | dense anchors | sparse layers | PPL | vs dense |
+  |---|---|---|---|---|
+  | 0% (dense) | 43 | 0 | 3.537 | -- |
+  | 49% | first-22 | 21/43 | 3.829 | +0.29 (+8%) |
+  | 74% | first-11 | 32/43 | 5.340 | +1.80 |
+  | 100% (Wanda) | 0 | 43/43 | 6.881 | +3.34 |
+  | 100% (magnitude) | 0 | 43/43 | 7.151 | +3.61 |
+- **Headline: training-free ~dense quality (PPL 3.83 vs 3.54) at 49% of MoE layers 2:4-sparse-FP4; fully coherent to 74% (5.34).** Recipe = NaN guardrail + Wanda routed masks (dense calib) + first-N dense anchoring. Zero NaN at every budget.
+- HONESTY CAVEAT: this is PPL + generation-coherence, NOT downstream benchmarks. The prior single-dense-model lesson ("PPL tax repaired, ARC-C/HellaSwag not") means downstream capability of the DeepSeek MoE budgets is UNMEASURED here; do not claim capability recovery from PPL alone. Serving perf is mask-independent (same seg kernel/FLOPs) = WS3 numbers; budget points marginally faster (more native-NVFP4 anchor layers).
+- A3 (short distillation on the Wanda mask) would push 100%-sparse toward dense; gated on user. A3's weight adaptation subsumes static SparseGPT weight-compensation, so full-Hessian SparseGPT-proper was not built as a pre-A3 step (Wanda is a good-enough base mask).
