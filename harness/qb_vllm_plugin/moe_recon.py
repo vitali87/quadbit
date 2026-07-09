@@ -113,9 +113,10 @@ def _sparse_expert(
     cdn: torch.Tensor,
 ) -> torch.Tensor:
     # student: fakequant activations + served (2:4-FP4) weights, mirroring the seg-kernel operator.
-    xq = fq_act(x.to(torch.bfloat16))
+    # Matmuls run in float32 (served_weight is float32 via its STE); fq_act quantizes in bf16 then casts.
+    xq = fq_act(x.to(torch.bfloat16)).float()
     gu = F.silu(xq @ served_weight(wg, cgu).t()) * (xq @ served_weight(wu, cgu).t())
-    return fq_act(gu.to(torch.bfloat16)) @ served_weight(wd, cdn).t()
+    return fq_act(gu.to(torch.bfloat16)).float() @ served_weight(wd, cdn).t()
 
 
 def train_expert(
