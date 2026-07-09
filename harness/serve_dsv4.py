@@ -179,11 +179,13 @@ def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
     from vllm import LLM
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ.setdefault("QB_DENSE", "bf16")  # qb_sm120 plugin (bf16 dense) makes SM120 init work
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
     llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
-              hf_overrides={"rope_scaling": rope}, tokenizer_mode="deepseek_v4")
+              max_model_len=max_len, gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max_len, hf_overrides={"rope_scaling": rope},
+              tokenizer_mode="deepseek_v4")
     m = llm.llm_engine.model_executor.driver_worker.model_runner.model
     shown = 0
     for name, mod in m.named_modules():
