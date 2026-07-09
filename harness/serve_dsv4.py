@@ -734,7 +734,9 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     from vllm import LLM, SamplingParams
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
-    os.environ["QB_DENSE"] = "bf16"
+    # nvfp4 dense/attention (WS1: coherent on SM120) is ~3x smaller than the bf16 fallback, which
+    # otherwise leaves zero KV headroom once probe-layer sparse codes are also resident -> OOM.
+    os.environ["QB_DENSE"] = "nvfp4"
     # map: run MoE dense (coherent) so probe layers see HEALTHY activations; anchor-coherence tests
     # pass moe="sparse" + dense_layers to measure real generation quality under selective sparsity.
     os.environ["QB_MOE"] = moe
