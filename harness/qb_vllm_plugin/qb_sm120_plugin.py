@@ -243,12 +243,13 @@ def _run_tax_probe(layer, sp, i, e, layer_idx):
         _TAX_COS.append({"layer": layer_idx, "expert": le, "cos": c})
 
 
-def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y_sparse, on_input):
-    # A0 real-routed-activation quality map. On a probe layer (NVFP4 kept resident), rebuild BOTH the
-    # dense NVFP4 block output and the per-expert sparse/dense outputs on the SAME real routed rows,
-    # then record: per-layer *block* cosine (the number that governs coherence when compounded over
-    # 43 layers) + per-expert cos, route frequency, mean route weight, and dense contribution norm
-    # (route-weighted). Real activations, not the random ones _run_tax_probe uses.
+def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, on_input):
+    # A0 real-routed-activation quality map. Self-contained: on a probe layer (both NVFP4 AND packed
+    # sparse codes resident), run the SAME real routed rows through BOTH the dense NVFP4 operator and
+    # the quadbit 2:4-sparse-FP4 operator, IN ISOLATION, and record per-layer *block* cosine (the
+    # per-layer tax that governs coherence when compounded) + per-expert cos, route freq, mean route
+    # weight, dense contribution norm. Run under a DENSE (coherent) forward so `x` is a HEALTHY
+    # activation, not the garbage an already-collapsed all-sparse model produces at deep layers.
     import torch
     import torch.nn.functional as F
 
@@ -259,8 +260,8 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y_sparse, on_input):
 
     w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
     w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
-    if w13.numel() == 0:  # NVFP4 was freed (not actually a probe layer) -- nothing to compare
-        return
+    if w13.numel() == 0 or getattr(layer, "_qb_gu", None) is None:
+        return  # need both representations resident to compare
     t, h = x.shape
     ii = layer._qb_i
     topk = topk_ids.shape[1]
@@ -268,6 +269,7 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y_sparse, on_input):
     flat_w = topk_weights.reshape(-1).to(torch.float32)
     tok = torch.arange(t, device=x.device).repeat_interleave(topk)
     y_dense = torch.zeros(t, h, dtype=torch.float32, device=x.device)
+    y_sparse = torch.zeros(t, h, dtype=torch.float32, device=x.device)
     for le in torch.unique(flat_ids).tolist():
         if le < 0:
             continue
@@ -285,7 +287,7 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y_sparse, on_input):
         oe_d = (F.silu(xf @ wg.t()) * (xf @ wu.t())) @ wd.t()
         # quadbit 2:4-sparse-FP4 operator on the same rows. The seg kernel tiles N in _BN-row blocks
         # and reads one expert id per block from eblk, so rows MUST be padded up to a _BN multiple
-        # (with a matching all-`le` eblk); otherwise blocks past the first read OOB -> NaN.
+        # (matching all-`le` eblk); otherwise blocks past the first read OOB -> NaN.
         n = xe.shape[0]
         npad = ((n + _BN - 1) // _BN) * _BN
         xep = F.pad(xe, (0, 0, 0, npad - n)) if npad != n else xe
@@ -295,12 +297,15 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y_sparse, on_input):
         hh_s = (F.silu(gu_s[:, :ii].float()) * gu_s[:, ii:].float()).to(torch.bfloat16)
         oe_s = sp.seg_gemm(hh_s, layer._qb_dn, h, ii, eblk)[:n].float()
         c = F.cosine_similarity(oe_s.flatten(), oe_d.flatten(), dim=0).item()
-        contrib = oe_d if on_input else oe_d * ws[:, None]
+        wcol = ws[:, None]
+        cd = oe_d if on_input else oe_d * wcol
+        cs = oe_s if on_input else oe_s * wcol
         _QMAP_ROWS.append({"layer": li, "expert": int(le), "cos": round(c, 5),
                            "freq": int(rows.numel()), "mean_w": round(ws.mean().item(), 5),
-                           "contrib_norm": round(contrib.norm().item(), 4)})
-        y_dense.index_add_(0, rows, (contrib if on_input else oe_d * ws[:, None]))
-    block_c = F.cosine_similarity(y_sparse.float().flatten(), y_dense.flatten(), dim=0).item()
+                           "contrib_norm": round(cd.norm().item(), 4)})
+        y_dense.index_add_(0, rows, cd)
+        y_sparse.index_add_(0, rows, cs)
+    block_c = F.cosine_similarity(y_sparse.flatten(), y_dense.flatten(), dim=0).item()
     _QMAP_ROWS.append({"layer": li, "expert": -1, "block_cos": round(block_c, 5)})
     _flush_metrics()
 
@@ -716,65 +721,59 @@ def _install_moe() -> None:
                   f"w13={tuple(layer.w13_weight.shape)} w2={tuple(layer.w2_weight.shape)} "
                   f"I={i} experts={layer.w13_weight.shape[0]} "
                   f"emap={'y' if getattr(layer, 'expert_map', None) is not None else 'n'}", flush=True)
-        if qb_moe == "sparse":
-            global _PW_IDX
-            layer_idx = _PW_IDX
-            _PW_IDX += 1
-            layer._qb_layer_idx = layer_idx
-            # A1 policy #1: dense-anchor layers keep raw NVFP4 and skip packing entirely. apply then
-            # falls through to the per-expert dense NVFP4 path (cos=1.0 vs native, breaks the
-            # per-layer tax compounding at these layers). Costs NVFP4 residency (~1.7GB/layer/rank).
-            if layer_idx in _DENSE_LAYERS:
-                layer._qb_dense_anchor = True
-                if first:
-                    print(f"[qb_sm120] dense-anchor layer {layer_idx}: kept NVFP4 (no packing)",
-                          flush=True)
-                return None
-            # A0 map: on probe layers keep NVFP4 resident so apply can build the dense reference on
-            # the SAME real routed rows; these layers do NOT free NVFP4.
-            is_probe = _QMAP and (layer_idx % _TAX_LAYERS == 0)
-            # Pack each NVFP4 expert -> bf16 -> quadbit 2:4-sparse-FP4 codes at load. gate+up = the
-            # full w13[e] [2I,H]; down = w2[e] [H,I]. NVFP4 stays resident (dequant is transient,
-            # one expert at a time); the packed codes (~1GB/rank) live alongside for apply.
-            sp = _load_sparse_moe()
-            e = layer.w13_weight.shape[0]
-            w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
-            w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
-            gu_packs, dn_packs = [], []
-            for le in range(e):
-                gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
-                dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
-                gu_packs.append(sp.pack(gu))
-                dn_packs.append(sp.pack(dn))
-            layer._qb_gu = sp.stack(gu_packs)
-            layer._qb_dn = sp.stack(dn_packs)
-            layer._qb_i = i
-            layer._qb_e = e
-            del gu_packs, dn_packs
-            # in-situ per-layer tax probe on sampled layers -- MUST run before freeing NVFP4
-            if _TAX and (layer_idx % _TAX_LAYERS == 0):
-                _run_tax_probe(layer, sp, i, e, layer_idx)
-                _flush_metrics()
-            if is_probe:
-                layer._qb_probe = True
-                if first:
-                    print(f"[qb_sm120] qmap probe layer {layer_idx}: kept NVFP4 for real-activation "
-                          "dense reference", flush=True)
-            else:
-                # Free this layer's raw NVFP4 experts now that they are packed: sparse codes
-                # (~1.15GB) are smaller than the NVFP4 experts (~1.7GB) per layer, so freeing keeps
-                # peak memory at the already-working dense load (~84GB) and it drops as packing
-                # proceeds. Without this the codes accumulate ON TOP of NVFP4 across 43 layers -> OOM.
-                for attr in ("w13_weight", "w13_weight_scale", "w13_weight_scale_2",
-                             "w2_weight", "w2_weight_scale", "w2_weight_scale_2"):
-                    p = getattr(layer, attr, None)
-                    if p is not None:
-                        p.data = torch.empty(0, dtype=p.dtype, device=p.device)
-                torch.cuda.empty_cache()
+        global _PW_IDX
+        layer_idx = _PW_IDX
+        _PW_IDX += 1
+        layer._qb_layer_idx = layer_idx
+        # A0 map: probe layers keep BOTH NVFP4 and packed codes so apply can compare the two operators
+        # on the SAME real routed rows. Run the map under QB_MOE=dense so `x` is a HEALTHY activation.
+        is_probe = _QMAP and (layer_idx % _TAX_LAYERS == 0)
+        # A1 policy #1: dense-anchor layers stay NVFP4-dense (apply falls through to the per-expert
+        # dense path, cos=1.0 vs native -> breaks the per-layer tax compounding at these layers).
+        is_anchor = qb_moe == "sparse" and layer_idx in _DENSE_LAYERS
+        # Pack quadbit 2:4-sparse-FP4 codes when this layer will actually run sparse (sparse mode,
+        # non-anchor) OR when it is a probe layer (needs the sparse operator for the comparison).
+        do_pack = (qb_moe == "sparse" and not is_anchor) or is_probe
+        if is_anchor:
+            layer._qb_dense_anchor = True
             if first:
-                print(f"[qb_sm120] sparse-packed {e} experts: gu codes "
-                      f"{layer._qb_gu[0].shape} dn codes {layer._qb_dn[0].shape}; freed NVFP4",
-                      flush=True)
+                print(f"[qb_sm120] dense-anchor layer {layer_idx}: kept NVFP4 (no packing)", flush=True)
+            return None
+        if not do_pack:
+            return None  # dense mode, non-probe layer: raw NVFP4, dense apply path
+
+        sp = _load_sparse_moe()
+        e = layer.w13_weight.shape[0]
+        w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
+        w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
+        gu_packs, dn_packs = [], []
+        for le in range(e):
+            gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
+            dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
+            gu_packs.append(sp.pack(gu))
+            dn_packs.append(sp.pack(dn))
+        layer._qb_gu = sp.stack(gu_packs)
+        layer._qb_dn = sp.stack(dn_packs)
+        layer._qb_i = i
+        layer._qb_e = e
+        del gu_packs, dn_packs
+        if _TAX and (layer_idx % _TAX_LAYERS == 0):
+            _run_tax_probe(layer, sp, i, e, layer_idx)
+            _flush_metrics()
+        if is_probe:
+            layer._qb_probe = True
+            if first:
+                print(f"[qb_sm120] qmap probe layer {layer_idx}: kept NVFP4 + codes for "
+                      "healthy-activation comparison", flush=True)
+        else:
+            # Free raw NVFP4 now that codes are packed (sparse mode, non-probe): codes (~1.15GB) are
+            # smaller than NVFP4 (~1.7GB)/layer, so peak stays at the proven dense load and drops.
+            for attr in ("w13_weight", "w13_weight_scale", "w13_weight_scale_2",
+                         "w2_weight", "w2_weight_scale", "w2_weight_scale_2"):
+                p = getattr(layer, attr, None)
+                if p is not None:
+                    p.data = torch.empty(0, dtype=p.dtype, device=p.device)
+            torch.cuda.empty_cache()
         return None
 
     def patched_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
@@ -817,7 +816,7 @@ def _install_moe() -> None:
             y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(x.dtype))
             STATS["sparse_expert_calls"] += int(valid.sum().item())
             if _QMAP and getattr(layer, "_qb_probe", False):
-                _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, y, on_input)
+                _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, on_input)
             if shared_experts is not None and shared_experts_input is not None:
                 shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
             return y
@@ -848,6 +847,10 @@ def _install_moe() -> None:
                 oe = oe * ws[:, None]
             y.index_add_(0, rows, oe.to(x.dtype))
             STATS["sparse_expert_calls"] += 1
+        # A0 map: this dense (coherent) forward feeds HEALTHY activations; on probe layers measure
+        # the sparse operator against the dense one here (after the real dense y is produced).
+        if _QMAP and getattr(layer, "_qb_probe", False):
+            _run_qmap_probe(layer, _load_sparse_moe(), x, topk_ids, topk_weights, on_input)
         # The MoERunner owns shared-expert execution: it calls shared_experts with NO_OVERLAP
         # (before) and MULTI_STREAM_OVERLAPPED (after) itself, then reads shared_experts.output
         # and combines it with our fused_out. We only fire the MK_INTERNAL_OVERLAPPED slot the

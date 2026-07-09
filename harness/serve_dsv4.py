@@ -715,7 +715,7 @@ def sweep4(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
     _sweep_impl(4, "tp4", _SWEEP_MATRIX, instr, tax, max_len)
 
 
-def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int) -> None:
+def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "dense") -> None:
     """WORKSTREAM A0+A1#1: real-routed-activation quality map + dense-anchor-layer policy.
     Loads DeepSeek-V4-Flash-NVFP4 with QB_MOE=sparse, keeps NVFP4 resident on probe layers (and on
     dense-anchor layers), runs coherence prompts, and records per-layer *block* cosine + per-expert
@@ -734,7 +734,9 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int) -> None:
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ["QB_DENSE"] = "bf16"
-    os.environ["QB_MOE"] = "sparse"
+    # map: run MoE dense (coherent) so probe layers see HEALTHY activations; anchor-coherence tests
+    # pass moe="sparse" + dense_layers to measure real generation quality under selective sparsity.
+    os.environ["QB_MOE"] = moe
     os.environ["QB_QMAP"] = "1"
     os.environ["QB_RUNTAG"] = tag
     os.environ["QB_DENSE_LAYERS"] = dense_layers
@@ -827,8 +829,8 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int) -> None:
 
 @app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048) -> None:
-    _qmap_impl(2, tag, dense_layers, max_len)
+def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048, moe: str = "dense") -> None:
+    _qmap_impl(2, tag, dense_layers, max_len, moe)
 
 
 @app.local_entrypoint()
@@ -857,6 +859,7 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
     elif mode == "sweep4":
         sweep4.remote()
     elif mode == "qmap":
-        qmap.remote(tag=tag, dense_layers=dense_layers, max_len=max_len)
+        qmap.remote(tag=tag, dense_layers=dense_layers, max_len=max_len,
+                    moe=(moe if moe != "off" else "dense"))
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
