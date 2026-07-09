@@ -25,7 +25,7 @@ image = (
     .env({"PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
           "HF_XET_HIGH_PERFORMANCE": "1"})
-    .pip_install("vllm", "huggingface_hub")
+    .pip_install("vllm", "huggingface_hub", "datasets")
     # vLLM 0.24.0's deepseek_v4 sparse-MLA path calls flashinfer's newer
     # trtllm_batch_decode_sparse_mla_dsv4(swa_topk_lens=..., extra_sparse_indices=...) API, but
     # 0.24.0 exact-pins flashinfer 0.6.12 (older sparse_topk_lens/seq_lens sig -> TypeError). Force
@@ -795,6 +795,30 @@ def _calib_impl(tp: int, tag: str, max_len: int) -> None:
         "Latin, the language of Rome, evolved into the Romance languages and contributed an enormous "
         "vocabulary to English, science, and law.",
     ]
+    # Dense expert coverage needs many tokens per routed expert (256 experts, top-6): the 12
+    # inline paragraphs (~840 tok) give ~3 tok/expert -> colnorm is noise. Pull real diverse text
+    # so per-expert routing stats stabilise. wikitext (prose) + a code slice for domain spread.
+    try:
+        from datasets import load_dataset  # noqa: PLC0415
+
+        wt = load_dataset("wikitext", "wikitext-103-raw-v1", split="train", streaming=True)
+        extra: list[str] = []
+        buf = ""
+        for row in wt:
+            line = row["text"].strip()
+            if not line:
+                continue
+            buf += line + " "
+            if len(buf) > 1200:  # ~256 tokens/chunk
+                extra.append(buf)
+                buf = ""
+            if len(extra) >= 200:  # ~50k tokens -> ~1200 tok/expert avg
+                break
+        corpus = corpus + extra
+        print(f"  loaded {len(extra)} wikitext chunks", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"  dataset load failed ({e}); using inline corpus only", flush=True)
+
     ids = [{"prompt_token_ids": tok.encode(c)} for c in corpus]
     ntok = sum(len(d["prompt_token_ids"]) for d in ids)
     print(f"  calibrating over {len(corpus)} chunks / {ntok} tokens (dense forwards)...", flush=True)
