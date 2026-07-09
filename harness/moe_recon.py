@@ -6,7 +6,7 @@ anchor sweep). Wanda only picks *which* 2-of-4 survive; it never *updates* them.
 
 Per sparse layer we have the DENSE (teacher) forward's MoE-block input x, routing, and output y
 (dumped by the plugin). We rebuild each expert's surviving 2:4-FP4 weights so the sparse block out
-matches teacher y, one layer at a time (no global backward, no teacher co-residency -> fits hardware).
+matches teacher y, one layer at a time (no global backward, no teacher co-residency).
 
 Faithfulness trick: the differentiable "served weight" is the REAL serving quantizer (2:4 pick +
 two-level NVFP4) wrapped in a straight-through estimator, so train==serve numerically. Dropped
