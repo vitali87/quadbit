@@ -235,7 +235,7 @@ def _selfcheck() -> None:
     assert wp.grad is not None and wp.grad.abs().sum() > 0, "STE broke the gradient"
 
     # single expert: teacher = dense; fit sparse to match, expect the relative error to fall.
-    # (served_weight needs in_f % 128 == 0 -> h and inter both multiples of 128, as in the real model)
+    # (served_weight needs in_f % 128 == 0 -> h, inter both multiples of 128, as in the model)
     h, inter, n = 256, 128, 512
     w13 = torch.randn(2, 2 * inter, h) * 0.05
     w2 = torch.randn(2, h, inter) * 0.05
