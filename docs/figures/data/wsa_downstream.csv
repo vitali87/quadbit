@@ -1,0 +1,6 @@
+policy,pct_moe_sparse,mask,dense_anchors,ppl,arc_c_accnorm,hellaswag_accnorm,winogrande_acc,mmlu_subset_acc,avg_primary,delta_vs_dense
+dense,0,none,43,3.537,0.6500,0.7075,0.7675,0.8280,0.7383,0.0
+a2_49,49,wanda_cal4,first-22,3.754,0.6075,0.6600,0.7350,0.7840,0.6966,-0.0417
+a2_74,74,wanda_cal4,first-11,5.394,0.5400,0.6275,0.7150,0.6160,0.6246,-0.1137
+a2_100_wanda,100,wanda_cal4,none,6.887,0.4125,0.5475,0.6550,0.4220,0.5092,-0.2291
+magnitude_100,100,magnitude,none,7.722,0.4225,0.5725,0.6275,0.4160,0.5096,-0.2287
