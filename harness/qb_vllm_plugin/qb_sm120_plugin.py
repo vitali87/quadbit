@@ -563,9 +563,21 @@ def _install_moe() -> None:
             layer._qb_dn = sp.stack(dn_packs)
             layer._qb_i = i
             layer._qb_e = e
+            del gu_packs, dn_packs
+            # Free this layer's raw NVFP4 experts now that they are packed: sparse codes (~1.15GB)
+            # are smaller than the NVFP4 experts (~1.7GB) per layer, so freeing keeps peak memory at
+            # the already-working dense load (~84GB) and it drops as packing proceeds. Without this
+            # the codes accumulate ON TOP of NVFP4 (~65GB) across 43 layers -> OOM.
+            for attr in ("w13_weight", "w13_weight_scale", "w13_weight_scale_2",
+                         "w2_weight", "w2_weight_scale", "w2_weight_scale_2"):
+                p = getattr(layer, attr, None)
+                if p is not None:
+                    p.data = torch.empty(0, dtype=p.dtype, device=p.device)
+            torch.cuda.empty_cache()
             if first:
                 print(f"[qb_sm120] sparse-packed {e} experts: gu codes "
-                      f"{layer._qb_gu[0].shape} dn codes {layer._qb_dn[0].shape}", flush=True)
+                      f"{layer._qb_gu[0].shape} dn codes {layer._qb_dn[0].shape}; freed NVFP4",
+                      flush=True)
         return None
 
     def patched_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
