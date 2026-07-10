@@ -693,9 +693,9 @@ A second training-free axis orthogonal to projection anchoring: within each spar
 - **Memory is the real cost, not quality.** Route-slot needs the SAME experts' dense weights AND packed 2:4 codes co-resident, so tp=2 OOMs at the first-22 anchor (raw all-43 + codes 21-layer = 94.0/95.0 GiB before KV). It runs only at tp=4 (experts+codes shard over 4 GPUs) = 2x the GPUs of c_down49 (down-only, tp=2) at equal layer coverage. This is a genuine serving cost even when quality wins.
 - Wanda masks can't run at tp=4 (cal4 colnorm is tp=2-specific; the down-proj intermediate shards, breaking `colnorm.view` in pack). Ran with MAGNITUDE masks instead (calib_file=""), which the WS-A control proved downstream-equivalent to Wanda (a2_100 wanda .5092 vs magnitude .5096).
 - **Results (400-item, tp=4, magnitude, exact first-22 anchor):** active sparse FLOP = (21/43)*((6-N)/6).
-  | policy | dense slots | ~sparse FLOP | PPL | AVG | delta |
-  |--------|-------------|--------------|-----|-----|-------|
-  | D3 (top-3 dense) | 3/6 | ~24% | 3.534 | .7331 | -0.52 |
-  | D2 (top-2 dense) | 4/6 | ~33% | 3.528 | .7304 | -0.79 |
-  | D1 (top-1 dense) | 5/6 | ~41% | 3.511 | .7156 | -2.27 (miss) |
+  | policy | dense slots | sparse slots | ~sparse FLOP | PPL | AVG | delta |
+  |--------|-------------|--------------|--------------|-----|-----|-------|
+  | D3 (top-3 dense) | 3/6 | 3/6 | ~24% | 3.534 | .7331 | -0.52 |
+  | D2 (top-2 dense) | 2/6 | 4/6 | ~33% | 3.528 | .7304 | -0.79 |
+  | D1 (top-1 dense) | 1/6 | 5/6 | ~41% | 3.511 | .7156 | -2.27 (miss) |
 - **VERDICT: route-slot is a real high-sparse-FLOP Pareto extension.** D2 = ~33% active sparse FLOP at -0.79pt (essentially dense PPL 3.528) = DOUBLE c_down49's ~16% FLOP for ~0.5pt more quality. It clears .718 AND the .728 stretch. D1 (only top-1 dense) over-sparsifies and misses. **c_down49 stays the cleanest capability-preserving row (2 GPUs, -0.29pt); D2 is the high-sparse-FLOP row (4 GPUs, -0.79pt, 2x sparse FLOP).** The dominant-expert slots carry the capability; the low-weight tail is nearly free to sparsify - the slot analogue of "the tax lives in gate_up".

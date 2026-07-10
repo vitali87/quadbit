@@ -118,9 +118,7 @@ def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
     ii, ee = layer._qb_i, layer._qb_e
     li = getattr(layer, "_qb_layer_idx", -1)
     # rank each token's slots by routing weight (0 = largest); the top _ROUTE_SLOT stay dense.
-    order = topk_weights.argsort(dim=1, descending=True)
-    rank = torch.empty_like(order)
-    rank.scatter_(1, order, torch.arange(topk, device=x.device).expand(t, topk))
+    rank = topk_weights.argsort(dim=1, descending=True).argsort(dim=1)
     dense_slot = (rank < _ROUTE_SLOT).reshape(-1)
     ids = topk_ids.reshape(-1).to(torch.long)
     tok = torch.arange(t, device=x.device).repeat_interleave(topk)
@@ -143,9 +141,11 @@ def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
         xe = x[rows].float()
         if on_input:
             xe = xe * ws[:, None]
-        wg = _dequant_nvfp4_expert(w13[le, :ii], w13s[le, :ii], w13s2[le, 0]).float()
-        wu = _dequant_nvfp4_expert(w13[le, ii:], w13s[le, ii:], w13s2[le, 0]).float()
-        wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]).float()
+        s13_2 = w13s2[le, 0] if w13s2.ndim > 1 else w13s2[le]
+        s2_2 = w2s2[le, 0] if w2s2.ndim > 1 else w2s2[le]
+        wg = _dequant_nvfp4_expert(w13[le, :ii], w13s[le, :ii], s13_2).float()
+        wu = _dequant_nvfp4_expert(w13[le, ii:], w13s[le, ii:], s13_2).float()
+        wd = _dequant_nvfp4_expert(w2[le], w2s[le], s2_2).float()
         oe = (F.silu(xe @ wg.t()) * (xe @ wu.t())) @ wd.t()
         if not on_input:
             oe = oe * ws[:, None]
