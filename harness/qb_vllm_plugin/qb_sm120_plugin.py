@@ -1077,6 +1077,12 @@ def _install_moe() -> None:
             rw = valid.float() if on_input else (w_of[srcc] * valid.float())
             y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(x.dtype))
             STATS["sparse_expert_calls"] += int(valid.sum().item())
+            # A3 sparse-trajectory dump: capture the block input x + routing AS THE SPARSE MODEL
+            # SEES IT (serve-consistent), so the recon trainer fits each expert to dense-on-that-x
+            # (its target is _dense_expert(x,...), the dumped y is unused). Trains error-correcting
+            # layers instead of brittle dense-input-only ones. y here is the sparse out (unused).
+            if _DUMP and li >= _DUMP_FROM:
+                _dump_accum(li, x, topk_ids, topk_weights, y)
             if _QMAP and getattr(layer, "_qb_probe", False):
                 _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, on_input)
             if shared_experts is not None and shared_experts_input is not None:

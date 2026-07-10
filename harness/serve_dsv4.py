@@ -715,7 +715,8 @@ def sweep4(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
     _sweep_impl(4, "tp4", _SWEEP_MATRIX, instr, tax, max_len)
 
 
-def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False) -> None:
+def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False,
+                sparse_dump: bool = False, dense_layers: str = "", calib_file: str = "") -> None:
     """A2 Step-2 calibration: run DeepSeek-V4-Flash DENSE (coherent) over a text corpus and let the
     plugin accumulate per-expert per-projection column activation norms from REAL routed tokens,
     dumped per-rank to /cache/qb_calib_{tag}_dev*.pt for the Wanda 2:4 mask in a later sparse run.
@@ -729,10 +730,19 @@ def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False) -> None:
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ["QB_DENSE"] = "nvfp4"
-    os.environ["QB_MOE"] = "dense"
-    os.environ["QB_CALIB"] = "1"
-    if dump:
+    if sparse_dump:
+        # A3 reio2: run the exact A2-49 serving config (sparse MoE + dense anchors + Wanda mask) so
+        # the dumped per-layer input x is the SERVE-CONSISTENT sparse trajectory, then dump it for
+        # error-correcting recon. No QB_CALIB here (the mask already exists as calib_file).
+        os.environ["QB_MOE"] = "sparse"
+        os.environ["QB_CALIB_FILE"] = calib_file
+        os.environ["QB_DENSE_LAYERS"] = dense_layers
         os.environ["QB_DUMP"] = "1"
+    else:
+        os.environ["QB_MOE"] = "dense"
+        os.environ["QB_CALIB"] = "1"
+        if dump:
+            os.environ["QB_DUMP"] = "1"
     os.environ["QB_RUNTAG"] = tag
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     print(f"# calib tp={tp} tag={tag} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
@@ -831,10 +841,11 @@ def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False) -> None:
 
     gc.collect()
     time.sleep(5)
-    files = sorted(glob.glob(f"/cache/qb_calib_{tag}_dev*.pt"))
-    sizes = [f"{os.path.basename(f)}={os.path.getsize(f) // 1024}KB" for f in files]
-    print(f"# calib DONE tag={tag}: per-rank files {sizes or 'MISSING'}", flush=True)
-    if dump:
+    if not sparse_dump:
+        files = sorted(glob.glob(f"/cache/qb_calib_{tag}_dev*.pt"))
+        sizes = [f"{os.path.basename(f)}={os.path.getsize(f) // 1024}KB" for f in files]
+        print(f"# calib DONE tag={tag}: per-rank files {sizes or 'MISSING'}", flush=True)
+    if dump or sparse_dump:
         io = sorted(glob.glob(f"/cache/qb_reconio_{tag}_dev*.pt"))
         iosz = [f"{os.path.basename(f)}={os.path.getsize(f) // (1024 * 1024)}MB" for f in io]
         print(f"# reconio DONE tag={tag}: per-rank files {iosz or 'MISSING'}", flush=True)
@@ -1252,8 +1263,10 @@ def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048, moe: str 
 
 @app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def calib(tag: str = "cal1", max_len: int = 2048, dump: bool = False) -> None:
-    _calib_impl(2, tag, max_len, dump=dump)
+def calib(tag: str = "cal1", max_len: int = 2048, dump: bool = False,
+          sparse_dump: bool = False, dense_layers: str = "", calib_file: str = "") -> None:
+    _calib_impl(2, tag, max_len, dump=dump, sparse_dump=sparse_dump,
+                dense_layers=dense_layers, calib_file=calib_file)
 
 
 @app.local_entrypoint()
@@ -1291,6 +1304,10 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         calib.remote(tag=tag, max_len=max_len)
     elif mode == "dumpio":
         calib.remote(tag=tag, max_len=max_len, dump=True)
+    elif mode == "dumpio2":
+        # A3 reio2: sparse-trajectory (serve-consistent) I/O dump under the A2-49 policy.
+        calib.remote(tag=tag, max_len=max_len, sparse_dump=True,
+                     dense_layers=dense_layers, calib_file=(calib_file or "cal4"))
     elif mode == "downstream":
         downstream.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
                           dense_layers=dense_layers, calib_file=calib_file, limit=limit,
