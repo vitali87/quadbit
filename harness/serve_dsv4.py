@@ -1003,7 +1003,8 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
 
 
 def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file: str,
-                     limit: int, max_len: int, sparse_proj: str = "both") -> None:
+                     limit: int, max_len: int, sparse_proj: str = "both",
+                     route_slot: int = 0) -> None:
     """WS-A downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
     acc/acc_norm: per choice, sum teacher-forced logprob of the continuation tokens via vLLM
     prompt_logprobs; pick argmax) over ARC-C / HellaSwag / PIQA / Winogrande / MMLU-subset. Same
@@ -1025,6 +1026,7 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
     os.environ["QB_RUNTAG"] = tag
     os.environ["QB_DENSE_LAYERS"] = dense_layers
     os.environ["QB_SPARSE_PROJ"] = sparse_proj
+    os.environ["QB_ROUTE_SLOT"] = str(route_slot)
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
     def smi():
@@ -1229,8 +1231,9 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
 @app.function(gpu="RTX-PRO-6000:2", timeout=120 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def downstream(tag: str = "ds", moe: str = "dense", dense_layers: str = "", calib_file: str = "",
-               limit: int = 400, max_len: int = 2048, sparse_proj: str = "both") -> None:
-    _downstream_impl(2, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj)
+               limit: int = 400, max_len: int = 2048, sparse_proj: str = "both",
+               route_slot: int = 0) -> None:
+    _downstream_impl(2, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot)
 
 
 @app.function(gpu="RTX-PRO-6000:2", timeout=360 * MIN, volumes={"/cache": vol},
@@ -1275,7 +1278,8 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
          dense: str = "bf16", kv: str = "fp8", moe: str = "off",
          tag: str = "qm", dense_layers: str = "", probe_layers: str = "0,20,40",
          calib_file: str = "", limit: int = 400, recon_io: str = "", recon_layers: str = "",
-         steps: int = 200, scale_only: bool = False, sparse_proj: str = "both") -> None:
+         steps: int = 200, scale_only: bool = False, sparse_proj: str = "both",
+         route_slot: int = 0) -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "versions":
@@ -1312,7 +1316,7 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
     elif mode == "downstream":
         downstream.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
                           dense_layers=dense_layers, calib_file=calib_file, limit=limit,
-                          max_len=max_len, sparse_proj=sparse_proj)
+                          max_len=max_len, sparse_proj=sparse_proj, route_slot=route_slot)
     elif mode == "recon":
         recon.remote(tag=tag, dense_layers=dense_layers, calib_file=(calib_file or "cal4"),
                      recon_io=recon_io, recon_layers=recon_layers, steps=steps,

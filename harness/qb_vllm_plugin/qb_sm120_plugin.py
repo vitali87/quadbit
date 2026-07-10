@@ -106,6 +106,69 @@ def _dense_route(inp, w, ws, ws2, out_dim, eblk):
     return out
 
 
+def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
+    # WS-D route-slot: keep the top _ROUTE_SLOT highest-weight routed slots per token DENSE (raw
+    # NVFP4) and run the remaining slots through the 2:4 sparse kernel (both projections). Writes
+    # the routed contribution into y; the caller runs the shared expert.
+    import torch
+    import torch.nn.functional as F
+
+    t, h = x.shape
+    topk = topk_ids.shape[1]
+    ii, ee = layer._qb_i, layer._qb_e
+    li = getattr(layer, "_qb_layer_idx", -1)
+    # rank each token's slots by routing weight (0 = largest); the top _ROUTE_SLOT stay dense.
+    order = topk_weights.argsort(dim=1, descending=True)
+    rank = torch.empty_like(order)
+    rank.scatter_(1, order, torch.arange(topk, device=x.device).expand(t, topk))
+    dense_slot = (rank < _ROUTE_SLOT).reshape(-1)
+    ids = topk_ids.reshape(-1).to(torch.long)
+    tok = torch.arange(t, device=x.device).repeat_interleave(topk)
+    w = topk_weights.reshape(-1).to(torch.float32)
+    emap = getattr(layer, "expert_map", None)
+    if emap is not None:
+        ids = emap[ids]
+        keep = ids >= 0
+        ids, tok, w, dense_slot = ids[keep], tok[keep], w[keep], dense_slot[keep]
+    # DENSE group: dominant slots run the raw NVFP4 experts.
+    w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
+    w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
+    d_ids, d_tok, d_w = ids[dense_slot], tok[dense_slot], w[dense_slot]
+    for le in torch.unique(d_ids).tolist():
+        if le < 0:
+            continue
+        sel = d_ids == le
+        rows = d_tok[sel]
+        ws = d_w[sel]
+        xe = x[rows].float()
+        if on_input:
+            xe = xe * ws[:, None]
+        wg = _dequant_nvfp4_expert(w13[le, :ii], w13s[le, :ii], w13s2[le, 0]).float()
+        wu = _dequant_nvfp4_expert(w13[le, ii:], w13s[le, ii:], w13s2[le, 0]).float()
+        wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]).float()
+        oe = (F.silu(xe @ wg.t()) * (xe @ wu.t())) @ wd.t()
+        if not on_input:
+            oe = oe * ws[:, None]
+        y.index_add_(0, rows, oe.to(x.dtype))
+    # SPARSE group: low-weight tail runs the 2:4 seg kernel.
+    s_ids, s_tok, s_w = ids[~dense_slot], tok[~dense_slot], w[~dense_slot]
+    if s_ids.numel():
+        src, eblk, _r = sp.build_routing(s_ids, ee)
+        valid = src >= 0
+        srcc = src.clamp_min(0)
+        xs = x[s_tok[srcc]].to(torch.bfloat16) * valid[:, None]
+        if on_input:
+            xs = xs * s_w[srcc][:, None].to(torch.bfloat16)
+        xs = _sanitize(xs, li, "x_in")
+        gu = _sanitize(sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk), li, "gate_up")
+        hh = _sanitize((F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16),
+                       li, "swiglu")
+        dseg = _sanitize(sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk), li, "down")
+        rw = valid.float() if on_input else (s_w[srcc] * valid.float())
+        y.index_add_(0, s_tok[srcc], (dseg.float() * rw[:, None]).to(x.dtype))
+    return y
+
+
 def _mqa_logits_bf16(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=False):
     # SM120-safe replacement for DeepGEMM fp8_fp4_mqa_logits (prefill). FP8 path only.
     # logits[m,n] = sum_h w[m,h] * sum_d q[m,h,d]*k[n,d]  == (sum_h w[m,h]*q[m,h,d]) . k[n,:]
@@ -197,6 +260,11 @@ if _SPARSE_PROJ not in ("both", "down", "gateup"):
     # Fail loud: an unknown value would leave a layer marked sparse yet route both projections
     # dense, silently serving/benchmarking the wrong policy.
     raise ValueError(f"QB_SPARSE_PROJ must be both|down|gateup, got {_SPARSE_PROJ!r}")
+# WORKSTREAM D route-slot policy: on sparse layers (proj=both), keep the top-N highest-weight routed
+# slots per token DENSE (raw NVFP4) and run only the remaining slots through the 2:4 sparse kernel.
+# 0 = off. Raises active sparse expert-FLOP vs projection anchoring by leaving the low-weight tail
+# sparse while the dominant experts stay dense. Needs raw NVFP4 kept resident (see pack path).
+_ROUTE_SLOT = int(os.environ.get("QB_ROUTE_SLOT", "0"))
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
@@ -1072,6 +1140,10 @@ def _install_moe() -> None:
             if first:
                 print(f"[qb_sm120] qmap probe layer {layer_idx}: kept NVFP4 + codes for "
                       "healthy-activation comparison", flush=True)
+        elif _ROUTE_SLOT > 0:
+            # WS-D route-slot: dense slots run the raw NVFP4 experts, so keep the raw resident
+            # alongside the packed sparse codes (higher memory: raw + codes).
+            pass
         else:
             # Free raw NVFP4 now that codes are packed (sparse mode, non-probe): codes (~1.15GB) are
             # smaller than NVFP4 (~1.7GB)/layer, so peak stays at the proven dense load and drops.
@@ -1103,6 +1175,11 @@ def _install_moe() -> None:
             sp = _load_sparse_moe()
             ii, ee = layer._qb_i, layer._qb_e
             proj = layer._qb_proj
+            if _ROUTE_SLOT > 0 and proj == "both":
+                y = _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y)
+                if shared_experts is not None and shared_experts_input is not None:
+                    shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+                return y
             assign = topk_ids.reshape(-1).to(torch.long)
             tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
             w_of = topk_weights.reshape(-1).to(torch.float32)
