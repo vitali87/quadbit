@@ -64,6 +64,7 @@ def _dequant_block(w, s, bs):
 
 # e2m1 FP4 value LUT (codes 0-15: sign bit 8): matches moe_layer.py / mxfp4 decode.
 _FP4_VALS = [0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6]
+_FP4_LUT_CACHE = {}
 
 
 def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
@@ -73,7 +74,11 @@ def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
     # float8_e4m3fn, w_scale_2 scalar float32.
     import torch
 
-    lut = torch.tensor(_FP4_VALS, dtype=torch.float32, device=w_u8.device)
+    dev = w_u8.device
+    lut = _FP4_LUT_CACHE.get(dev)  # cache: called per-expert per-forward in the dense-anchor route
+    if lut is None:
+        lut = torch.tensor(_FP4_VALS, dtype=torch.float32, device=dev)
+        _FP4_LUT_CACHE[dev] = lut
     o, kh = w_u8.shape
     k = kh * 2
     bb = w_u8.to(torch.int32) & 0xFF
@@ -918,10 +923,10 @@ def install() -> None:
     # (order among the k is irrelevant to the downstream set-attention). Correctness-first.
     def _topk_into(logits, seq_lens, topk_indices, topk_tokens):
         rows, width = logits.shape
-        sl = seq_lens.reshape(-1)
+        sl = seq_lens.reshape(-1).cpu().tolist()  # copy once; .item() per row would sync every iter
         topk_indices[:rows, :topk_tokens] = -1
         for r in range(rows):
-            n = int(sl[r].item()) if r < sl.numel() else width
+            n = int(sl[r]) if r < len(sl) else width
             n = max(0, min(n, width))
             if n <= 0:
                 continue

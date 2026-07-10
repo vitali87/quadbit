@@ -25,7 +25,12 @@ _GLOBAL_DIV = 2688.0  # rowamax / 2688 -> per-row global scale (matches pack + q
 _BLK = 32  # two-level NVFP4 local-scale block
 
 
+_TABLES_CACHE: dict[torch.device, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+
+
 def _tables(dev: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if dev in _TABLES_CACHE:  # cache: rebuilt every served_weight/fq_act call in the train loop
+        return _TABLES_CACHE[dev]
     fp4 = torch.tensor(_FP4_VALS, device=dev)
     bnd = torch.tensor(_FP4_BND, device=dev)
     cc = torch.arange(128, device=dev)
@@ -33,6 +38,7 @@ def _tables(dev: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor
     ue4m3 = torch.where(
         e_ == 0, m_.float() * 0.001953125, (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float())
     )
+    _TABLES_CACHE[dev] = (fp4, bnd, ue4m3)
     return fp4, bnd, ue4m3
 
 
@@ -44,7 +50,9 @@ def _enc(s: torch.Tensor) -> torch.Tensor:
     carry = mant == 8
     mant = torch.where(carry, torch.zeros_like(mant), mant)
     biased = torch.where(carry, biased + 1, biased)
-    code = (biased.long() << 3) | mant
+    # clamp before the shift (out-of-range biased is overridden below anyway) to avoid a shift on a
+    # negative operand
+    code = (biased.clamp(0, 15).long() << 3) | mant
     code = torch.where(biased < 1, torch.ones_like(code), code)
     code = torch.where(biased > 15, torch.full_like(code, 0x7F), code)
     code = torch.where(s >= 480.0, torch.full_like(code, 0x7F), code)
@@ -58,10 +66,12 @@ def served_weight(w: torch.Tensor, colnorm: torch.Tensor | None) -> torch.Tensor
     out_f, in_f = w.shape
     ks = in_f // 128
     wg = w.float().view(out_f, ks, 16, 4, 2)
-    if colnorm is None or not bool((colnorm != 0).any()):
+    if colnorm is None:
         imp = wg.abs().sum(-1)
     else:
-        imp = (wg.abs() * colnorm.view(1, ks, 16, 4, 2)).sum(-1)
+        # Wanda importance + a tiny magnitude term so an all-zero colnorm (an unrouted expert)
+        # degrades to magnitude ordering, without the per-step `.any()` GPU->CPU sync.
+        imp = (wg.abs() * colnorm.view(1, ks, 16, 4, 2)).sum(-1) + wg.abs().sum(-1) * 1e-30
     i01, _ = imp.topk(2, dim=-1).indices.sort(dim=-1)
     kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))  # (out,ks,16,2,2)
     ga = (
@@ -87,7 +97,7 @@ def fq_act(x: torch.Tensor) -> torch.Tensor:
     per-row global scale = rowamax/2688, per-32 ue4m3 local scale, E2M1 mantissa."""
     fp4, bnd, ue4m3 = _tables(x.device)
     r, in_f = x.shape
-    xf = x.float()
+    xf = x.float().clamp(-1e4, 1e4)  # match serving _sanitize guardrail: stop NaN/Inf propagation
     ga = (xf.abs().amax(dim=1, keepdim=True) / _GLOBAL_DIV).clamp_min(1e-30)  # (r,1)
     blk = xf.view(r, in_f // _BLK, _BLK)
     scode = _enc((blk.abs().amax(dim=2) / 6.0) / ga)
