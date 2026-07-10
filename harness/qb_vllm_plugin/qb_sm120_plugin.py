@@ -227,7 +227,7 @@ _DUMP_X, _DUMP_TID, _DUMP_TW, _DUMP_Y, _DUMP_N = {}, {}, {}, {}, {}
 _DUMP_CALLS = 0
 
 
-def _dump_accum(li, x, topk_ids, topk_weights, y):
+def _dump_accum(li, x, topk_ids, topk_weights, y, emap=None):
     global _DUMP_CALLS
     import torch
 
@@ -235,8 +235,11 @@ def _dump_accum(li, x, topk_ids, topk_weights, y):
     if n >= _DUMP_TOK:
         return
     take = min(x.shape[0], _DUMP_TOK - n)
+    # Store LOCAL expert ids (post expert_map) so the recon trainer's get_expert(le) indexes this
+    # rank's packed experts; off-rank slots become -1, which train_layer_lazy already skips.
+    tid = emap[topk_ids[:take].long()] if emap is not None else topk_ids[:take]
     _DUMP_X.setdefault(li, []).append(x[:take].to(torch.bfloat16).cpu())
-    _DUMP_TID.setdefault(li, []).append(topk_ids[:take].to(torch.int32).cpu())
+    _DUMP_TID.setdefault(li, []).append(tid.to(torch.int32).cpu())
     _DUMP_TW.setdefault(li, []).append(topk_weights[:take].to(torch.float32).cpu())
     _DUMP_Y.setdefault(li, []).append(y[:take].to(torch.bfloat16).cpu())
     _DUMP_N[li] = n + take
@@ -1144,7 +1147,7 @@ def _install_moe() -> None:
             # (its target is _dense_expert(x,...), the dumped y is unused). Trains error-correcting
             # layers instead of brittle dense-input-only ones. y here is the sparse out (unused).
             if _DUMP and li >= _DUMP_FROM:
-                _dump_accum(li, x, topk_ids, topk_weights, y)
+                _dump_accum(li, x, topk_ids, topk_weights, y, emap)
             if _QMAP and getattr(layer, "_qb_probe", False):
                 _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, on_input)
             if shared_experts is not None and shared_experts_input is not None:
@@ -1182,7 +1185,7 @@ def _install_moe() -> None:
         if _DUMP:
             li = getattr(layer, "_qb_layer_idx", -1)
             if li >= _DUMP_FROM:
-                _dump_accum(li, x, topk_ids, topk_weights, y)
+                _dump_accum(li, x, topk_ids, topk_weights, y, emap)
         # A0 map: this dense (coherent) forward feeds HEALTHY activations; on probe layers measure
         # the sparse operator against the dense one here (after the real dense y is produced).
         if _QMAP and getattr(layer, "_qb_probe", False):
