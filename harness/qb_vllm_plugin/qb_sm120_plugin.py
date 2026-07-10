@@ -527,8 +527,9 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, on_input):
 
     w13, w13s, w13s2 = layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2
     w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
-    if w13.numel() == 0 or getattr(layer, "_qb_gu", None) is None:
-        return  # need both representations resident to compare
+    if (w13.numel() == 0 or getattr(layer, "_qb_gu", None) is None
+            or getattr(layer, "_qb_dn", None) is None):
+        return  # need BOTH packed projections resident to compare (skip under proj=down/gateup)
     t, h = x.shape
     ii = layer._qb_i
     topk = topk_ids.shape[1]

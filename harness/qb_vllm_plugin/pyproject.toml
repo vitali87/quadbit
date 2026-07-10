@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qb-sm120-plugin"
-version = "0.7.11"
+version = "0.7.12"
 description = "vLLM general plugin: SM120-safe replacement for block-FP8 (ue8m0) dense/attention GEMMs"
 
 # vLLM calls every entry point in this group inside EVERY process it spawns (driver, EngineCore,
