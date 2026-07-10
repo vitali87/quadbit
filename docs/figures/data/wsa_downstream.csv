@@ -16,6 +16,9 @@ c_down60,60,wanda_cal4+down_only,first-17,3.926,0.6425,0.6775,0.7600,0.7960,0.71
 c_down65,65,wanda_cal4+down_only,first-15,3.908,0.6525,0.6700,0.7575,0.7800,0.7150,-0.0233
 c_down74,74,wanda_cal4+down_only,first-11,3.890,0.6325,0.6825,0.7425,0.7700,0.7069,-0.0314
 c_down100,100,wanda_cal4+down_only,none,4.605,0.5650,0.6375,0.6825,0.7160,0.6502,-0.0881
+d3_slot3,49,magnitude+routeslot3_top3dense_flop24_tp4,first-22,3.534,0.6325,0.7050,0.7650,0.8300,0.7331,-0.0052
+d2_slot2,49,magnitude+routeslot2_top2dense_flop33_tp4,first-22,3.528,0.6425,0.7075,0.7675,0.8040,0.7304,-0.0079
+d1_slot1,49,magnitude+routeslot1_top1dense_flop41_tp4,first-22,3.511,0.6125,0.7025,0.7475,0.8000,0.7156,-0.0227
 a2_74,74,wanda_cal4,first-11,5.394,0.5400,0.6275,0.7150,0.6160,0.6246,-0.1137
 a2_100_wanda,100,wanda_cal4,none,6.887,0.4125,0.5475,0.6550,0.4220,0.5092,-0.2291
 magnitude_100,100,magnitude,none,7.722,0.4225,0.5725,0.6275,0.4160,0.5096,-0.2287
