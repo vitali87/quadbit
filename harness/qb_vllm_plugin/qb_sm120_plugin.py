@@ -1095,6 +1095,12 @@ def _install_moe() -> None:
                 assign = emap[assign]
                 keep = assign >= 0
                 assign, tok_of, w_of = assign[keep], tok_of[keep], w_of[keep]
+            if assign.numel() == 0:
+                # EP rank with no local routed slots this microbatch: only the shared expert
+                # contributes; routed output is this rank's zeros.
+                if shared_experts is not None and shared_experts_input is not None:
+                    shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+                return y
             src, eblk, _r = sp.build_routing(assign, ee)
             valid = src >= 0
             srcc = src.clamp_min(0)
