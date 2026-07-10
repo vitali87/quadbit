@@ -1081,14 +1081,20 @@ def _install_moe() -> None:
         on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
 
         if qb_moe == "sparse" and getattr(layer, "_qb_proj", None) is not None:
-            # Route through the quadbit 2:4-sparse-FP4 segmented kernel. emap is None here (all
-            # experts present per rank, TP-sharded intermediate), so topk_ids are global==local.
+            # Route through the quadbit 2:4-sparse-FP4 segmented kernel. On an EP shard only a
+            # subset of experts is resident, so global topk_ids must be mapped to local ids via
+            # expert_map (mirrors the dense fallback below); off-rank slots (-1) are dropped.
             sp = _load_sparse_moe()
             ii, ee = layer._qb_i, layer._qb_e
             proj = layer._qb_proj
             assign = topk_ids.reshape(-1).to(torch.long)
             tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
             w_of = topk_weights.reshape(-1).to(torch.float32)
+            emap = getattr(layer, "expert_map", None)
+            if emap is not None:
+                assign = emap[assign]
+                keep = assign >= 0
+                assign, tok_of, w_of = assign[keep], tok_of[keep], w_of[keep]
             src, eblk, _r = sp.build_routing(assign, ee)
             valid = src >= 0
             srcc = src.clamp_min(0)
