@@ -1236,6 +1236,16 @@ def downstream(tag: str = "ds", moe: str = "dense", dense_layers: str = "", cali
     _downstream_impl(2, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot)
 
 
+@app.function(gpu="RTX-PRO-6000:4", timeout=120 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def downstream4(tag: str = "ds", moe: str = "dense", dense_layers: str = "", calib_file: str = "",
+                limit: int = 400, max_len: int = 2048, sparse_proj: str = "both",
+                route_slot: int = 0) -> None:
+    # 4-GPU variant: route-slot keeps raw NVFP4 + packed codes resident, so experts must shard over
+    # more GPUs to fit (tp=2 OOMs at the first-22 anchor).
+    _downstream_impl(4, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot)
+
+
 @app.function(gpu="RTX-PRO-6000:2", timeout=360 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def recon(tag: str = "rc", dense_layers: str = "", calib_file: str = "cal4", recon_io: str = "",
@@ -1317,6 +1327,10 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         downstream.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
                           dense_layers=dense_layers, calib_file=calib_file, limit=limit,
                           max_len=max_len, sparse_proj=sparse_proj, route_slot=route_slot)
+    elif mode == "downstream4":
+        downstream4.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
+                           dense_layers=dense_layers, calib_file=calib_file, limit=limit,
+                           max_len=max_len, sparse_proj=sparse_proj, route_slot=route_slot)
     elif mode == "recon":
         recon.remote(tag=tag, dense_layers=dense_layers, calib_file=(calib_file or "cal4"),
                      recon_io=recon_io, recon_layers=recon_layers, steps=steps,
