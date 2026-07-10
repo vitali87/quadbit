@@ -188,6 +188,10 @@ _DENSE_LAYERS = {int(x) for x in os.environ.get("QB_DENSE_LAYERS", "").split(","
 # proj); "gateup" = only gate_up sparse (down dense). The sparse projection runs the real seg_gemm
 # served op; the anchored projection runs a per-expert dense matmul over the same routed rows.
 _SPARSE_PROJ = os.environ.get("QB_SPARSE_PROJ", "both")
+if _SPARSE_PROJ not in ("both", "down", "gateup"):
+    # Fail loud: an unknown value would leave a layer marked sparse yet route both projections
+    # dense, silently serving/benchmarking the wrong policy.
+    raise ValueError(f"QB_SPARSE_PROJ must be both|down|gateup, got {_SPARSE_PROJ!r}")
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
