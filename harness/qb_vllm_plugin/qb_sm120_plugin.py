@@ -85,6 +85,22 @@ def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
     return (vals * bs * float(w_scale_2)).to(torch.bfloat16)
 
 
+def _dense_route(inp, w, ws, ws2, out_dim, eblk):
+    # WS-C anchored projection: dense raw-NVFP4 matmul over the routed rows (inp), grouped by their
+    # expert-block id (eblk), matching the seg_gemm layout so it drops into the sparse apply path.
+    import torch
+
+    out = torch.zeros(inp.shape[0], out_dim, dtype=torch.bfloat16, device=inp.device)
+    for e_ in torch.unique(eblk).tolist():
+        if e_ < 0:
+            continue
+        m = eblk == e_
+        s2 = ws2[e_, 0] if ws2.ndim > 1 else ws2[e_]
+        we = _dequant_nvfp4_expert(w[e_], ws[e_], s2).float()
+        out[m] = (inp[m].float() @ we.t()).to(torch.bfloat16)
+    return out
+
+
 def _mqa_logits_bf16(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=False):
     # SM120-safe replacement for DeepGEMM fp8_fp4_mqa_logits (prefill). FP8 path only.
     # logits[m,n] = sum_h w[m,h] * sum_d q[m,h,d]*k[n,d]  == (sum_h w[m,h]*q[m,h,d]) . k[n,:]
@@ -167,6 +183,11 @@ _PW_IDX = 0  # MoE layer counter (load order) per worker
 #   per-layer *block* cosine (governs coherence) + per-expert cos/route-freq/weight/norm on REAL
 #   activations (A0). Bounded so it doesn't dominate wall-clock.
 _DENSE_LAYERS = {int(x) for x in os.environ.get("QB_DENSE_LAYERS", "").split(",") if x.strip()}
+# WORKSTREAM C: projection-level anchoring on sparse-selected layers. "both" (default) = gate_up AND
+# down sparse; "down" = only down sparse (gate_up kept raw-NVFP4 dense, preserves the tax-heavy
+# proj); "gateup" = only gate_up sparse (down dense). The sparse projection runs the real seg_gemm
+# served op; the anchored projection runs a per-expert dense matmul over the same routed rows.
+_SPARSE_PROJ = os.environ.get("QB_SPARSE_PROJ", "both")
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
@@ -1002,19 +1023,30 @@ def _install_moe() -> None:
         # un-repaired experts fall through to the raw dequant below.
         repaired = _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2,
                                   cn_gu, cn_dn)
+        # WS-C: pack only the sparse-selected projection(s); the anchored one keeps raw NVFP4.
+        pack_gu = _SPARSE_PROJ in ("both", "gateup")
+        pack_dn = _SPARSE_PROJ in ("both", "down")
         gu_packs, dn_packs = [], []
         for le in range(e):
             if repaired is not None and le in repaired:
                 gu, dn = repaired[le][0].to(w13.device), repaired[le][1].to(w13.device)
             else:
-                gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0])
-                dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
-            gu_packs.append(sp.pack(gu, None if cn_gu is None else cn_gu[le]))
-            dn_packs.append(sp.pack(dn, None if cn_dn is None else cn_dn[le]))
-        layer._qb_gu = sp.stack(gu_packs)
-        layer._qb_dn = sp.stack(dn_packs)
+                gu = _dequant_nvfp4_expert(w13[le], w13s[le], w13s2[le, 0]) if pack_gu else None
+                dn = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le]) if pack_dn else None
+            if pack_gu:
+                gu_packs.append(sp.pack(gu, None if cn_gu is None else cn_gu[le]))
+            if pack_dn:
+                dn_packs.append(sp.pack(dn, None if cn_dn is None else cn_dn[le]))
+        if pack_gu:
+            layer._qb_gu = sp.stack(gu_packs)
+        if pack_dn:
+            layer._qb_dn = sp.stack(dn_packs)
+        layer._qb_proj = _SPARSE_PROJ
         layer._qb_i = i
         layer._qb_e = e
+        if first and _SPARSE_PROJ != "both":
+            print(f"[qb_sm120] WS-C proj={_SPARSE_PROJ} layer {layer_idx}: "
+                  f"{'gate_up' if pack_gu else 'down'} sparse, other kept dense", flush=True)
         del gu_packs, dn_packs
         if _TAX and (layer_idx % _TAX_LAYERS == 0):
             _run_tax_probe(layer, sp, i, e, layer_idx)
@@ -1027,8 +1059,13 @@ def _install_moe() -> None:
         else:
             # Free raw NVFP4 now that codes are packed (sparse mode, non-probe): codes (~1.15GB) are
             # smaller than NVFP4 (~1.7GB)/layer, so peak stays at the proven dense load and drops.
-            for attr in ("w13_weight", "w13_weight_scale", "w13_weight_scale_2",
-                         "w2_weight", "w2_weight_scale", "w2_weight_scale_2"):
+            # WS-C: keep the anchored (unpacked) projection's raw NVFP4 for its dense matmul.
+            free = []
+            if pack_gu:
+                free += ["w13_weight", "w13_weight_scale", "w13_weight_scale_2"]
+            if pack_dn:
+                free += ["w2_weight", "w2_weight_scale", "w2_weight_scale_2"]
+            for attr in free:
                 p = getattr(layer, attr, None)
                 if p is not None:
                     p.data = torch.empty(0, dtype=p.dtype, device=p.device)
@@ -1043,11 +1080,12 @@ def _install_moe() -> None:
         topk = topk_ids.shape[1]
         on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
 
-        if qb_moe == "sparse" and getattr(layer, "_qb_gu", None) is not None:
+        if qb_moe == "sparse" and getattr(layer, "_qb_proj", None) is not None:
             # Route through the quadbit 2:4-sparse-FP4 segmented kernel. emap is None here (all
             # experts present per rank, TP-sharded intermediate), so topk_ids are global==local.
             sp = _load_sparse_moe()
             ii, ee = layer._qb_i, layer._qb_e
+            proj = layer._qb_proj
             assign = topk_ids.reshape(-1).to(torch.long)
             tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
             w_of = topk_weights.reshape(-1).to(torch.float32)
@@ -1057,13 +1095,25 @@ def _install_moe() -> None:
             xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
             if on_input:
                 xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+            # WS-C: per-ROUTED-ROW local expert id (eblk from build_routing is per-block, not row).
+            row_exp = assign[srcc] if proj != "both" else None
             se = _ev_start() if _INSTR else None
             li = getattr(layer, "_qb_layer_idx", -1)
             xs = _sanitize(xs, li, "x_in")
-            gu = _sanitize(sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk), li, "gate_up")
+            if proj in ("both", "gateup"):
+                gu = sp.seg_gemm(xs, layer._qb_gu, 2 * ii, h, eblk)
+            else:  # WS-C down-only: gate_up anchored dense
+                gu = _dense_route(xs, layer.w13_weight, layer.w13_weight_scale,
+                                  layer.w13_weight_scale_2, 2 * ii, row_exp)
+            gu = _sanitize(gu, li, "gate_up")
             hh = _sanitize((F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16),
                            li, "swiglu")
-            dseg = _sanitize(sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk), li, "down")
+            if proj in ("both", "down"):
+                dseg = sp.seg_gemm(hh, layer._qb_dn, h, ii, eblk)
+            else:  # WS-C gate_up-only: down anchored dense
+                dseg = _dense_route(hh, layer.w2_weight, layer.w2_weight_scale,
+                                    layer.w2_weight_scale_2, h, row_exp)
+            dseg = _sanitize(dseg, li, "down")
             if _INSTR:
                 _ev_end("expert", se)
                 _CNT["expert_calls"] += 1
