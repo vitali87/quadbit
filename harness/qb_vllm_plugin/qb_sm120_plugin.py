@@ -524,6 +524,9 @@ def _run_qmap_probe(layer, sp, x, topk_ids, topk_weights, on_input):
     ii = layer._qb_i
     topk = topk_ids.shape[1]
     flat_ids = topk_ids.reshape(-1)
+    emap = getattr(layer, "expert_map", None)
+    if emap is not None:  # EP shard: only this rank's local experts (off-rank -> -1, skipped)
+        flat_ids = emap[flat_ids]
     flat_w = topk_weights.reshape(-1).to(torch.float32)
     tok = torch.arange(t, device=x.device).repeat_interleave(topk)
     y_dense = torch.zeros(t, h, dtype=torch.float32, device=x.device)
