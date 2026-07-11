@@ -101,6 +101,7 @@ def validate() -> None:
 
         # ---- NEW path: route_fixed_cap + preallocated + current-stream launches ----
         src, eblk, dropped = sp.route_fixed_cap(assign, E, cap)
+        dropped = int(dropped)          # device scalar -> host int (outside any captured region)
         Rp = E * cap
         valid = src >= 0
         srcc = src.clamp_min(0)

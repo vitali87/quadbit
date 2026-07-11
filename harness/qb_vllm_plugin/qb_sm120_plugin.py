@@ -169,6 +169,46 @@ def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
     return y
 
 
+def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y):
+    # Graph-safe sparse-FP4 MoE seg apply (proj=both). Fixed-capacity DEVICE routing + current-stream
+    # launches into buffers whose shapes are compile-time constant (E*cap), so the whole body is
+    # CUDA-graph-capturable: no .item(), no host loop, no data-dependent shape. Mirrors the frozen
+    # `both` branch's math (route -> quant/seg gate_up -> swiglu -> quant/seg down -> weighted scatter),
+    # but replaces build_routing (host sync) with sp.route_fixed_cap and quant_act/seg_gemm (alloc /
+    # stream-0 sync) with sp.quant_into/seg_into. assign:[R] local expert per routed slot (R fixed =
+    # T*topk on a single rank). Overflow (>cap rows for one expert) dropped deterministically. Returns
+    # the dropped-row count; writes the routed contribution into y.
+    import torch
+    import torch.nn.functional as F
+
+    dev = x.device
+    src, eblk, dropped = sp.route_fixed_cap(assign, e, cap)
+    rp = e * cap
+    valid = src >= 0
+    srcc = src.clamp_min(0)
+    xs = (x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None])
+    if on_input:
+        xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+    xs = xs.contiguous()
+    ksh, ksi = h // 128, ii // 128
+    bb = torch.empty((rp, h // 2), dtype=torch.uint8, device=dev)
+    sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=dev)
+    gb = torch.empty((rp,), dtype=torch.float32, device=dev)
+    gu = torch.empty((rp, 2 * ii), dtype=torch.bfloat16, device=dev)
+    sp.quant_into(xs, bb, sb, gb)
+    sp.seg_into(gu_W, bb, sb, gb, gu, 2 * ii, h, eblk)
+    hh = (F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16)
+    bb2 = torch.empty((rp, ii // 2), dtype=torch.uint8, device=dev)
+    sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=dev)
+    gb2 = torch.empty((rp,), dtype=torch.float32, device=dev)
+    dseg = torch.empty((rp, h), dtype=torch.bfloat16, device=dev)
+    sp.quant_into(hh, bb2, sb2, gb2)
+    sp.seg_into(dn_W, bb2, sb2, gb2, dseg, h, ii, eblk)
+    rw = valid.float() if on_input else (w_of[srcc] * valid.float())
+    y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(y.dtype))
+    return dropped
+
+
 def _mqa_logits_bf16(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=False):
     # SM120-safe replacement for DeepGEMM fp8_fp4_mqa_logits (prefill). FP8 path only.
     # logits[m,n] = sum_h w[m,h] * sum_d q[m,h,d]*k[n,d]  == (sum_h w[m,h]*q[m,h,d]) . k[n,:]
@@ -794,15 +834,27 @@ def _load_sparse_moe():
         r = assign.shape[0]
         order = torch.argsort(assign, stable=True)
         sa = assign[order]
-        counts = torch.bincount(assign, minlength=e)
+        # counts via scatter_add, NOT torch.bincount: bincount reads the max element to the host to
+        # size its output, which is a CPU<->CUDA copy illegal inside a captured region. E is constant
+        # and assign is in [0,e), so a fixed-size scatter_add is graph-safe.
+        counts = torch.zeros(e, dtype=torch.long, device=dev).scatter_add_(
+            0, assign, torch.ones_like(assign))
         offs = torch.cumsum(counts, 0) - counts
         within = torch.arange(r, device=dev) - offs[sa]
         keep = within < cap
-        dest = sa * cap + within
-        src = torch.full((e * cap,), -1, dtype=torch.long, device=dev)
-        src[dest[keep]] = order[keep]
+        # boolean-index scatter (`src[dest[keep]] = order[keep]`) calls .nonzero() -> data-dependent
+        # size -> invalidates capture. Instead send overflow rows to a single trash slot via
+        # torch.where and scatter unconditionally; the trash slot is sliced off. Real slots each get a
+        # unique dest (within is the per-expert rank), so the result is identical to the masked form.
+        sink = e * cap
+        dest = torch.where(keep, sa * cap + within, torch.full_like(within, sink))
+        src = torch.full((e * cap + 1,), -1, dtype=torch.long, device=dev)
+        src.scatter_(0, dest, order)
+        src = src[:e * cap]
         eblk = (torch.arange(e * cap // _BN, device=dev) // (cap // _BN)).to(torch.int32)
-        dropped = r - int(keep.sum()) if not bool(keep.all()) else 0
+        # dropped stays on-device (a DEVICE scalar): reading it with .item() would host-sync, so
+        # callers that need the Python int must do so OUTSIDE any captured region.
+        dropped = r - keep.sum()
         return src, eblk, dropped
 
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
