@@ -1801,19 +1801,10 @@ def _downstream_impl(
             items.append((conts, gold, build(ctx, conts)))
         results.append(run_task(f"hellaswag[{src}]", items))
 
-    # PIQA (acc_norm primary)
-    ds, src = try_load(
-        [
-            ("ybisk/piqa", {"split": "validation", "trust_remote_code": True}),
-            ("piqa", {"split": "validation", "trust_remote_code": True}),
-        ]
-    )
-    if ds is not None:
-        items = []
-        for r in list(ds)[:limit]:
-            conts = [" " + r["sol1"], " " + r["sol2"]]
-            items.append((conts, int(r["label"]), build(f"Question: {r['goal']}\nAnswer:", conts)))
-        results.append(run_task(f"piqa[{src}]", items))
+    # PIQA is intentionally excluded: ybisk/piqa needs gated trust_remote_code loading that is not
+    # available on the serve image, so it never loaded and never entered any recorded average. Every
+    # documented downstream number (DeepSeek deepseek_final.csv and GLM glm_results.md) is a 4-task
+    # average; dropping the block makes that deterministic and reproducible from the manifest command.
 
     # Winogrande (acc). partial scoring: ctx=prefix+option, cont=suffix after blank
     ds, src = try_load(

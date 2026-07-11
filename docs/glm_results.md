@@ -44,7 +44,8 @@ lower. All rows measured identically, so cross-policy comparison holds either wa
 
 ## Downstream capability (P1 smoke suite)
 
-The MC log-likelihood harness (ARC-C, HellaSwag, Winogrande, and a 5-subject MMLU subset) is
+The MC log-likelihood harness (ARC-C, HellaSwag, Winogrande, and a 5-subject MMLU subset; PIQA is
+excluded because `ybisk/piqa` is not loadable on the serve image, same as the DeepSeek 4-task table) is
 tokenizer-agnostic (it scores continuations with `llm.get_tokenizer()`), so it runs unchanged on GLM
 through the same 8-GPU EP load. Two runs, `limit=200` per task: dense NVFP4 reference vs the route-slot
 D2 policy. This directly tests whether D2's small PPL gap hides a downstream collapse. It does not.
