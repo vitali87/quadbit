@@ -1651,7 +1651,7 @@ def _downstream_impl(
             max_model_len=max_len,
             gpu_memory_utilization=0.92,
             kv_cache_dtype="fp8",
-            max_num_batched_tokens=max_len,
+            max_num_batched_tokens=max(2048, max_len),
             enable_expert_parallel=True,
             disable_log_stats=True,
         )
