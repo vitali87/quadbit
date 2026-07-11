@@ -1,0 +1,43 @@
+Note that running a local entrypoint in detached mode only keeps the last triggered Modal function alive after the parent process has been killed or disconnected.
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-qF2SxwY2LA4h3ePtwppNbD
+✓ Created objects.
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/harness/p4_m3a.py
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/cuda
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+└── 🔨 Created function validate.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.8.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# torch 2.12.0.dev20260408+cu128 | NVIDIA RTX PRO 6000 Blackwell Server Edition | cap (12, 0) | driver 12.8
+# plugin helpers: ['lib', 'pack', 'stack', 'quant_act', 'seg_gemm', 'build_routing', 'quant_into', 'seg_into', 'route_fixed_cap']
+
+# kernels/pass=4 (graph replay = 1 host launch)
+             tag      T      Rp   drop | NEWvsOLD cos       rel  nf |  GvsE cos  nf |  eagerms  graphms    memMB | capture
+       decode-B1      1    1024      0 |     0.999998  1.96e-03   0 |  0.999997   0 |    0.181    0.110    955.8 | OK
+       decode-B8      8    1024      0 |     0.999999  1.29e-03   0 |  0.999999   0 |    0.182    0.113    970.7 | OK
+      decode-B32     32    1024      0 |     0.999998  1.80e-03   0 |  0.999999   0 |    0.183    0.114    971.5 | OK
+      decode-B64     64    1024      0 |     0.999998  2.00e-03   0 |  0.999999   0 |    0.183    0.114    972.6 | OK
+    prefill-2048   2048   24576      0 |     1.000000  9.52e-04   0 |  1.000000   0 |    2.939    2.877   2901.0 | OK
+    prefill-8192   8192   98304      0 |     1.000000  6.48e-04   0 |  1.000000   0 |   13.394   13.320   8932.8 | OK
+    all->expert0   4096   49152  18432 |     0.948668  7.55e-01   0 |  1.000000   0 |    5.886    5.823   4898.1 | OK
+   empty-experts   4096   49152  12288 |     0.933311  5.36e-01   0 |  1.000000   0 |    5.834    5.762   4901.3 | OK
+   near-capacity   4096   49152      0 |     1.000000  0.00e+00   0 |  1.000000   0 |    5.852    5.776   4898.1 | OK
+
+# capture OK 9/9; graph==eager 9/9; NEW==OLD (no-drop) 7/7
+# M3-A PASS
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-qF2SxwY2LA4h3ePtwppNbD

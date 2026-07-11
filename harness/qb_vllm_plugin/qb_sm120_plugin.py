@@ -664,6 +664,8 @@ def _load_sparse_moe():
 
     lib = ctypes.CDLL(_SPARSE_SO)
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    # graph-safe additive variant: same kernel, launched on a caller-supplied stream (see M3 audit D1).
+    lib.quantize_act_nvfp4_2lvl_s.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                        + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.qb_init_moe_attrs()
@@ -763,8 +765,49 @@ def _load_sparse_moe():
             off += pe
         return src, eblk, r_pad
 
+    # ---- graph-safe (M3) additive helpers: preallocated buffers + current-stream launches + fixed
+    # capacity device routing. Numerically identical to the eager path in eager mode (the current
+    # stream IS the default stream), but capture-legal: no in-region alloc, no host sync. Opt-in via
+    # the plugin's QB_GRAPH flag; the frozen eager helpers above are untouched.
+    def _st():
+        return torch.cuda.current_stream().cuda_stream
+
+    def quant_into(x, bb, sb, gb):
+        # stream-safe quantize into preallocated bb/sb/gb (no alloc, no default-stream sync)
+        r, in_f = x.shape
+        lib.quantize_act_nvfp4_2lvl_s(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(),
+                                      r, in_f, _st())
+
+    def seg_into(w, bb, sb, gb, c, mpe, in_f, eblk):
+        # sparse_moe_mm_2lvl on the CURRENT stream into preallocated c (kills the stream==0 forced sync)
+        ac, meta, scale_a, ga = w
+        r = c.shape[0]
+        lib.sparse_moe_mm_2lvl(ac.data_ptr(), bb.data_ptr(), scale_a.data_ptr(), sb.data_ptr(),
+                               meta.data_ptr(), c.data_ptr(), ac.shape[0], mpe, r, in_f,
+                               ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, _st())
+
+    def route_fixed_cap(assign, e, cap):
+        # fixed-capacity DEVICE routing (replaces build_routing's host sync + dynamic alloc). assign:[R]
+        # local expert per routed row. Returns src:[e*cap] (row index per padded slot, -1=pad), eblk:
+        # [e*cap/_BN] (CONSTANT block->expert map), dropped count. No .item()/host loop/dynamic shape;
+        # overflow (>cap rows for one expert) dropped deterministically (lowest sorted rows kept).
+        r = assign.shape[0]
+        order = torch.argsort(assign, stable=True)
+        sa = assign[order]
+        counts = torch.bincount(assign, minlength=e)
+        offs = torch.cumsum(counts, 0) - counts
+        within = torch.arange(r, device=dev) - offs[sa]
+        keep = within < cap
+        dest = sa * cap + within
+        src = torch.full((e * cap,), -1, dtype=torch.long, device=dev)
+        src[dest[keep]] = order[keep]
+        eblk = (torch.arange(e * cap // _BN, device=dev) // (cap // _BN)).to(torch.int32)
+        dropped = r - int(keep.sum()) if not bool(keep.all()) else 0
+        return src, eblk, dropped
+
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
-                              seg_gemm=seg_gemm, build_routing=build_routing)
+                              seg_gemm=seg_gemm, build_routing=build_routing,
+                              quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap)
     return _SPARSE
 
 
