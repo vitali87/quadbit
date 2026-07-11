@@ -640,8 +640,10 @@ communication share is the honest external-validity caveat, and it grows with wo
 
 **Accuracy.** The per-expert-output 2:4-FP4 error on real weights (random activations, a worst case)
 is cos ~0.70 -- consistent with the single-model finding that 2:4 sparsity, not FP4, is the accuracy
-cost. Sparse FP4 remains a speed-for-capability operating point; MoE accuracy recovery (calibrated
-SparseGPT / distillation on the experts) is future work, exactly as for the dense model.
+cost. Naively sparsifying every expert compounds this over 43 layers to incoherence. Section 10.1 shows
+this is **recoverable training-free** by placing the sparsity structurally (which projections, which
+layers, which routed slots), not by repairing weights -- the per-expert repair we tried fails, but the
+capability-preserving operating points do not need it.
 
 **Serving integration status (an honest ecosystem boundary).** In vLLM 0.24 the DeepSeek-V4-Flash
 NVFP4 checkpoint downloads, and its weights load across 2x RTX PRO 6000; vLLM selects the FlashInfer
@@ -656,10 +658,55 @@ measured cleanly: the operator is validated standalone (segmented kernel bit-exa
 CUDA-graph capturable; correct on a real 256-expert layer) and **distributed** (expert-parallel, 4.21x
 kernel scaling on 4 GPUs, correctness preserved), with the coverage and accuracy accounting above. The
 staged-`.so` injection path (compile the sparse mma under CUDA <= 12.8, ctypes-load under the CUDA-13
-serve image) and the FusedMoE hook are implemented (`harness/serve_dsv4.py`) and ready to run in an
-environment whose FP8-attention backend supports SM120 (or on a Hopper/B200 host). End-to-end in-vLLM
-graph-captured sparse *serving* numbers for this model are thus **future work gated on ecosystem FP8
-SM120 support**, not on the quadbit operator.
+serve image) and the FusedMoE hook are implemented (`harness/serve_dsv4.py`). **Section 10.1 removes
+this gate:** we supply the missing SM120 paths ourselves through a vLLM plugin and serve the model
+end-to-end.
+
+### 10.1 Overturning the ecosystem boundary, and training-free capability preservation
+
+The "future work gated on ecosystem FP8 SM120 support" caveat above is resolved by building the missing
+kernels rather than waiting for them. A vLLM `general_plugins` plugin (installed in every spawned
+worker) supplies each absent SM120 path: block-FP8 dense/attention linears dequantised to bf16 at load;
+a hand-reimplemented MLA `o_proj` (inverse-interleaved RoPE + block-dequant einsum) replacing the
+Hopper-only `deep_gemm_fp8_o_proj`; the DeepSeek sparse-attention Lightning-Indexer logits reimplemented
+in bf16 (the FlashInfer sparse-MLA core *is* SM120-supported, only the indexer needed owning); and a
+pure-torch override of the cooperative-cluster top-k kernels that fail to launch on SM120. With these,
+**DeepSeek-V4-Flash-NVFP4 generates coherent text end-to-end in vLLM on 2x RTX PRO 6000**, and the
+quadbit 2:4-sparse-FP4 experts run in the live serving loop (load drops from ~84 to ~56 GiB/GPU as raw
+NVFP4 is freed after packing -- proof the sparse path executed, not a silent fallback).
+
+**Training-free capability preservation.** Downstream evaluation (400 items/task over ARC-C, HellaSwag,
+Winogrande, MMLU-5; dense AVG .7383) shows the accuracy cost is governed by *where* the sparsity is
+placed, and recovers with no weight training:
+
+- **Projection anchoring.** The downstream tax lives in the gate/up projection; the down projection is
+  nearly free. Sparsifying only down projections in the later 49% of MoE layers (**c_down49**) holds
+  **.7354, -0.29pt** from dense on 2 GPUs, serving path and memory unchanged; the gate/up-only control
+  at the same coverage falls to .7056 (-3.27pt). Down-only clears the -2pt bar up to 60% of layers;
+  the cliff is at 65%.
+- **Route-slot.** Keeping the top-2 highest-weight routed slots per token dense and 2:4-sparsifying the
+  low-weight tail (**D2**) reaches **~33% active sparse expert-FLOP at -0.79pt** (.7304), double
+  c_down49's FLOP share -- the dominant experts carry capability, the tail is nearly free. This needs
+  dense and sparse weights co-resident for the same experts (dual residency), so it runs at 4 GPUs.
+- A per-expert layerwise repair (local KD on each expert's surviving 2:4 weights) **fails** (-7pt): it
+  trades the checkpoint's global weight consistency for local optima that compound. Structural placement
+  succeeds where weight repair does not. Magnitude/Wanda-alone and all-expert sparsity also fail (all
+  <= -4pt). See `docs/deepseek_final_table.md` and Figure `fig_ds_pareto` / `fig_ds_designspace`.
+
+**Transfer to GLM-5.2.** To test that these are model-general structural rules and not DeepSeek
+idiosyncrasies, we repeat them on **GLM-5.2-NVFP4** (`glm_moe_dsa`: 78 layers / 75 MoE, 256+1 experts,
+top-8, Deep Sparse Attention + MLA, 432.9 GiB). GLM loads and generates coherently on **8x RTX PRO 6000**
+(expert-parallel); its DSA runs natively on SM120 (vLLM selects `FLASHINFER_MLA_SPARSE_SM120`), no
+fallback. Anchoring MoE layers 0-37 dense and sparsifying 38-74 (49.3%), held-out PPL (dense 3.171)
+moves by **+0.209 for down-only vs +0.432 for gate/up** -- the same "down safe, gate/up expensive"
+mechanism at roughly half the tax -- while route-slot D2 (top-2 dense, tail 2:4) gives the **best
+quality and the highest sparse-FLOP together (+0.065 PPL, ~37% FLOP)**, mirroring DeepSeek's D2. Figure
+`fig_glm_transfer` places the two models side by side. Two honest limits: GLM quality here is measured by
+PPL only (the downstream MC harness is DeepSeek-tokenizer-specific and was not re-run on GLM), so the
+capability-preservation numbers of record remain DeepSeek's; and all GLM rows run eager, because the
+plugin's expert-parallel local-expert loop uses a host-syncing `torch.unique(...).tolist()` that is
+illegal under CUDA-graph stream capture -- graph-capturable expert-parallel MoE is the remaining future
+work, not a DSA, attention, memory, or loader blocker.
 
 ---
 
@@ -772,6 +819,15 @@ PPL with no calibration, and sparse deploys at its trained accuracy through the 
 stays ~1.56 PPL behind dense, so the sparse advantage is speed, conditioned on prunability. The
 contribution is a hand-written kernel plus deployment stack that occupies a Pareto corner (sparse
 FP4, deployed, fastest-for-prunable) that CUTLASS, FlashInfer, SGLang, and vLLM leave empty.
+
+Two results extend this beyond the dense single-GPU story (Section 10.1). First, on a large MoE the
+accuracy cost is not a fixed tax but a placement problem: sparsifying only down projections in later
+layers, or only the low-weight routed slots, preserves downstream capability **training-free** on
+DeepSeek-V4-Flash (-0.29pt at 49% of MoE layers sparse; a per-expert weight repair, by contrast,
+fails). Second, the same structural rules transfer to **GLM-5.2** served on 8x RTX PRO 6000, whose Deep
+Sparse Attention runs natively on SM120 -- down-only sparsity costs about half of gate/up sparsity
+there too. Both run eager; graph-capturable expert-parallel MoE and a GLM downstream sweep are the
+remaining work.
 
 ---
 
