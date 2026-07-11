@@ -501,9 +501,9 @@ the eager numbers, is the serving result.
 reports prefill and decode as separate throughputs; a real request pays both, so which path wins *end-to-end*
 depends on the decode fraction. We swept a batch x prompt-length x generation-length request matrix, both paths
 CUDA-graph captured, scoring total request latency per cell (TTFT from `generate(max_tokens=1)`, total from
-`generate(max_tokens=G, ignore_eos=True)`). Every decode-throughput number in this paper -- the Llama
-crossover here, the DeepSeek serving sweep (Section 10), and the GLM serving rows (Section 10.1,
-`docs/glm_results.md`) -- is **decode-only**: the `generate(max_tokens=1)` (prefill/TTFT) wall is
+`generate(max_tokens=G, ignore_eos=True)`). Every decode-throughput number in this paper is
+**decode-only**, across the Llama crossover here, the DeepSeek serving sweep (Section 10), and the GLM
+serving rows (Section 10.1, `docs/glm_results.md`). The `generate(max_tokens=1)` (prefill/TTFT) wall is
 subtracted from the `max_tokens=G` wall so the reported rate reflects the decode steps alone, never
 prompt+generation throughput. **Prefix caching must be OFF**: with it on, vLLM V1 reuses the TTFT
 call's prompt KV in the total call, skips the real prefill, and hides sparse's prefill deficit — a first pass

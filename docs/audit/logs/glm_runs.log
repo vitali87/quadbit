@@ -1,0 +1,93 @@
+################################################################################
+# GLM run: dense_ppl   (full log: modal app logs / scratchpad glm_dense_ppl.log)
+# reproduce: see docs/audit/command_manifest.md Section 10.1
+################################################################################
+# GLM-5.2 baseline: nvidia/GLM-5.2-NVFP4 dense=nvfp4 moe=dense tp=8 eager=True dense_layers=[] proj=both route_slot=0 on 8x RTX-PRO-6000
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:35:13 [cuda.py:480] Using FLASHINFER_MLA_SPARSE_SM120 attention backend out of potential backends: ['FLASHINFER_MLA_SPARSE_SM120'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:35:13 [mla_attention.py:420] Using fp8_ds_mla KV cache format for FLASHINFER_MLA_SPARSE_SM120 backend.
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:35:13 [expert_map_manager.py:245] [EP Rank 0/8] Expert parallelism is enabled. Expert placement strategy: linear. Local/global number of experts: 32/256. Experts local to global index map: 0->0, 1->1, 2->2, 3->3, 4->4, 5->5, 6->6, 7->7, 8->8, 9->9, 10->10, 11->11, 12->12, 13->13, 14->14, 15->15, 16->16, 17->17, 18->18, 19->19, 20->20, 21->21, 22->22, 23->23, 24->24, 25->25, 26->26, 27->27, 28->28, 29->29, 30->30, 31->31.
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:35:13 [nvfp4.py:270] Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTEDSL', 'FLASHINFER_CUTEDSL_BATCHED', 'FLASHINFER_CUTLASS', 'VLLM_CUTLASS', 'MARLIN', 'EMULATION'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:40:51 [default_loader.py:430] Loading weights took 336.20 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:40:52 [gpu_model_runner.py:5255] Model loading took 54.62 GiB memory and 338.436405 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:42:21 [gpu_worker.py:508] Available KV cache memory: 30.47 GiB
+(EngineCore pid=77) INFO 07-11 13:42:21 [kv_cache_utils.py:2146] GPU KV cache size: 606,528 tokens
+  [gen] 'The capital of France is' -> ' Paris. Distance from Paris to Lyon is 391 km, while direct flight time is 1 h 5 min. According to Yandex.Flights,'
+  [gen] 'def fibonacci(n):' -> ' \n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n'
+  [gen] 'The three primary colors are' -> ' red, blue, and yellow. These colors cannot be made by mixing other colors together. They are the base colors used to create all other colors in the color'
+  [gen] 'Water is made of hydrogen and' -> ' oxygen, H2O. The hydrogen in water can help create energy. Hydrogen can be extracted through a process called electrolysis, which separates water molecules into'
+# PPL over 114-token held-out passage: 3.171
+# serve B=1 prompt=512 gen=64: prefill(TTFT~)5.45s decode 64tok in 40.63s = 1.58 tok/s TPOT 0.635s
+  [sparse-path proof] dense-anchor log lines: 0 (expect 304 = 38 anchors x 8 workers for sparse rows; 0 for dense)
+
+################################################################################
+# GLM run: down49   (full log: modal app logs / scratchpad glm_down49.log)
+# reproduce: see docs/audit/command_manifest.md Section 10.1
+################################################################################
+# GLM-5.2 baseline: nvidia/GLM-5.2-NVFP4 dense=nvfp4 moe=sparse tp=8 eager=True dense_layers=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37] proj=down route_slot=0 on 8x RTX-PRO-6000
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:48:30 [cuda.py:480] Using FLASHINFER_MLA_SPARSE_SM120 attention backend out of potential backends: ['FLASHINFER_MLA_SPARSE_SM120'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:48:30 [mla_attention.py:420] Using fp8_ds_mla KV cache format for FLASHINFER_MLA_SPARSE_SM120 backend.
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:48:30 [expert_map_manager.py:245] [EP Rank 0/8] Expert parallelism is enabled. Expert placement strategy: linear. Local/global number of experts: 32/256. Experts local to global index map: 0->0, 1->1, 2->2, 3->3, 4->4, 5->5, 6->6, 7->7, 8->8, 9->9, 10->10, 11->11, 12->12, 13->13, 14->14, 15->15, 16->16, 17->17, 18->18, 19->19, 20->20, 21->21, 22->22, 23->23, 24->24, 25->25, 26->26, 27->27, 28->28, 29->29, 30->30, 31->31.
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:48:30 [nvfp4.py:270] Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTEDSL', 'FLASHINFER_CUTEDSL_BATCHED', 'FLASHINFER_CUTLASS', 'VLLM_CUTLASS', 'MARLIN', 'EMULATION'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:54:23 [default_loader.py:430] Loading weights took 350.98 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:54:30 [gpu_model_runner.py:5255] Model loading took 51.62 GiB memory and 359.151531 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 13:56:00 [gpu_worker.py:508] Available KV cache memory: 29.48 GiB
+(EngineCore pid=77) INFO 07-11 13:56:00 [kv_cache_utils.py:2146] GPU KV cache size: 586,752 tokens
+  [gen] 'The capital of France is' -> ' Paris. The city is located on the Seine River in the central part of the country. It is one of the most populous cities in Europe, with a population'
+  [gen] 'def fibonacci(n):' -> ' \n    a = 0\n    b = 1\n    if n < 0: \n        print("Wrong input!") \n    elif n =='
+  [gen] 'The three primary colors are' -> ' red, blue, and yellow. These colors cannot be made by mixing other colors together. Instead, they are the base colors that can be mixed to create all'
+  [gen] 'Water is made of hydrogen and' -> ' oxygen, but that simple combination can have a profound effect on your body. The water you drink could be acidic or alkaline, which is measured by the pH'
+# PPL over 114-token held-out passage: 3.380
+# serve B=1 prompt=512 gen=64: prefill(TTFT~)5.31s decode 64tok in 42.22s = 1.52 tok/s TPOT 0.660s
+# serve B=1 prompt=1536 gen=64: prefill(TTFT~)5.56s decode 64tok in 40.18s = 1.59 tok/s TPOT 0.628s
+  per-GPU mem used (MB): ['92273', '92265', '92265', '92265', '92265', '92265', '92265', '92265']
+# GLM baseline PASS dense=nvfp4 moe=sparse (glm_moe_dsa on SM120, tp=8 EP, eager=True)
+  [sparse-path proof] dense-anchor log lines: 304 (expect 304 = 38 anchors x 8 workers for sparse rows; 0 for dense)
+
+################################################################################
+# GLM run: gateup49   (full log: modal app logs / scratchpad glm_gateup49.log)
+# reproduce: see docs/audit/command_manifest.md Section 10.1
+################################################################################
+# GLM-5.2 baseline: nvidia/GLM-5.2-NVFP4 dense=nvfp4 moe=sparse tp=8 eager=True dense_layers=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37] proj=gateup route_slot=0 on 8x RTX-PRO-6000
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:01:57 [cuda.py:480] Using FLASHINFER_MLA_SPARSE_SM120 attention backend out of potential backends: ['FLASHINFER_MLA_SPARSE_SM120'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:01:57 [mla_attention.py:420] Using fp8_ds_mla KV cache format for FLASHINFER_MLA_SPARSE_SM120 backend.
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:01:58 [expert_map_manager.py:245] [EP Rank 0/8] Expert parallelism is enabled. Expert placement strategy: linear. Local/global number of experts: 32/256. Experts local to global index map: 0->0, 1->1, 2->2, 3->3, 4->4, 5->5, 6->6, 7->7, 8->8, 9->9, 10->10, 11->11, 12->12, 13->13, 14->14, 15->15, 16->16, 17->17, 18->18, 19->19, 20->20, 21->21, 22->22, 23->23, 24->24, 25->25, 26->26, 27->27, 28->28, 29->29, 30->30, 31->31.
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:01:58 [nvfp4.py:270] Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTEDSL', 'FLASHINFER_CUTEDSL_BATCHED', 'FLASHINFER_CUTLASS', 'VLLM_CUTLASS', 'MARLIN', 'EMULATION'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:07:41 [default_loader.py:430] Loading weights took 341.67 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:07:54 [gpu_model_runner.py:5255] Model loading took 48.57 GiB memory and 356.449075 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:09:24 [gpu_worker.py:508] Available KV cache memory: 32.53 GiB
+(EngineCore pid=77) INFO 07-11 14:09:24 [kv_cache_utils.py:2146] GPU KV cache size: 647,424 tokens
+  [gen] 'The capital of France is' -> ' Paris. Distance from Paris to Nice is 427 miles; from Paris to Lyon is 272 miles; from Paris to Marseille is 421 miles'
+  [gen] 'def fibonacci(n):' -> ' \n    if n == 0: \n        return 0\n    elif n == 1: \n        return 1\n    else: \n       '
+  [gen] 'The three primary colors are' -> ' red,'
+  [gen] 'Water is made of hydrogen and' -> " oxygen. Hydrogen is flammable. Oxygen is what makes things burn. So why doesn't water catch fire?\nThe answer lies in chemistry. When hydrogen and"
+# PPL over 114-token held-out passage: 3.603
+# serve B=1 prompt=512 gen=64: prefill(TTFT~)3.95s decode 64tok in 33.71s = 1.90 tok/s TPOT 0.527s
+# serve B=1 prompt=1536 gen=64: prefill(TTFT~)4.09s decode 64tok in 33.76s = 1.90 tok/s TPOT 0.527s
+  per-GPU mem used (MB): ['91859', '91859', '91703', '91703', '91703', '91703', '91703', '91703']
+# GLM baseline PASS dense=nvfp4 moe=sparse (glm_moe_dsa on SM120, tp=8 EP, eager=True)
+  [sparse-path proof] dense-anchor log lines: 304 (expect 304 = 38 anchors x 8 workers for sparse rows; 0 for dense)
+
+################################################################################
+# GLM run: routeslot2   (full log: modal app logs / scratchpad glm_routeslot2.log)
+# reproduce: see docs/audit/command_manifest.md Section 10.1
+################################################################################
+# GLM-5.2 baseline: nvidia/GLM-5.2-NVFP4 dense=nvfp4 moe=sparse tp=8 eager=True dense_layers=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37] proj=both route_slot=2 on 8x RTX-PRO-6000
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:15:00 [cuda.py:480] Using FLASHINFER_MLA_SPARSE_SM120 attention backend out of potential backends: ['FLASHINFER_MLA_SPARSE_SM120'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:15:00 [mla_attention.py:420] Using fp8_ds_mla KV cache format for FLASHINFER_MLA_SPARSE_SM120 backend.
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:15:00 [expert_map_manager.py:245] [EP Rank 0/8] Expert parallelism is enabled. Expert placement strategy: linear. Local/global number of experts: 32/256. Experts local to global index map: 0->0, 1->1, 2->2, 3->3, 4->4, 5->5, 6->6, 7->7, 8->8, 9->9, 10->10, 11->11, 12->12, 13->13, 14->14, 15->15, 16->16, 17->17, 18->18, 19->19, 20->20, 21->21, 22->22, 23->23, 24->24, 25->25, 26->26, 27->27, 28->28, 29->29, 30->30, 31->31.
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:15:00 [nvfp4.py:270] Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTEDSL', 'FLASHINFER_CUTEDSL_BATCHED', 'FLASHINFER_CUTLASS', 'VLLM_CUTLASS', 'MARLIN', 'EMULATION'].
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:21:07 [default_loader.py:430] Loading weights took 365.27 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:21:24 [gpu_model_runner.py:5255] Model loading took 68.98 GiB memory and 383.963736 seconds
+(Worker_TP0_EP0 pid=106) INFO 07-11 14:22:55 [gpu_worker.py:508] Available KV cache memory: 12.12 GiB
+(EngineCore pid=77) INFO 07-11 14:22:56 [kv_cache_utils.py:2146] GPU KV cache size: 241,152 tokens
+  [gen] 'The capital of France is' -> ' Paris. Distance from Paris to Lyon is 391 km, while direct flight time is 1 h 05 min. Direct flights from Paris to Lyon are'
+  [gen] 'def fibonacci(n):' -> ' \n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n'
+  [gen] 'The three primary colors are' -> ' red, blue, and yellow. These colors are equally as far apart as any other color on the color wheel. Red, blue and yellow cannot be created by'
+  [gen] 'Water is made of hydrogen and' -> ' oxygen, H20. Hydrogen is the first element on the periodic table, and is the lightest of all the elements. It contains 1 proton and'
+# PPL over 114-token held-out passage: 3.236
+# serve B=1 prompt=512 gen=64: prefill(TTFT~)5.29s decode 64tok in 35.35s = 1.81 tok/s TPOT 0.552s
+# serve B=1 prompt=1536 gen=64: prefill(TTFT~)5.74s decode 64tok in 33.52s = 1.91 tok/s TPOT 0.524s
+  per-GPU mem used (MB): ['91763', '91731', '91731', '91731', '91731', '91731', '91731', '91731']
+# GLM baseline PASS dense=nvfp4 moe=sparse (glm_moe_dsa on SM120, tp=8 EP, eager=True)
+  [sparse-path proof] dense-anchor log lines: 304 (expect 304 = 38 anchors x 8 workers for sparse rows; 0 for dense)
+

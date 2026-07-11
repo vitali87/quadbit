@@ -871,9 +871,9 @@ prompt-length x generation-length request matrix, both paths CUDA-graph
 captured, scoring total request latency per cell (TTFT from
 \texttt{generate(max\_tokens=1)}, total from
 \texttt{generate(max\_tokens=G,\ ignore\_eos=True)}). Every
-decode-throughput number in this paper -- the Llama crossover here, the
-DeepSeek serving sweep (Section 10), and the GLM serving rows (Section
-10.1, \texttt{docs/glm\_results.md}) -- is \textbf{decode-only}: the
+decode-throughput number in this paper is \textbf{decode-only}, across
+the Llama crossover here, the DeepSeek serving sweep (Section 10), and
+the GLM serving rows (Section 10.1, \texttt{docs/glm\_results.md}). The
 \texttt{generate(max\_tokens=1)} (prefill/TTFT) wall is subtracted from
 the \texttt{max\_tokens=G} wall so the reported rate reflects the decode
 steps alone, never prompt+generation throughput. \textbf{Prefix caching

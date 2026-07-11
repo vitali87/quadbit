@@ -1,0 +1,29 @@
+# DeepSeek-V4-Flash downstream headline rows (result blocks from the 400-item eval)
+# frozen source of record for ALL 8 rows: docs/figures/data/deepseek_final.csv @ 26e9b55
+# reproduce: docs/audit/command_manifest.md Section 10. Route-slot D1/D2/D3 ran on 4 GPU
+#            (downstream4, route-slot branch); their rows are in deepseek_final.csv.
+================================================================================
+### c_down49
+# tag=c_down49 PPL=3.620 per-GPU-MB=[96763, 96859]
+#   arc_c[allenai/ai2_arc]       acc=0.6075 acc_norm=0.6450 primary=0.6450 (n=400)
+#   hellaswag[Rowan/hellaswag]   acc=0.5150 acc_norm=0.7000 primary=0.7000 (n=400)
+#   winogrande[allenai/winogrande] acc=0.7825 acc_norm=0.7825 primary=0.7825 (n=400)
+#   mmlu_subset                  acc=0.8140 acc_norm=0.8140 primary=0.8140 (n=5)
+# AVG normalized primary = 0.7354
+
+### c_down60
+# tag=c_down60 PPL=3.926 per-GPU-MB=[96829, 96813]
+#   arc_c[allenai/ai2_arc]       acc=0.6000 acc_norm=0.6425 primary=0.6425 (n=400)
+#   hellaswag[Rowan/hellaswag]   acc=0.5225 acc_norm=0.6775 primary=0.6775 (n=400)
+#   winogrande[allenai/winogrande] acc=0.7600 acc_norm=0.7600 primary=0.7600 (n=400)
+#   mmlu_subset                  acc=0.7960 acc_norm=0.7960 primary=0.7960 (n=5)
+# AVG normalized primary = 0.7190
+
+### c_gateup49
+# tag=c_gateup49 PPL=3.541 per-GPU-MB=[96833, 96865]
+#   arc_c[allenai/ai2_arc]       acc=0.5900 acc_norm=0.6100 primary=0.6100 (n=400)
+#   hellaswag[Rowan/hellaswag]   acc=0.5125 acc_norm=0.6700 primary=0.6700 (n=400)
+#   winogrande[allenai/winogrande] acc=0.7525 acc_norm=0.7525 primary=0.7525 (n=400)
+#   mmlu_subset                  acc=0.7900 acc_norm=0.7900 primary=0.7900 (n=5)
+# AVG normalized primary = 0.7056
+

@@ -15,6 +15,9 @@ k
 *.ncu-rep
 *.nsys-rep
 *.log
+# committed evidence bundle for the paper audit (overrides the global *.log ignore)
+!docs/audit/logs/
+!docs/audit/logs/*.log
 scratch_*
 .ruff_cache/
 .DS_Store
