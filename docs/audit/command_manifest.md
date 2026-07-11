@@ -104,6 +104,15 @@ is not graph-capturable). Anchor `DL = 0,1,...,37`. Harness commit `8bb08c0`; re
 gen1_wall)` (subtracts the second prefill); see README timing note. DSA proof: `FLASHINFER_MLA_SPARSE_SM120`
 in every log; sparse-path proof: exactly 304 `dense-anchor` lines (38 anchors x 8 workers) per sparse run.
 
+**Downstream smoke suite (P1, 8-GPU).** Harness commit `cc00b8b`. Tokenizer-agnostic MC harness on GLM:
+
+| row | command (prefix `uv run modal run --detach harness/serve_dsv4.py --mode glm_downstream --limit 200`) | GPU | AVG |
+|---|---|---|---|
+| dense (ref) | `--moe dense --tag glm_dense` | 8 | .7603 |
+| route-slot D2 | `--moe sparse --sparse-proj both --route-slot 2 --dense-layers "$DL" --tag glm_d2` | 8 | .7508 |
+
+Results in `docs/glm_results.md` (downstream table); logs `docs/audit/logs/glm_downstream.log`.
+
 ## Figures
 
 `uv run --no-project --with matplotlib --with numpy python docs/figures/make_figures.py` -> `out/*.{svg,pdf}`

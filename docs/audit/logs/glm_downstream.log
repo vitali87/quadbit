@@ -1,0 +1,37 @@
+# GLM-5.2-NVFP4 downstream smoke suite (P1) -- 8x RTX PRO 6000, EP, eager
+# Harness commit cc00b8b (feat/glm-downstream-smoke), mode=glm_downstream, limit=200.
+# MC log-likelihood harness (tokenizer-agnostic: scores continuations via llm.get_tokenizer()),
+# run unchanged on GLM through the glm=True load branch. Two 8-GPU runs: dense ref vs route-slot D2.
+# Sparse run: --moe sparse --sparse-proj both --route-slot 2 --dense-layers "0,1,...,37".
+
+## dense reference  (app ap-aUrw4JZsB5YPoSO3j2K2xf)
+# TASK mmlu:high_school_world_history n=50 acc=0.8800 acc_norm=0.8800
+# TASK mmlu:professional_medicine n=50 acc=0.9600 acc_norm=0.9600
+# TASK mmlu:moral_scenarios n=50 acc=0.7000 acc_norm=0.7000
+# TASK mmlu_subset n_subj=5 acc=0.8560
+# ================ DOWNSTREAM SUMMARY ================
+# tag=glm_dense PPL=3.171 per-GPU-MB=[91691, 91689, 91689, 91689, 91689, 91689, 91689, 91689]
+#   arc_c[allenai/ai2_arc]       acc=0.6300 acc_norm=0.6550 primary=0.6550 (n=200)
+#   hellaswag[Rowan/hellaswag]   acc=0.5950 acc_norm=0.7800 primary=0.7800 (n=200)
+#   winogrande[allenai/winogrande] acc=0.7500 acc_norm=0.7500 primary=0.7500 (n=200)
+#   mmlu_subset                  acc=0.8560 acc_norm=0.8560 primary=0.8560 (n=5)
+# AVG normalized primary = 0.7603
+# downstream CSV -> /cache/qb_downstream_glm_dense.csv
+
+## route-slot D2  (app ap-fbZVLEu2r7Y8sDmZwm1VXD)
+# TASK mmlu:high_school_world_history n=50 acc=0.8800 acc_norm=0.8800
+# TASK mmlu:professional_medicine n=50 acc=0.9600 acc_norm=0.9600
+# TASK mmlu:moral_scenarios n=50 acc=0.6800 acc_norm=0.6800
+# TASK mmlu_subset n_subj=5 acc=0.8480
+# ================ DOWNSTREAM SUMMARY ================
+# tag=glm_d2 PPL=3.216 per-GPU-MB=[91761, 91729, 91729, 91729, 91729, 91729, 91729, 91729]
+#   arc_c[allenai/ai2_arc]       acc=0.6400 acc_norm=0.6500 primary=0.6500 (n=200)
+#   hellaswag[Rowan/hellaswag]   acc=0.5850 acc_norm=0.7800 primary=0.7800 (n=200)
+#   winogrande[allenai/winogrande] acc=0.7250 acc_norm=0.7250 primary=0.7250 (n=200)
+#   mmlu_subset                  acc=0.8480 acc_norm=0.8480 primary=0.8480 (n=5)
+# AVG normalized primary = 0.7508
+# downstream CSV -> /cache/qb_downstream_glm_d2.csv
+
+# Read: D2 holds within 0.95 pt AVG of dense (0.7508 vs 0.7603); HellaSwag flat, ARC-C/MMLU within
+# n=200/n=5 noise, Winogrande -2.5pt is the largest single move. Downstream PPL (3.216) tracks serving
+# PPL (3.236). Removes the "low PPL could mask a downstream collapse" objection for the D2 policy.

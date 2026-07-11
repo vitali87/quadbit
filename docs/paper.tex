@@ -1185,15 +1185,20 @@ the same ``down safe, gate/up expensive'' mechanism at roughly half the
 tax -- while route-slot D2 (top-2 dense, tail 2:4) gives the
 \textbf{best quality and the highest sparse-FLOP together (+0.065 PPL,
 \textasciitilde37\% FLOP)}, mirroring DeepSeek's D2. Figure
-\texttt{fig\_glm\_transfer} places the two models side by side. Two
-honest limits: GLM quality here is measured by PPL only (the downstream
-MC harness is DeepSeek-tokenizer-specific and was not re-run on GLM), so
-the capability-preservation numbers of record remain DeepSeek's; and all
-GLM rows run eager, because the plugin's expert-parallel local-expert
-loop uses a host-syncing \texttt{torch.unique(...).tolist()} that is
-illegal under CUDA-graph stream capture -- graph-capturable
-expert-parallel MoE is the remaining future work, not a DSA, attention,
-memory, or loader blocker.
+\texttt{fig\_glm\_transfer} places the two models side by side. To check
+that D2's small PPL cost is not hiding a downstream collapse, we also
+run the tokenizer-agnostic MC harness on GLM (ARC-C, HellaSwag,
+Winogrande, MMLU-5; \texttt{limit=200}): route-slot D2 holds \textbf{AVG
+.7508 vs dense .7603, -0.95pt}, matching the PPL gap, with no task
+collapsing. Two honest limits remain: this GLM downstream evidence is a
+small smoke suite on the D2 policy only (full benchmarks, and downstream
+numbers for the down-only/gate-up rows, are still unmeasured on GLM, so
+the most complete capability accounting of record remains DeepSeek's);
+and all GLM rows run eager, because the plugin's expert-parallel
+local-expert loop uses a host-syncing
+\texttt{torch.unique(...).tolist()} that is illegal under CUDA-graph
+stream capture -- graph-capturable expert-parallel MoE is the remaining
+future work, not a DSA, attention, memory, or loader blocker.
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
