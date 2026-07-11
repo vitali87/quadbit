@@ -396,6 +396,69 @@ def versions() -> None:
         print(f"flashinfer introspection failed: {type(ex).__name__}: {ex}", flush=True)
 
 
+GLM_MODEL = "nvidia/GLM-5.2-NVFP4"
+
+
+@app.function(image=image, timeout=30 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def glm_inspect() -> None:
+    # CPU-only GLM-5.2 transfer feasibility probe: (1) does the installed vLLM register the
+    # glm_moe_dsa model class, (2) exact NVFP4 checkpoint size + per-module-dtype breakdown from the
+    # safetensors index (no model load), (3) 2/4/8x RTX-PRO-6000 (95 GiB) memory fit. No GPU needed.
+    import json
+    from collections import defaultdict
+    from importlib.metadata import version
+
+    from huggingface_hub import hf_hub_download
+
+    print(f"# vllm == {version('vllm')}", flush=True)
+    try:
+        from vllm import ModelRegistry
+
+        arches = sorted(ModelRegistry.get_supported_archs())
+        glm = [a for a in arches if "glm" in a.lower() or "dsa" in a.lower()]
+        print(f"# vLLM registry: glm/dsa arches = {glm}", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"# vLLM registry check failed: {type(ex).__name__}: {ex}", flush=True)
+
+    cfg_path = hf_hub_download(GLM_MODEL, "config.json")
+    cfg = json.loads(open(cfg_path).read())
+    arch = cfg.get("architectures", ["?"])
+    print(f"# config: model_type={cfg.get('model_type')} architectures={arch} "
+          f"layers={cfg.get('num_hidden_layers')} hidden={cfg.get('hidden_size')} "
+          f"experts={cfg.get('n_routed_experts')} topk={cfg.get('num_experts_per_tok')} "
+          f"moe_int={cfg.get('moe_intermediate_size')} shared={cfg.get('n_shared_experts')} "
+          f"first_k_dense={cfg.get('first_k_dense_replace')}", flush=True)
+
+    idx_path = hf_hub_download(GLM_MODEL, "model.safetensors.index.json")
+    idx = json.loads(open(idx_path).read())
+    total = idx.get("metadata", {}).get("total_size", 0)
+    wmap = idx.get("weight_map", {})
+    shards = sorted(set(wmap.values()))
+    # bucket parameter names by role to see what is NVFP4 (uint8 experts) vs kept-precision
+    buckets = defaultdict(int)
+    for name in wmap:
+        if ".experts." in name and "shared" not in name:
+            key = "routed_experts"
+        elif "shared_expert" in name:
+            key = "shared_expert"
+        elif any(a in name for a in ("self_attn", "attention", "q_proj", "kv", "o_proj")):
+            key = "attention"
+        else:
+            key = "other"
+        buckets[key] += 1
+    gib = total / (1024 ** 3)
+    print(f"# checkpoint total_size = {total} bytes = {gib:.1f} GiB across {len(shards)} shards",
+          flush=True)
+    print(f"# tensor-name buckets (count of entries): {dict(buckets)}", flush=True)
+    usable = 94.97
+    for ng in (2, 4, 8):
+        cap = ng * usable
+        fits = "FITS (weights only)" if gib < cap * 0.92 else "DOES NOT FIT"
+        print(f"#   {ng}x RTX-PRO-6000 = {cap:.0f} GiB -> {fits} "
+              f"(weights {gib:.0f} GiB, leaves {cap - gib:.0f} GiB for KV+act)", flush=True)
+
+
 @app.function(image=image)
 def dumpsrc() -> None:
     # CPU-only: read the exact source of the deepseek_v4 o_proj DeepGEMM path so the SM120-safe
@@ -1292,6 +1355,8 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
          route_slot: int = 0) -> None:
     if mode == "test_so":
         test_so.remote()
+    elif mode == "glm_inspect":
+        glm_inspect.remote()
     elif mode == "versions":
         versions.remote()
     elif mode == "dumpsrc":
