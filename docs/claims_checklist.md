@@ -117,3 +117,24 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | DeepSeek-V4-Flash NVFP4 weights load in vLLM 0.24 on 2x RTX PRO 6000 (FlashInfer CUTLASS MoE selected) | `harness/serve_dsv4.py` (serve3 log) | backed |
 | The model's FP8 (ue8m0 W8A8) attention GEMM has NO SM120 kernel: DeepGEMM SF-transform asserts, CUTLASS c3x scaled_mm no-dispatch -> forward cannot init on consumer Blackwell (ecosystem gap, not quadbit) | `harness/serve_dsv4.py` (serve3/serve4 logs) | backed |
 | In-vLLM graph-captured sparse MoE serving (end-to-end, this model) | `harness/serve_dsv4.py` quadbit mode; staged .so + FusedMoE hook implemented | reserved (future work, gated on ecosystem FP8 SM120 support / Hopper host) |
+
+## 8. Training-free capability-preserving structural sparsity (DeepSeek + GLM transfer)
+
+The paper's large-model claim. Downstream = 400 items/task (ARC-C/HellaSwag/Winogrande/MMLU-5), dense
+ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-FP4 expert op.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| Single-GPU sparse-FP4 kernel + accuracy proven | Sections 2/6/7 above (kernel Pareto, fused blocks, W4A4 accounting) | backed |
+| Multi-GPU (EP) sparse-FP4 MoE proven | EP 2.17x/4.21x scaling (Section 7); DeepSeek downstream ran on 2-GPU (c_down49) and 4-GPU (D2) | backed |
+| Projection anchoring recovers capability training-free: down-only 49% layers at -0.29pt (c_down49) | `docs/figures/data/deepseek_final.csv`, `docs/deepseek_final_table.md`; merged PR #9 | backed |
+| Max down-only coverage clearing .718 is 60% layers (.7190); cliff at 65% (.7150) | `wsa_downstream.csv` c_down60/c_down65; `docs/paper_notes.md` WS-C | backed |
+| Route-slot extends the Pareto: top-2-dense D2 = ~33% active sparse FLOP at -0.79pt, needs 4-GPU dual residency | `deepseek_final.csv` d2_slot2; merged PR #10; `docs/paper_notes.md` WS-D | backed |
+| Mechanism: tax lives in gate_up projection + dominant route slots; down + low-weight tail are safe | c_gateup49 (-3.27) vs c_down49 (-0.29); D1 (-2.27) vs D2/D3; `fig_ds_designspace` | backed |
+| Failure controls: magnitude/Wanda-alone/A3-repair/all-sparse all fail (>= -4.2pt) | `wsa_downstream.csv` (magnitude_100 .5096, a2_100_wanda .5092, a3_*, a2_49 .6966); `fig_ds_designspace` | backed |
+| Do NOT conflate sparse layer % with active sparse FLOP %; PPL is not the quality metric | `docs/deepseek_final_table.md` column notes | backed |
+| GLM-5.2 architecturally compatible: glm_moe_dsa supported in vLLM 0.24.0, NVFP4 routed experts identical scheme | `harness/serve_dsv4.py --mode glm_inspect`; `docs/glm_feasibility.md` | backed |
+| GLM-5.2-NVFP4 = 432.9 GiB; does NOT fit on 2 or 4 RTX PRO 6000, needs 8 (EP) | `glm_inspect` safetensors-index probe; `docs/glm_feasibility.md` | backed |
+| GLM-5.2 loads + generates coherently on SM120 under the quadbit plugin (DSA attention) | `harness/serve_dsv4.py --mode glm_baseline` (8-GPU gate) | **reserved (blocked): job queued on scarce 8x RTX PRO 6000 capacity; DSA-on-SM120 unverified until it schedules** |
+| GLM sparse structural transfer (down-anchor / route-slot) preserves capability | Phase 3, gated on the GLM load gate above | reserved (blocked on the 8-GPU load gate) |
+| Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |
