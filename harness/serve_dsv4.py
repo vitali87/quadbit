@@ -149,21 +149,31 @@ def glm_baseline(
     print(f"# PPL over {len(nlls)}-token held-out passage: {ppl:.3f}", flush=True)
 
     # --- coarse serving timing: prefill (prompt-heavy, gen 1) and decode (gen 64) at B=1 ---
+    # prompt+gen must fit max_len; clamp so a long-prompt row never aborts the eval.
     tok = llm.get_tokenizer()
-    for plen in (512, 2048):
-        base = tok.encode(passage)
+    base = tok.encode(passage)
+    for plen in (512, 1536):
+        gen = 64
+        plen = min(plen, max_len - gen - 8)
+        if plen <= 0:
+            continue
         ptoks = (base * ((plen // len(base)) + 1))[:plen]
-        tp0 = time.time()
-        llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=1))
-        prefill_s = time.time() - tp0
-        td0 = time.time()
-        dout = llm.generate(
-            [{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=64)
-        )
-        dec_s = time.time() - td0
-        gtok = len(dout[0].outputs[0].token_ids)
+        one = SamplingParams(temperature=0.0, max_tokens=1)
+        try:
+            tp0 = time.time()
+            llm.generate([{"prompt_token_ids": ptoks}], one)
+            prefill_s = time.time() - tp0
+            td0 = time.time()
+            dout = llm.generate(
+                [{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=gen)
+            )
+            dec_s = time.time() - td0
+            gtok = len(dout[0].outputs[0].token_ids)
+        except Exception as e:  # noqa: BLE001 - timing must never abort the quality eval
+            print(f"# serve B=1 prompt={plen}: timing skipped ({type(e).__name__})", flush=True)
+            continue
         print(
-            f"# serve B=1 prompt={plen} gen=64: prefill(TTFT~){prefill_s:.2f}s "
+            f"# serve B=1 prompt={plen} gen={gen}: prefill(TTFT~){prefill_s:.2f}s "
             f"decode {gtok}tok in {dec_s:.2f}s = {gtok / max(dec_s, 1e-6):.2f} tok/s "
             f"TPOT {dec_s / max(gtok, 1):.3f}s",
             flush=True,
