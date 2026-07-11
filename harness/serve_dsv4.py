@@ -22,9 +22,14 @@ MIN = 60
 # Blackwell FP4 kernels and the deepseek_v4 model. CUDA 13 base for the runtime libs it expects.
 image = (
     modal.Image.from_registry("nvidia/cuda:13.0.0-devel-ubuntu22.04", add_python="3.12")
-    .env({"PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64", "HF_HOME": "/cache",
-          "HF_XET_HIGH_PERFORMANCE": "1"})
+    .env(
+        {
+            "PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+            "HF_HOME": "/cache",
+            "HF_XET_HIGH_PERFORMANCE": "1",
+        }
+    )
     .pip_install("vllm", "huggingface_hub", "datasets")
     # vLLM 0.24.0's deepseek_v4 sparse-MLA path calls flashinfer's newer
     # trtllm_batch_decode_sparse_mla_dsv4(swa_topk_lens=..., extra_sparse_indices=...) API, but
@@ -34,8 +39,9 @@ image = (
     # but flashinfer-cubin stops at 0.6.13. Use python 0.6.14 (for the API) + cubin 0.6.13 (latest
     # precompiled kernels) and bypass the python/cubin version check -- the sparse-MLA kernel JITs at
     # runtime regardless. --no-deps keeps vLLM 0.24.0 pinned (a plain pin backtracks it to 0.11.0).
-    .run_commands("pip install --force-reinstall --no-deps "
-                  "flashinfer-python==0.6.14 flashinfer-cubin==0.6.13")
+    .run_commands(
+        "pip install --force-reinstall --no-deps flashinfer-python==0.6.14 flashinfer-cubin==0.6.13"
+    )
     .env({"FLASHINFER_DISABLE_VERSION_CHECK": "1"})
     # SM120 dense/attention unblock plugin: registered as a vllm.general_plugins entry point so the
     # monkeypatch runs in every spawned worker (an imperative patch in the driver does not survive).
@@ -48,15 +54,27 @@ app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
-@app.function(gpu="RTX-PRO-6000:8", timeout=90 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def glm_baseline(tp: int = 8, eager: bool = True, max_len: int = 2048, dense: str = "nvfp4",
-                 moe: str = "dense", dense_layers: str = "", sparse_proj: str = "both",
-                 route_slot: int = 0) -> None:
+@app.function(
+    gpu="RTX-PRO-6000:8",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def glm_baseline(
+    tp: int = 8,
+    eager: bool = True,
+    max_len: int = 2048,
+    dense: str = "nvfp4",
+    moe: str = "dense",
+    dense_layers: str = "",
+    sparse_proj: str = "both",
+    route_slot: int = 0,
+) -> None:
     """GLM-5.2 transfer load + coherence gate on 8x RTX PRO 6000 (EP). Tests: (a) 8-GPU schedule,
     (b) glm_moe_dsa loads on SM120 under the quadbit plugin, (c) DSA attention runs, (d) coherent
     generation. moe=dense first (NVFP4->bf16 dequant experts, no sparse); moe=sparse + dense_layers/
     sparse_proj/route_slot reuses the DeepSeek-proven structural policies on GLM's expert path."""
+    import math
     import os
     import subprocess
     import time
@@ -71,37 +89,114 @@ def glm_baseline(tp: int = 8, eager: bool = True, max_len: int = 2048, dense: st
     os.environ["QB_SPARSE_PROJ"] = sparse_proj
     os.environ["QB_ROUTE_SLOT"] = str(route_slot)
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    print(f"# GLM-5.2 baseline: {GLM_MODEL} dense={dense} moe={moe} tp={tp} eager={eager} "
-          f"dense_layers=[{dense_layers}] proj={sparse_proj} route_slot={route_slot} on "
-          f"{torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+    print(
+        f"# GLM-5.2 baseline: {GLM_MODEL} dense={dense} moe={moe} tp={tp} eager={eager} "
+        f"dense_layers=[{dense_layers}] proj={sparse_proj} route_slot={route_slot} on "
+        f"{torch.cuda.device_count()}x RTX-PRO-6000",
+        flush=True,
+    )
 
     # GLM keeps its own rope/config (1M context); do NOT force DeepSeek's yarn override.
-    kw = dict(model=GLM_MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.92, kv_cache_dtype="fp8",
-              max_num_batched_tokens=max_len, enable_expert_parallel=True)
+    kw = dict(
+        model=GLM_MODEL,
+        tensor_parallel_size=tp,
+        enforce_eager=eager,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.92,
+        kv_cache_dtype="fp8",
+        max_num_batched_tokens=max_len,
+        enable_expert_parallel=True,
+    )
     t0 = time.time()
     llm = LLM(**kw)
     print(f"  load+init forward ok in {time.time() - t0:.0f}s", flush=True)
 
-    prompts = ["The capital of France is", "def fibonacci(n):", "The three primary colors are",
-               "Water is made of hydrogen and"]
+    prompts = [
+        "The capital of France is",
+        "def fibonacci(n):",
+        "The three primary colors are",
+        "Water is made of hydrogen and",
+    ]
     sp = SamplingParams(temperature=0.0, max_tokens=32)
     outs = llm.generate(prompts, sp)
     for o in outs:
         print(f"  [gen] {o.prompt!r} -> {o.outputs[0].text!r}", flush=True)
     ntok = sum(len(o.outputs[0].token_ids) for o in outs)
-    mem = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True).stdout.strip()
+
+    # --- PPL: teacher-forced perplexity over a fixed held-out passage (per-policy quality) ---
+    passage = (
+        "The mitochondria is the powerhouse of the cell. Photosynthesis converts sunlight, water, "
+        "and carbon dioxide into glucose and oxygen. The Earth orbits the Sun once every year, and "
+        "the Moon orbits the Earth roughly every twenty-eight days. Water boils at one hundred "
+        "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
+        "through arteries and veins, delivering oxygen to every tissue in the body. Shakespeare "
+        "wrote many famous plays, including Hamlet, Macbeth, and Romeo and Juliet. The speed of "
+        "light in a vacuum is approximately three hundred thousand kilometres per second."
+    )
+    pids = llm.get_tokenizer().encode(passage)
+    pout = llm.generate(
+        [{"prompt_token_ids": pids}],
+        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0),
+    )
+    plp = pout[0].prompt_logprobs or []
+    nlls = [
+        -d[tid].logprob
+        for tid, d in zip(pids[1:], plp[1:], strict=False)
+        if d and tid in d and math.isfinite(d[tid].logprob)
+    ]
+    ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
+    print(f"# PPL over {len(nlls)}-token held-out passage: {ppl:.3f}", flush=True)
+
+    # --- coarse serving timing: prefill (prompt-heavy, gen 1) and decode (gen 64) at B=1 ---
+    tok = llm.get_tokenizer()
+    for plen in (512, 2048):
+        base = tok.encode(passage)
+        ptoks = (base * ((plen // len(base)) + 1))[:plen]
+        tp0 = time.time()
+        llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=1))
+        prefill_s = time.time() - tp0
+        td0 = time.time()
+        dout = llm.generate(
+            [{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=64)
+        )
+        dec_s = time.time() - td0
+        gtok = len(dout[0].outputs[0].token_ids)
+        print(
+            f"# serve B=1 prompt={plen} gen=64: prefill(TTFT~){prefill_s:.2f}s "
+            f"decode {gtok}tok in {dec_s:.2f}s = {gtok / max(dec_s, 1e-6):.2f} tok/s "
+            f"TPOT {dec_s / max(gtok, 1):.3f}s",
+            flush=True,
+        )
+
+    mem = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
     ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
-    print(f"# GLM baseline {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
-          f"(glm_moe_dsa on SM120, tp={tp} EP, eager={eager})", flush=True)
+    print(
+        f"# GLM baseline {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
+        f"(glm_moe_dsa on SM120, tp={tp} EP, eager={eager})",
+        flush=True,
+    )
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "bf16",
-            kv: str = "fp8", moe: str = "off") -> None:
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=60 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def unblock(
+    tp: int = 2,
+    eager: bool = True,
+    max_len: int = 2048,
+    dense: str = "bf16",
+    kv: str = "fp8",
+    moe: str = "off",
+) -> None:
     """WS0/WS1 end-to-end unblock: SM120-safe dense/attention (dense='bf16' or 'nvfp4') + native
     NVFP4 MoE. The replacement is installed by the qb_sm120 vLLM plugin (survives worker spawn); we
     only select it via QB_DENSE here. eager=True first (correctness), then flip for graph-capture."""
@@ -114,16 +209,32 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     os.environ["QB_DENSE"] = dense  # read by the qb_sm120 plugin in every spawned worker
     os.environ["QB_MOE"] = moe  # off|dense|sparse: quadbit sparse-expert injection selector
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"  # quiet load bars so worker tracebacks survive
-    print(f"# WS0/1 unblock: dense={dense} tp={tp} eager={eager} on "
-          f"{torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+    print(
+        f"# WS0/1 unblock: dense={dense} tp={tp} eager={eager} on "
+        f"{torch.cuda.device_count()}x RTX-PRO-6000",
+        flush=True,
+    )
 
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
     # bf16 fallback keeps fp8 originals (MLA absorption) + bf16 copies -> dense weights ~3x; push
     # gpu_mem_util high and keep batched tokens modest so KV cache memory stays positive.
-    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.95, kv_cache_dtype=kv,
-              max_num_batched_tokens=max_len, hf_overrides={"rope_scaling": rope})
+    kw = dict(
+        model=MODEL,
+        tensor_parallel_size=tp,
+        enforce_eager=eager,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.95,
+        kv_cache_dtype=kv,
+        max_num_batched_tokens=max_len,
+        hf_overrides={"rope_scaling": rope},
+    )
     t0 = time.time()
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
@@ -131,9 +242,14 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
         # only fall back when the tokenizer_mode itself is the problem; never mask a forward/init error
         if "tokenizer_mode" not in str(ex) and "deepseek_v4" not in str(ex).lower():
             raise
-        print(f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default)", flush=True)
+        print(
+            f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default)",
+            flush=True,
+        )
         llm = LLM(**kw)
-    print(f"  load+init forward ok in {time.time() - t0:.0f}s (the SM120 wall is cleared)", flush=True)
+    print(
+        f"  load+init forward ok in {time.time() - t0:.0f}s (the SM120 wall is cleared)", flush=True
+    )
 
     prompts = ["The capital of France is", "def fibonacci(n):", "The three primary colors are"]
     sp = SamplingParams(temperature=0.0, max_tokens=32)
@@ -146,8 +262,12 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     print(f"  generated {ntok} tok in {dt:.2f}s ({ntok / dt:.1f} tok/s)", flush=True)
 
     import subprocess
-    mem = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True).stdout.strip()
+
+    mem = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
     # audit the actual dense path taken (nvfp4 vs per-layer bf16 fallback) for honest labeling
     try:
@@ -157,37 +277,69 @@ def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "
     except Exception:  # noqa: BLE001
         pass
     ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
-    label = {"bf16": "bf16 dense fallback", "nvfp4": "NVFP4 dense (mm_fp4 cutlass)",
-             "off": "native SM120 path"}.get(dense, dense)
-    moe_label = {"off": "native NVFP4 MoE", "dense": "NVFP4->bf16 dequant experts (dense)",
-                 "sparse": "quadbit 2:4 sparse-FP4 experts"}.get(moe, moe)
-    print(f"# unblock {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
-          f"({label} + {moe_label} + bf16 DSA indexer, "
-          f"graph={'eager' if eager else 'captured'})", flush=True)
+    label = {
+        "bf16": "bf16 dense fallback",
+        "nvfp4": "NVFP4 dense (mm_fp4 cutlass)",
+        "off": "native SM120 path",
+    }.get(dense, dense)
+    moe_label = {
+        "off": "native NVFP4 MoE",
+        "dense": "NVFP4->bf16 dequant experts (dense)",
+        "sparse": "quadbit 2:4 sparse-FP4 experts",
+    }.get(moe, moe)
+    print(
+        f"# unblock {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
+        f"({label} + {moe_label} + bf16 DSA indexer, "
+        f"graph={'eager' if eager else 'captured'})",
+        flush=True,
+    )
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=60 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
 def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
     import torch
     from vllm import LLM, SamplingParams
 
     import os
+
     # DeepGEMM's ue8m0 scale-factor transform asserts on SM120 ("Unknown SF transformation"); disable it
     # so vLLM routes FP8/scaled GEMMs to the FlashInfer/CUTLASS path that SM120 supports.
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
-    print(f"# M4 baseline: {MODEL} tp={tp} eager={eager} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+    print(
+        f"# M4 baseline: {MODEL} tp={tp} eager={eager} on {torch.cuda.device_count()}x RTX-PRO-6000",
+        flush=True,
+    )
     # DeepSeek-V4 config uses rope_scaling {type: yarn}; newer configs want rope_type -> patch via hf_overrides.
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
     t0 = time.time()
-    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
-              hf_overrides={"rope_scaling": rope})
+    kw = dict(
+        model=MODEL,
+        tensor_parallel_size=tp,
+        enforce_eager=eager,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.9,
+        kv_cache_dtype="fp8",
+        hf_overrides={"rope_scaling": rope},
+    )
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
     except Exception as ex:  # noqa: BLE001 -- deepseek_v4 tokenizer mode may not exist in this build
-        print(f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default) ", flush=True)
+        print(
+            f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; retrying default) ",
+            flush=True,
+        )
         llm = LLM(**kw)
     print(f"  load ok in {time.time() - t0:.0f}s", flush=True)
 
@@ -214,14 +366,25 @@ def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
     print(f"  generated {ntok} tok in {dt:.2f}s ({ntok / dt:.1f} tok/s)", flush=True)
 
     import subprocess
-    mem = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True).stdout.strip()
+
+    mem = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
-    print(f"# baseline {'PASS' if ntok > 0 else 'FAIL'} (graph_capture={'eager-OFF' if not eager else 'eager'})", flush=True)
+    print(
+        f"# baseline {'PASS' if ntok > 0 else 'FAIL'} (graph_capture={'eager-OFF' if not eager else 'eager'})",
+        flush=True,
+    )
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=60 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
 def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
     # M3.6 recon: dump the exact FusedMoE structure so the sparse injection targets real attrs (model
     # is volume-cached after the first baseline load -> this loads fast).
@@ -233,12 +396,25 @@ def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ.setdefault("QB_DENSE", "bf16")  # qb_sm120 plugin (bf16 dense) makes SM120 init work
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
-    llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
-              max_num_batched_tokens=max_len, hf_overrides={"rope_scaling": rope},
-              tokenizer_mode="deepseek_v4")
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
+    llm = LLM(
+        model=MODEL,
+        tensor_parallel_size=tp,
+        enforce_eager=True,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.95,
+        kv_cache_dtype="fp8",
+        max_num_batched_tokens=max_len,
+        hf_overrides={"rope_scaling": rope},
+        tokenizer_mode="deepseek_v4",
+    )
     m = llm.llm_engine.model_executor.driver_worker.model_runner.model
     shown = 0
     for name, mod in m.named_modules():
@@ -257,9 +433,17 @@ def inspect_moe(tp: int = 2, max_len: int = 2048) -> None:
                 if isinstance(v, torch.Tensor):
                     print(f"  tensor {an}: shape={tuple(v.shape)} dtype={v.dtype}", flush=True)
                 elif isinstance(v, (int, bool)) and an in (
-                        "top_k", "num_experts", "global_num_experts", "local_num_experts",
-                        "intermediate_size_per_partition", "hidden_size", "renormalize",
-                        "use_grouped_topk", "num_expert_group", "topk_group"):
+                    "top_k",
+                    "num_experts",
+                    "global_num_experts",
+                    "local_num_experts",
+                    "intermediate_size_per_partition",
+                    "hidden_size",
+                    "renormalize",
+                    "use_grouped_topk",
+                    "num_expert_group",
+                    "topk_group",
+                ):
                     print(f"  attr {an} = {v}", flush=True)
             if qm is not None and hasattr(qm, "apply"):
                 try:
@@ -282,8 +466,11 @@ def test_so() -> None:
 
     bn = 128
     dev = torch.device("cuda")
-    print(f"# test_so: torch {torch.__version__} cuda {torch.version.cuda} "
-          f"cap {torch.cuda.get_device_capability()}", flush=True)
+    print(
+        f"# test_so: torch {torch.__version__} cuda {torch.version.cuda} "
+        f"cap {torch.cuda.get_device_capability()}",
+        flush=True,
+    )
     so = None
     for cand in ("/cache/sparse_fp4_sm120.so", "/cache/sparse_fp4.so"):
         try:
@@ -297,17 +484,23 @@ def test_so() -> None:
         return
     print(f"  loaded {so}", flush=True)
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
-    lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
-                                       + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl.argtypes = (
+        [ctypes.c_void_p] * 6
+        + [ctypes.c_int] * 4
+        + [ctypes.c_void_p] * 3
+        + [ctypes.c_int]
+        + [ctypes.c_void_p]
+    )
     lib.qb_init_moe_attrs()
     torch.manual_seed(0)
 
-    fp4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
-    bnd = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    fp4 = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    bnd = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0], device=dev)
     cc = torch.arange(128, device=dev)
-    e_, m_ = (cc >> 3) & 0xf, cc & 7
-    ue4m3 = torch.where(e_ == 0, m_.float() * 0.001953125,
-                        (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+    e_, m_ = (cc >> 3) & 0xF, cc & 7
+    ue4m3 = torch.where(
+        e_ == 0, m_.float() * 0.001953125, (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float())
+    )
 
     def q_fp4(v):
         return torch.bucketize(v.abs(), bnd) | ((v < 0).long() << 3)
@@ -322,8 +515,8 @@ def test_so() -> None:
         biased = torch.where(carry, biased + 1, biased)
         code = (biased.long() << 3) | mant
         code = torch.where(biased < 1, torch.ones_like(code), code)
-        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
-        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7F), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7F), code)
         return torch.where(s > 0, code, torch.zeros_like(code))
 
     def pack(w):
@@ -332,7 +525,11 @@ def test_so() -> None:
         wg = w.float().to(dev).view(out_f, ks, 16, 4, 2)
         i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
         kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
-        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        ga = (
+            (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0)
+            .clamp_min(1e-30)
+            .reshape(out_f, 1, 1)
+        )
         blk = kept.reshape(out_f, ks, 4, 8, 2)
         scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga)
         sdeq = ue4m3[scode] * ga
@@ -341,8 +538,12 @@ def test_so() -> None:
         nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
         sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
         meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
-        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(),
-                ga.reshape(out_f).float().contiguous())
+        return (
+            ac.contiguous(),
+            meta,
+            scode.to(torch.uint8).permute(1, 0, 2).contiguous(),
+            ga.reshape(out_f).float().contiguous(),
+        )
 
     def quant_act(x):
         r, in_f = x.shape
@@ -351,31 +552,57 @@ def test_so() -> None:
         bb = torch.empty((r, in_f // 2), dtype=torch.uint8, device=dev)
         sb = torch.empty((ks, r, 4), dtype=torch.uint8, device=dev)
         gb = torch.empty((r,), dtype=torch.float32, device=dev)
-        lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), r, in_f)
+        lib.quantize_act_nvfp4_2lvl(
+            x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), r, in_f
+        )
         return bb, sb, gb
 
     # single-expert segmented call (eblk all-zero -> one expert, Mpe=M) as the minimal kernel exercise
     m_out, k_in, rows = 512, 1024, 256
-    w = (torch.randn(m_out, k_in, device=dev) * (k_in ** -0.5)).to(torch.bfloat16)
-    x = (torch.randn(rows, k_in, device=dev) * (k_in ** -0.5) * 4).to(torch.bfloat16)
+    w = (torch.randn(m_out, k_in, device=dev) * (k_in**-0.5)).to(torch.bfloat16)
+    x = (torch.randn(rows, k_in, device=dev) * (k_in**-0.5) * 4).to(torch.bfloat16)
     ac, meta, scale_a, ga = pack(w)
     bb, sb, gb = quant_act(x)
     c = torch.empty((rows, m_out), dtype=torch.bfloat16, device=dev)
     eblk = torch.zeros(rows // bn, dtype=torch.int32, device=dev)
-    lib.sparse_moe_mm_2lvl(ac.data_ptr(), bb.data_ptr(), scale_a.data_ptr(), sb.data_ptr(),
-                           meta.data_ptr(), c.data_ptr(), ac.shape[0], m_out, rows, k_in,
-                           ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, 0)
+    lib.sparse_moe_mm_2lvl(
+        ac.data_ptr(),
+        bb.data_ptr(),
+        scale_a.data_ptr(),
+        sb.data_ptr(),
+        meta.data_ptr(),
+        c.data_ptr(),
+        ac.shape[0],
+        m_out,
+        rows,
+        k_in,
+        ga.data_ptr(),
+        gb.data_ptr(),
+        eblk.data_ptr(),
+        1,
+        0,
+    )
     torch.cuda.synchronize()
     ref = F.linear(x.float(), w.float())
     nonfin = int((~torch.isfinite(c)).sum().item())
     cos = F.cosine_similarity(c.float().flatten(), ref.flatten(), dim=0).item()
-    print(f"  seg_gemm ran: out={tuple(c.shape)} nonfin={nonfin} cos(seg,dense-bf16)={cos:.4f}", flush=True)
+    print(
+        f"  seg_gemm ran: out={tuple(c.shape)} nonfin={nonfin} cos(seg,dense-bf16)={cos:.4f}",
+        flush=True,
+    )
     ok = nonfin == 0 and cos > 0.8
-    print(f"# test_so {'PASS' if ok else 'FAIL'} (staged sm_120 .so runs on CUDA-13 serve image)", flush=True)
+    print(
+        f"# test_so {'PASS' if ok else 'FAIL'} (staged sm_120 .so runs on CUDA-13 serve image)",
+        flush=True,
+    )
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=60 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
 def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
     # M3.6: inject the segmented sparse-FP4 MoE op into vLLM's FusedMoE layers. Loads the staged .so
     # (built under CUDA 12.8 by build_so.py -> /cache/sparse_fp4.so) since the sparse mma won't assemble
@@ -390,22 +617,43 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     so = "/cache/sparse_fp4.so"
     lib = ctypes.CDLL(so)
-    lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4 +
-                                       [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl.argtypes = (
+        [ctypes.c_void_p] * 6
+        + [ctypes.c_int] * 4
+        + [ctypes.c_void_p] * 3
+        + [ctypes.c_int]
+        + [ctypes.c_void_p]
+    )
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.qb_init_moe_attrs()
     print(f"# M3.6 quadbit sparse-MoE injection: loaded {so}", flush=True)
 
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
-    llm = LLM(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
-              hf_overrides={"rope_scaling": rope}, tokenizer_mode="deepseek_v4")
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
+    llm = LLM(
+        model=MODEL,
+        tensor_parallel_size=tp,
+        enforce_eager=eager,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.9,
+        kv_cache_dtype="fp8",
+        hf_overrides={"rope_scaling": rope},
+        tokenizer_mode="deepseek_v4",
+    )
     m = llm.llm_engine.model_executor.driver_worker.model_runner.model
 
     # locate FusedMoE layers (finalized against inspect_moe output)
-    moe = [(n, mod) for n, mod in m.named_modules()
-           if "fusedmoe" in type(mod).__name__.lower() and hasattr(mod, "quant_method")]
+    moe = [
+        (n, mod)
+        for n, mod in m.named_modules()
+        if "fusedmoe" in type(mod).__name__.lower() and hasattr(mod, "quant_method")
+    ]
     print(f"  found {len(moe)} FusedMoE layers", flush=True)
     # The sparse injection (dequant experts NVFP4->bf16, 2:4 pack, replace quant_method.apply with a
     # sparse_moe_mm_2lvl path) is NOT yet wired: it needs the expert weight/scale attr names from
@@ -417,7 +665,8 @@ def quadbit(tp: int = 2, eager: bool = False, max_len: int = 2048) -> None:
     raise NotImplementedError(
         "quadbit sparse-MoE injection not wired: replace each FusedMoE.quant_method.apply with the "
         "segmented sparse_moe_mm_2lvl path using per-expert weights from `inspect` mode. This does NOT "
-        "serve sparse yet; running native generate here would misrepresent the result.")
+        "serve sparse yet; running native generate here would misrepresent the result."
+    )
 
 
 @app.function(image=image)
@@ -440,8 +689,11 @@ def versions() -> None:
             import flashinfer.decode as fd
 
             fn = getattr(fd, "trtllm_batch_decode_sparse_mla_dsv4", None)
-        print(f"trtllm_batch_decode_sparse_mla_dsv4 sig: "
-              f"{inspect.signature(fn) if fn else 'NOT FOUND'}", flush=True)
+        print(
+            f"trtllm_batch_decode_sparse_mla_dsv4 sig: "
+            f"{inspect.signature(fn) if fn else 'NOT FOUND'}",
+            flush=True,
+        )
     except Exception as ex:  # noqa: BLE001
         print(f"flashinfer introspection failed: {type(ex).__name__}: {ex}", flush=True)
 
@@ -449,8 +701,12 @@ def versions() -> None:
 GLM_MODEL = "nvidia/GLM-5.2-NVFP4"
 
 
-@app.function(image=image, timeout=30 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
+@app.function(
+    image=image,
+    timeout=30 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
 def glm_inspect() -> None:
     # CPU-only GLM-5.2 transfer feasibility probe: (1) does the installed vLLM register the
     # glm_moe_dsa model class, (2) exact NVFP4 checkpoint size + per-module-dtype breakdown from the
@@ -474,11 +730,14 @@ def glm_inspect() -> None:
     cfg_path = hf_hub_download(GLM_MODEL, "config.json")
     cfg = json.loads(open(cfg_path).read())
     arch = cfg.get("architectures", ["?"])
-    print(f"# config: model_type={cfg.get('model_type')} architectures={arch} "
-          f"layers={cfg.get('num_hidden_layers')} hidden={cfg.get('hidden_size')} "
-          f"experts={cfg.get('n_routed_experts')} topk={cfg.get('num_experts_per_tok')} "
-          f"moe_int={cfg.get('moe_intermediate_size')} shared={cfg.get('n_shared_experts')} "
-          f"first_k_dense={cfg.get('first_k_dense_replace')}", flush=True)
+    print(
+        f"# config: model_type={cfg.get('model_type')} architectures={arch} "
+        f"layers={cfg.get('num_hidden_layers')} hidden={cfg.get('hidden_size')} "
+        f"experts={cfg.get('n_routed_experts')} topk={cfg.get('num_experts_per_tok')} "
+        f"moe_int={cfg.get('moe_intermediate_size')} shared={cfg.get('n_shared_experts')} "
+        f"first_k_dense={cfg.get('first_k_dense_replace')}",
+        flush=True,
+    )
 
     idx_path = hf_hub_download(GLM_MODEL, "model.safetensors.index.json")
     idx = json.loads(open(idx_path).read())
@@ -497,16 +756,21 @@ def glm_inspect() -> None:
         else:
             key = "other"
         buckets[key] += 1
-    gib = total / (1024 ** 3)
-    print(f"# checkpoint total_size = {total} bytes = {gib:.1f} GiB across {len(shards)} shards",
-          flush=True)
+    gib = total / (1024**3)
+    print(
+        f"# checkpoint total_size = {total} bytes = {gib:.1f} GiB across {len(shards)} shards",
+        flush=True,
+    )
     print(f"# tensor-name buckets (count of entries): {dict(buckets)}", flush=True)
     usable = 94.97
     for ng in (2, 4, 8):
         cap = ng * usable
         fits = "FITS (weights only)" if gib < cap * 0.92 else "DOES NOT FIT"
-        print(f"#   {ng}x RTX-PRO-6000 = {cap:.0f} GiB -> {fits} "
-              f"(weights {gib:.0f} GiB, leaves {cap - gib:.0f} GiB for KV+act)", flush=True)
+        print(
+            f"#   {ng}x RTX-PRO-6000 = {cap:.0f} GiB -> {fits} "
+            f"(weights {gib:.0f} GiB, leaves {cap - gib:.0f} GiB for KV+act)",
+            flush=True,
+        )
 
 
 @app.function(image=image)
@@ -517,6 +781,7 @@ def dumpsrc() -> None:
     import vllm
 
     base = Path(vllm.__file__).parent
+
     def show_full(label, p):
         print(f"\n===== {label}  ({p}) =====", flush=True)
         if not p.exists():
@@ -538,30 +803,49 @@ def dumpsrc() -> None:
                 print(f"  --- '{key}' @ line {h + 1} ---", flush=True)
                 print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo, hi)), flush=True)
 
-    show_defs("deep_gemm.py mqa-logits",
-              base / "utils/deep_gemm.py",
-              ["def get_paged_mqa_logits_metadata", "def fp8_paged_mqa_logits",
-               "def _lazy_init", "_get_paged_mqa_logits_metadata_impl =",
-               "_fp8_paged_mqa_logits_impl =", "def _missing"])
-    show_defs("indexer.py backend",
-              base / "v1/attention/backends/mla/indexer.py",
-              ["get_paged_mqa_logits_metadata", "fp8_paged_mqa_logits", "def build",
-               "scheduler_metadata_buffer"])
-    show_defs("flashinfer_sparse_mla_warmup.py",
-              base / "model_executor/warmup/flashinfer_sparse_mla_warmup.py",
-              ["def deepseek_v4_sparse_mla_attention_warmup"])
+    show_defs(
+        "deep_gemm.py mqa-logits",
+        base / "utils/deep_gemm.py",
+        [
+            "def get_paged_mqa_logits_metadata",
+            "def fp8_paged_mqa_logits",
+            "def _lazy_init",
+            "_get_paged_mqa_logits_metadata_impl =",
+            "_fp8_paged_mqa_logits_impl =",
+            "def _missing",
+        ],
+    )
+    show_defs(
+        "indexer.py backend",
+        base / "v1/attention/backends/mla/indexer.py",
+        [
+            "get_paged_mqa_logits_metadata",
+            "fp8_paged_mqa_logits",
+            "def build",
+            "scheduler_metadata_buffer",
+        ],
+    )
+    show_defs(
+        "flashinfer_sparse_mla_warmup.py",
+        base / "model_executor/warmup/flashinfer_sparse_mla_warmup.py",
+        ["def deepseek_v4_sparse_mla_attention_warmup"],
+    )
 
     import subprocess
 
     def show_range(label, p, lo, hi):
         print(f"\n===== {label} ({p}) [{lo}-{hi}] =====", flush=True)
         text = p.read_text().splitlines()
-        print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True)
+        print(
+            "\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True
+        )
 
     def show_range2(label, p, lo, hi):
         print(f"\n===== {label} [{lo}-{hi}] =====", flush=True)
         text = p.read_text().splitlines()
-        print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True)
+        print(
+            "\n".join(f"{i + 1:4} {text[i]}" for i in range(lo - 1, min(hi, len(text)))), flush=True
+        )
 
     import subprocess as _sp
 
@@ -569,8 +853,13 @@ def dumpsrc() -> None:
     # native modelopt apply / model calls it so our patched_moe_apply passes `order` correctly.
     dv = base / "models/deepseek_v4/nvidia/model.py"
     dtext = dv.read_text().splitlines()
-    for key in ["class SharedExperts", "def _forward_fused_moe", "shared_experts(",
-                "SharedExperts(", "order"]:
+    for key in [
+        "class SharedExperts",
+        "def _forward_fused_moe",
+        "shared_experts(",
+        "SharedExperts(",
+        "order",
+    ]:
         hits = [i for i, ln in enumerate(dtext) if key in ln]
         for h in hits[:6]:
             lo, hi = max(0, h - 1), min(len(dtext), h + 20)
@@ -587,7 +876,10 @@ def dumpsrc() -> None:
         cs = [i for i, l in enumerate(stext) if "class SharedExperts" in l]
         for c in cs:
             print(f"\n--- {fp} SharedExperts [{c + 1}] ---", flush=True)
-            print("\n".join(f"{i + 1:4} {stext[i]}" for i in range(c, min(len(stext), c + 55))), flush=True)
+            print(
+                "\n".join(f"{i + 1:4} {stext[i]}" for i in range(c, min(len(stext), c + 55))),
+                flush=True,
+            )
     # full shared_experts.py (forward + retrieval) and moe_runner apply/_maybe_apply 500-585
     se = base / "model_executor/layers/fused_moe/runner/shared_experts.py"
     stext = se.read_text().splitlines()
@@ -599,19 +891,35 @@ def dumpsrc() -> None:
     print("\n".join(f"{i + 1:4} {mt[i]}" for i in range(519, min(len(mt), 590))), flush=True)
     return  # SharedExperts recon only this run
 
-    show_range2("flashinfer_sparse.py _forward_prefill call", base
-                / "models/deepseek_v4/nvidia/flashinfer_sparse.py", 820, 895)
-    show_defs("vllm flashinfer.py wrapper",
-              base / "utils/flashinfer.py",
-              ["trtllm_batch_decode_sparse_mla_dsv4", "def has_flashinfer_sparse_mla_sm120"])
+    show_range2(
+        "flashinfer_sparse.py _forward_prefill call",
+        base / "models/deepseek_v4/nvidia/flashinfer_sparse.py",
+        820,
+        895,
+    )
+    show_defs(
+        "vllm flashinfer.py wrapper",
+        base / "utils/flashinfer.py",
+        ["trtllm_batch_decode_sparse_mla_dsv4", "def has_flashinfer_sparse_mla_sm120"],
+    )
     import subprocess
 
-    r = subprocess.run(["pip", "index", "versions", "flashinfer-python"],
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        ["pip", "index", "versions", "flashinfer-python"], capture_output=True, text=True
+    )
     print(f"\n### pip index versions flashinfer-python:\n{r.stdout}\n{r.stderr}", flush=True)
-    r2 = subprocess.run(["grep", "-rn", "flashinfer", str(base.parent / "vllm-0.24.0.dist-info")
-                        if (base.parent / "vllm-0.24.0.dist-info").exists() else str(base)],
-                       capture_output=True, text=True)
+    r2 = subprocess.run(
+        [
+            "grep",
+            "-rn",
+            "flashinfer",
+            str(base.parent / "vllm-0.24.0.dist-info")
+            if (base.parent / "vllm-0.24.0.dist-info").exists()
+            else str(base),
+        ],
+        capture_output=True,
+        text=True,
+    )
     print(f"\n### vllm flashinfer pin refs:\n{r2.stdout[:1500]}", flush=True)
 
 
@@ -639,11 +947,13 @@ def probe() -> None:
             out = p._dequant_block(w, s, (128, 128))
             print(f"  CALL p._dequant_block w={wh} s={sshape} -> {tuple(out.shape)} OK", flush=True)
         except Exception as ex:  # noqa: BLE001
-            print(f"  CALL p._dequant_block w={wh} s={sshape} -> {type(ex).__name__}: {ex}", flush=True)
+            print(
+                f"  CALL p._dequant_block w={wh} s={sshape} -> {type(ex).__name__}: {ex}",
+                flush=True,
+            )
 
 
-def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
-                max_len: int) -> None:
+def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool, max_len: int) -> None:
     """WS3: quadbit 2:4 sparse-FP4 expert performance sweep. Loads DeepSeek-V4-Flash-NVFP4 once with
     QB_MOE=sparse on `tp` GPUs, then times a prompt x gen x batch matrix, emitting figure-ready CSV
     rows + a compute/comm breakdown (from the plugin's per-worker instrumentation flushed to /cache)
@@ -672,12 +982,18 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
         os.remove(f)
 
     ngpu = torch.cuda.device_count()
-    print(f"# WS3 sweep tp={tp} runtag={runtag} instr={instr} tax={tax} on {ngpu}x RTX-PRO-6000; "
-          f"commit=$(git) matrix={matrix}", flush=True)
+    print(
+        f"# WS3 sweep tp={tp} runtag={runtag} instr={instr} tax={tax} on {ngpu}x RTX-PRO-6000; "
+        f"commit=$(git) matrix={matrix}",
+        flush=True,
+    )
 
     def smi():
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.free",
-                              "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+        ).stdout
         used, free = [], []
         for line in out.strip().splitlines():
             u, fr = line.split(",")
@@ -685,12 +1001,25 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
             free.append(int(fr))
         return used, free
 
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
-    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
-              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope},
-              disable_log_stats=False)
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
+    kw = dict(
+        model=MODEL,
+        tensor_parallel_size=tp,
+        enforce_eager=True,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.95,
+        kv_cache_dtype="fp8",
+        max_num_batched_tokens=max(2048, max_len),
+        hf_overrides={"rope_scaling": rope},
+        disable_log_stats=False,
+    )
     t0 = time.time()
     llm = LLM(tokenizer_mode="deepseek_v4", **kw)
     load_s = time.time() - t0
@@ -709,10 +1038,11 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
 
     rows = []
     peak_used = list(load_used)
+
     def med(x):
         return st.median(x) if x else 0.0
 
-    for (P, G, B) in matrix:
+    for P, G, B in matrix:
         prompts = [make_prompt(P) for _ in range(B)]
         sp = SamplingParams(temperature=0.0, max_tokens=G, min_tokens=G, ignore_eos=True)
         torch.cuda.synchronize()
@@ -721,7 +1051,9 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
             outs = llm.generate(prompts, sp)
         except Exception as e:
             # engine death (e.g. long-prefill scheduler KeyError) must not lose completed rows
-            print(f"  [cfg] P={P} G={G} B={B}: FAILED {type(e).__name__}: {str(e)[:160]}", flush=True)
+            print(
+                f"  [cfg] P={P} G={G} B={B}: FAILED {type(e).__name__}: {str(e)[:160]}", flush=True
+            )
             break
         wall = time.time() - t1
         u, _fr = smi()
@@ -749,22 +1081,41 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
         prefill_tps = (B * P) / ttft if ttft > 0 else 0.0
         dec_tps = (B * (G - 1)) / dec_wall if dec_wall > 0 else 0.0
         tot_tps = gen_tok / wall if wall > 0 else 0.0
-        row = {"tp": tp, "prompt": P, "gen": G, "batch": B, "wall_s": round(wall, 3),
-               "ttft_s": round(ttft, 4), "tpot_ms": round(tpot * 1000, 3),
-               "prefill_tps": round(prefill_tps, 1), "decode_tps": round(dec_tps, 1),
-               "total_tps": round(tot_tps, 1), "req_latency_s": round(wall, 3),
-               "gen_tok": gen_tok}
+        row = {
+            "tp": tp,
+            "prompt": P,
+            "gen": G,
+            "batch": B,
+            "wall_s": round(wall, 3),
+            "ttft_s": round(ttft, 4),
+            "tpot_ms": round(tpot * 1000, 3),
+            "prefill_tps": round(prefill_tps, 1),
+            "decode_tps": round(dec_tps, 1),
+            "total_tps": round(tot_tps, 1),
+            "req_latency_s": round(wall, 3),
+            "gen_tok": gen_tok,
+        }
         rows.append(row)
-        print(f"  [cfg] P={P} G={G} B={B}: wall={wall:.1f}s ttft={ttft:.3f}s "
-              f"tpot={tpot * 1000:.1f}ms prefill={prefill_tps:.1f}tok/s decode={dec_tps:.1f}tok/s "
-              f"total={tot_tps:.1f}tok/s", flush=True)
+        print(
+            f"  [cfg] P={P} G={G} B={B}: wall={wall:.1f}s ttft={ttft:.3f}s "
+            f"tpot={tpot * 1000:.1f}ms prefill={prefill_tps:.1f}tok/s decode={dec_tps:.1f}tok/s "
+            f"total={tot_tps:.1f}tok/s",
+            flush=True,
+        )
 
     print(f"  peak per-GPU used MB={peak_used}", flush=True)
 
     # aggregate per-worker instrumentation + tax from /cache
     metric_files = sorted(glob.glob(f"/cache/qb_metrics_{runtag}_dev*.json"))
-    agg = {"expert_ms": 0.0, "dense_ms": 0.0, "expert_calls": 0, "sparse_expert_calls": 0,
-           "imbalance_mean": [], "imbalance_max": [], "tax_cos": []}
+    agg = {
+        "expert_ms": 0.0,
+        "dense_ms": 0.0,
+        "expert_calls": 0,
+        "sparse_expert_calls": 0,
+        "imbalance_mean": [],
+        "imbalance_max": [],
+        "tax_cos": [],
+    }
     for mf in metric_files:
         with open(mf) as f:
             d = json.load(f)
@@ -776,28 +1127,52 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
         agg["imbalance_max"].append(d.get("imbalance_max", 0.0))
         agg["tax_cos"].extend(d.get("tax_cos", []))
     print(f"\n# --- instrumentation (ranks={len(metric_files)}) ---", flush=True)
-    print(f"  expert-kernel ms(sum over ranks)={agg['expert_ms']:.1f} "
-          f"dense/attn ms={agg['dense_ms']:.1f} expert_calls={agg['expert_calls']} "
-          f"SPARSE_EXPERT_CALLS={agg['sparse_expert_calls']}", flush=True)
+    print(
+        f"  expert-kernel ms(sum over ranks)={agg['expert_ms']:.1f} "
+        f"dense/attn ms={agg['dense_ms']:.1f} expert_calls={agg['expert_calls']} "
+        f"SPARSE_EXPERT_CALLS={agg['sparse_expert_calls']}",
+        flush=True,
+    )
     if agg["imbalance_mean"]:
-        print(f"  expert imbalance (max/mean tokens-per-expert): "
-              f"mean={st.mean(agg['imbalance_mean']):.3f} max={max(agg['imbalance_max']):.3f}",
-              flush=True)
+        print(
+            f"  expert imbalance (max/mean tokens-per-expert): "
+            f"mean={st.mean(agg['imbalance_mean']):.3f} max={max(agg['imbalance_max']):.3f}",
+            flush=True,
+        )
     cosv = sorted(c["cos"] for c in agg["tax_cos"])
     if cosv:
+
         def pct(p):
             return cosv[min(len(cosv) - 1, int(p * len(cosv)))]
+
         worst = min(agg["tax_cos"], key=lambda c: c["cos"])
         print(f"\n# --- in-situ per-layer tax cos(sparse,dense) (n={len(cosv)}) ---", flush=True)
-        print(f"  median={st.median(cosv):.4f} p10={pct(0.1):.4f} p90={pct(0.9):.4f} "
-              f"min={cosv[0]:.4f} max={cosv[-1]:.4f}", flush=True)
-        print(f"  worst: layer={worst['layer']} expert={worst['expert']} cos={worst['cos']:.4f}",
-              flush=True)
+        print(
+            f"  median={st.median(cosv):.4f} p10={pct(0.1):.4f} p90={pct(0.9):.4f} "
+            f"min={cosv[0]:.4f} max={cosv[-1]:.4f}",
+            flush=True,
+        )
+        print(
+            f"  worst: layer={worst['layer']} expert={worst['expert']} cos={worst['cos']:.4f}",
+            flush=True,
+        )
 
     # figure-ready CSV to /cache
     csv_path = f"/cache/qb_sweep_{runtag}.csv"
-    cols = ["tp", "prompt", "gen", "batch", "wall_s", "ttft_s", "tpot_ms", "prefill_tps",
-            "decode_tps", "total_tps", "req_latency_s", "gen_tok"]
+    cols = [
+        "tp",
+        "prompt",
+        "gen",
+        "batch",
+        "wall_s",
+        "ttft_s",
+        "tpot_ms",
+        "prefill_tps",
+        "decode_tps",
+        "total_tps",
+        "req_latency_s",
+        "gen_tok",
+    ]
     with open(csv_path, "w") as f:
         f.write(",".join(cols) + "\n")
         for r in rows:
@@ -806,30 +1181,56 @@ def _sweep_impl(tp: int, runtag: str, matrix: list, instr: bool, tax: bool,
     print(",".join(cols), flush=True)
     for r in rows:
         print(",".join(str(r[c]) for c in cols), flush=True)
-    print(f"# sweep DONE tp={tp} runtag={runtag} load={load_s:.0f}s "
-          f"load_used_MB={load_used} peak_used_MB={peak_used}", flush=True)
+    print(
+        f"# sweep DONE tp={tp} runtag={runtag} load={load_s:.0f}s "
+        f"load_used_MB={load_used} peak_used_MB={peak_used}",
+        flush=True,
+    )
 
 
 # default matrix: representative, bounded for eager (~3 tok/s) within the Modal timeout.
-_SWEEP_MATRIX = [(512, 32, 1), (512, 128, 1), (512, 32, 8), (512, 128, 8),
-                 (2048, 32, 1), (2048, 128, 1), (2048, 32, 8),
-                 (512, 512, 1), (8192, 32, 1)]
+_SWEEP_MATRIX = [
+    (512, 32, 1),
+    (512, 128, 1),
+    (512, 32, 8),
+    (512, 128, 8),
+    (2048, 32, 1),
+    (2048, 128, 1),
+    (2048, 32, 8),
+    (512, 512, 1),
+    (8192, 32, 1),
+]
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=150 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=150 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
 def sweep2(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
     _sweep_impl(2, "tp2", _SWEEP_MATRIX, instr, tax, max_len)
 
 
-@app.function(gpu="RTX-PRO-6000:4", timeout=150 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=150 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
 def sweep4(instr: bool = True, tax: bool = True, max_len: int = 8960) -> None:
     _sweep_impl(4, "tp4", _SWEEP_MATRIX, instr, tax, max_len)
 
 
-def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False,
-                sparse_dump: bool = False, dense_layers: str = "", calib_file: str = "") -> None:
+def _calib_impl(
+    tp: int,
+    tag: str,
+    max_len: int,
+    dump: bool = False,
+    sparse_dump: bool = False,
+    dense_layers: str = "",
+    calib_file: str = "",
+) -> None:
     """A2 Step-2 calibration: run DeepSeek-V4-Flash DENSE (coherent) over a text corpus and let the
     plugin accumulate per-expert per-projection column activation norms from REAL routed tokens,
     dumped per-rank to /cache/qb_calib_{tag}_dev*.pt for the Wanda 2:4 mask in a later sparse run.
@@ -860,13 +1261,26 @@ def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False,
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     print(f"# calib tp={tp} tag={tag} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
 
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
     t0 = time.time()
-    llm = LLM(model=MODEL, tokenizer_mode="deepseek_v4", tensor_parallel_size=tp,
-              enforce_eager=True, trust_remote_code=True, max_model_len=max_len,
-              gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
-              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope})
+    llm = LLM(
+        model=MODEL,
+        tokenizer_mode="deepseek_v4",
+        tensor_parallel_size=tp,
+        enforce_eager=True,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.9,
+        kv_cache_dtype="fp8",
+        max_num_batched_tokens=max(2048, max_len),
+        hf_overrides={"rope_scaling": rope},
+    )
     print(f"  loaded in {time.time() - t0:.0f}s", flush=True)
 
     tok = llm.get_tokenizer()
@@ -944,7 +1358,9 @@ def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False,
 
     ids = [{"prompt_token_ids": tok.encode(c)} for c in corpus]
     ntok = sum(len(d["prompt_token_ids"]) for d in ids)
-    print(f"  calibrating over {len(corpus)} chunks / {ntok} tokens (dense forwards)...", flush=True)
+    print(
+        f"  calibrating over {len(corpus)} chunks / {ntok} tokens (dense forwards)...", flush=True
+    )
     llm.generate(ids, SamplingParams(temperature=0.0, max_tokens=1))
     # Each WORKER accumulates + dumps its own shard (periodically during the forwards + atexit on
     # shutdown); the driver has no model state. Free the engine to trigger worker shutdown, then check.
@@ -964,8 +1380,15 @@ def _calib_impl(tp: int, tag: str, max_len: int, dump: bool = False,
         print(f"# reconio DONE tag={tag}: per-rank files {iosz or 'MISSING'}", flush=True)
 
 
-def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "dense",
-               probe_layers: str = "0,20,40", calib_file: str = "") -> None:
+def _qmap_impl(
+    tp: int,
+    tag: str,
+    dense_layers: str,
+    max_len: int,
+    moe: str = "dense",
+    probe_layers: str = "0,20,40",
+    calib_file: str = "",
+) -> None:
     """WORKSTREAM A0+A1#1: real-routed-activation quality map + dense-anchor-layer policy.
     Loads DeepSeek-V4-Flash-NVFP4 with QB_MOE=sparse, keeps NVFP4 resident on probe layers (and on
     dense-anchor layers), runs coherence prompts, and records per-layer *block* cosine + per-expert
@@ -1001,27 +1424,50 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
         os.remove(f)
 
     ngpu = torch.cuda.device_count()
-    print(f"# qmap tp={tp} tag={tag} moe={moe} probe_layers=[{probe_layers}] "
-          f"dense_layers=[{dense_layers}] on {ngpu}x RTX-PRO-6000", flush=True)
+    print(
+        f"# qmap tp={tp} tag={tag} moe={moe} probe_layers=[{probe_layers}] "
+        f"dense_layers=[{dense_layers}] on {ngpu}x RTX-PRO-6000",
+        flush=True,
+    )
 
     def smi():
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.free",
-                              "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+        ).stdout
         return [int(ln.split(",")[0]) for ln in out.strip().splitlines()]
 
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
     t0 = time.time()
-    llm = LLM(model=MODEL, tokenizer_mode="deepseek_v4", tensor_parallel_size=tp,
-              enforce_eager=True, trust_remote_code=True, max_model_len=max_len,
-              gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
-              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope},
-              disable_log_stats=False)
+    llm = LLM(
+        model=MODEL,
+        tokenizer_mode="deepseek_v4",
+        tensor_parallel_size=tp,
+        enforce_eager=True,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.95,
+        kv_cache_dtype="fp8",
+        max_num_batched_tokens=max(2048, max_len),
+        hf_overrides={"rope_scaling": rope},
+        disable_log_stats=False,
+    )
     print(f"  loaded in {time.time() - t0:.0f}s; per-GPU used MB={smi()}", flush=True)
 
-    prompts = ["The capital of France is", "def fibonacci(n):",
-               "The three primary colors are", "Water is made of hydrogen and",
-               "The opposite of hot is"]
+    prompts = [
+        "The capital of France is",
+        "def fibonacci(n):",
+        "The three primary colors are",
+        "Water is made of hydrogen and",
+        "The opposite of hot is",
+    ]
     sp = SamplingParams(temperature=0.0, max_tokens=40, min_tokens=8)
     outs = llm.generate(prompts, sp)
     print("# --- COHERENCE (generation sanity) ---", flush=True)
@@ -1036,19 +1482,26 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
         "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
         "through arteries and veins, delivering oxygen to every tissue in the body. Shakespeare "
         "wrote many famous plays, including Hamlet, Macbeth, and Romeo and Juliet. The speed of "
-        "light in a vacuum is approximately three hundred thousand kilometres per second.")
+        "light in a vacuum is approximately three hundred thousand kilometres per second."
+    )
     pids = llm.get_tokenizer().encode(passage)
-    pout = llm.generate([{"prompt_token_ids": pids}],
-                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+    pout = llm.generate(
+        [{"prompt_token_ids": pids}],
+        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0),
+    )
     plp = pout[0].prompt_logprobs or []
     nlls = []
     for tid, d in zip(pids[1:], plp[1:], strict=False):
         if d and tid in d and math.isfinite(d[tid].logprob):
             nlls.append(-d[tid].logprob)
     ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
-    print(f"# PPL over {len(nlls)}-token held-out passage: {ppl:.3f} "
-          f"(mean NLL {sum(nlls) / len(nlls):.4f} nats)" if nlls else "# PPL: no valid logprobs",
-          flush=True)
+    print(
+        f"# PPL over {len(nlls)}-token held-out passage: {ppl:.3f} "
+        f"(mean NLL {sum(nlls) / len(nlls):.4f} nats)"
+        if nlls
+        else "# PPL: no valid logprobs",
+        flush=True,
+    )
 
     # aggregate the real-activation map + NaN diagnostics flushed by every worker
     rows, nan_diag = [], []
@@ -1060,12 +1513,15 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     print("# --- NaN guardrail diagnostics (first nonfinite per layer/tensor) ---", flush=True)
     if nan_diag:
         for d in sorted(nan_diag, key=lambda r: (r["layer"], r["tensor"])):
-            print(f"  layer {d['layer']:>3} {d['tensor']:<8} nonfinite={d['nonfinite']} "
-                  f"finite_max_abs={d['finite_max_abs']}", flush=True)
+            print(
+                f"  layer {d['layer']:>3} {d['tensor']:<8} nonfinite={d['nonfinite']} "
+                f"finite_max_abs={d['finite_max_abs']}",
+                flush=True,
+            )
     else:
         print("  (none — no nonfinite tensors intercepted in the sparse path)", flush=True)
-    blk = {}   # layer -> [block_cos, ...]
-    exp = {}   # layer -> [expert cos, ...]
+    blk = {}  # layer -> [block_cos, ...]
+    exp = {}  # layer -> [expert cos, ...]
     for r in rows:
         if r["expert"] == -1:
             if math.isfinite(r["block_cos"]):
@@ -1080,8 +1536,10 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
             if r["expert"] == -1:
                 f.write(f"{r['layer']},-1,,,,,{r['block_cos']}\n")
             else:
-                f.write(f"{r['layer']},{r['expert']},{r['cos']},{r['freq']},"
-                        f"{r['mean_w']},{r['contrib_norm']},\n")
+                f.write(
+                    f"{r['layer']},{r['expert']},{r['cos']},{r['freq']},"
+                    f"{r['mean_w']},{r['contrib_norm']},\n"
+                )
 
     print("# --- A0 real-activation quality map ---", flush=True)
     print("# layer  block_cos  expert_cos(median)  n_experts", flush=True)
@@ -1099,25 +1557,42 @@ def _qmap_impl(tp: int, tag: str, dense_layers: str, max_len: int, moe: str = "d
     n_sparse = 43 - len(dense_set)
     if n_probe:
         geo = math.exp(sum(math.log(max(1e-9, st.median(blk[li]))) for li in blk) / n_probe)
-        pred_end = geo ** n_sparse
-        print(f"# probed {n_probe} layers; geomean block_cos={geo:.4f}; "
-              f"predicted end-of-stack coherence signal geo^{n_sparse}={pred_end:.3e}", flush=True)
+        pred_end = geo**n_sparse
+        print(
+            f"# probed {n_probe} layers; geomean block_cos={geo:.4f}; "
+            f"predicted end-of-stack coherence signal geo^{n_sparse}={pred_end:.3e}",
+            flush=True,
+        )
     if all_exp:
         all_exp.sort()
 
         def q(p):
             return all_exp[min(len(all_exp) - 1, int(p * len(all_exp)))]
-        print(f"# per-expert real-activation cos: median={st.median(all_exp):.4f} "
-              f"p10={q(0.1):.4f} p90={q(0.9):.4f} min={all_exp[0]:.4f} max={all_exp[-1]:.4f}",
-              flush=True)
-    print(f"# dense-anchor layers={sorted(dense_set)} ({len(dense_set)}/43 dense, "
-          f"{n_sparse}/43 sparse = {100*n_sparse/43:.0f}% layers sparse)", flush=True)
+
+        print(
+            f"# per-expert real-activation cos: median={st.median(all_exp):.4f} "
+            f"p10={q(0.1):.4f} p90={q(0.9):.4f} min={all_exp[0]:.4f} max={all_exp[-1]:.4f}",
+            flush=True,
+        )
+    print(
+        f"# dense-anchor layers={sorted(dense_set)} ({len(dense_set)}/43 dense, "
+        f"{n_sparse}/43 sparse = {100 * n_sparse / 43:.0f}% layers sparse)",
+        flush=True,
+    )
     print(f"# qmap CSV -> {csv_path} ({len(rows)} rows)", flush=True)
 
 
-def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file: str,
-                     limit: int, max_len: int, sparse_proj: str = "both",
-                     route_slot: int = 0) -> None:
+def _downstream_impl(
+    tp: int,
+    tag: str,
+    moe: str,
+    dense_layers: str,
+    calib_file: str,
+    limit: int,
+    max_len: int,
+    sparse_proj: str = "both",
+    route_slot: int = 0,
+) -> None:
     """WS-A downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
     acc/acc_norm: per choice, sum teacher-forced logprob of the continuation tokens via vLLM
     prompt_logprobs; pick argmax) over ARC-C / HellaSwag / PIQA / Winogrande / MMLU-subset. Same
@@ -1147,22 +1622,43 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
         out = subprocess.run(q, capture_output=True, text=True).stdout
         return [int(ln) for ln in out.strip().splitlines()]
 
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
+    rope = {
+        "rope_type": "yarn",
+        "factor": 16,
+        "original_max_position_embeddings": 65536,
+        "beta_fast": 32,
+        "beta_slow": 1,
+    }
     t0 = time.time()
-    llm = LLM(model=MODEL, tokenizer_mode="deepseek_v4", tensor_parallel_size=tp,
-              enforce_eager=True, trust_remote_code=True, max_model_len=max_len,
-              gpu_memory_utilization=0.95, kv_cache_dtype="fp8",
-              max_num_batched_tokens=max(2048, max_len), hf_overrides={"rope_scaling": rope},
-              disable_log_stats=True)
+    llm = LLM(
+        model=MODEL,
+        tokenizer_mode="deepseek_v4",
+        tensor_parallel_size=tp,
+        enforce_eager=True,
+        trust_remote_code=True,
+        max_model_len=max_len,
+        gpu_memory_utilization=0.95,
+        kv_cache_dtype="fp8",
+        max_num_batched_tokens=max(2048, max_len),
+        hf_overrides={"rope_scaling": rope},
+        disable_log_stats=True,
+    )
     tok = llm.get_tokenizer()
     mem = smi()
-    print(f"# downstream tag={tag} moe={moe} dense_layers=[{dense_layers}] calib={calib_file} "
-          f"limit={limit} loaded {time.time() - t0:.0f}s per-GPU-MB={mem}", flush=True)
+    print(
+        f"# downstream tag={tag} moe={moe} dense_layers=[{dense_layers}] calib={calib_file} "
+        f"limit={limit} loaded {time.time() - t0:.0f}s per-GPU-MB={mem}",
+        flush=True,
+    )
 
     # generation sanity (same 5 prompts as qmap)
-    gp = ["The capital of France is", "def fibonacci(n):", "The three primary colors are",
-          "Water is made of hydrogen and", "The opposite of hot is"]
+    gp = [
+        "The capital of France is",
+        "def fibonacci(n):",
+        "The three primary colors are",
+        "Water is made of hydrogen and",
+        "The opposite of hot is",
+    ]
     gouts = llm.generate(gp, SamplingParams(temperature=0.0, max_tokens=24, min_tokens=6))
     print("# --- generation sanity ---", flush=True)
     for p, o in zip(gp, gouts, strict=False):
@@ -1176,13 +1672,19 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
         "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
         "through arteries and veins, delivering oxygen to every tissue in the body. Shakespeare "
         "wrote many famous plays, including Hamlet, Macbeth, and Romeo and Juliet. The speed of "
-        "light in a vacuum is approximately three hundred thousand kilometres per second.")
+        "light in a vacuum is approximately three hundred thousand kilometres per second."
+    )
     pids = tok.encode(passage)
-    pout = llm.generate([{"prompt_token_ids": pids}],
-                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+    pout = llm.generate(
+        [{"prompt_token_ids": pids}],
+        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0),
+    )
     plp = pout[0].prompt_logprobs or []
-    nlls = [-plp[i][t].logprob for i, t in enumerate(pids)
-            if i > 0 and plp[i] and t in plp[i] and math.isfinite(plp[i][t].logprob)]
+    nlls = [
+        -plp[i][t].logprob
+        for i, t in enumerate(pids)
+        if i > 0 and plp[i] and t in plp[i] and math.isfinite(plp[i][t].logprob)
+    ]
     ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
     print(f"# PPL {ppl:.3f}", flush=True)
 
@@ -1257,6 +1759,7 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
             t = t.strip().replace(" [title]", ". ")
             t = re.sub("\\[.*?\\]", "", t)
             return t.replace("  ", " ")
+
         items = []
         for r in list(ds)[:limit]:
             ctx = pp(r["activity_label"] + ": " + r["ctx_a"] + " " + r["ctx_b"].capitalize())
@@ -1266,8 +1769,12 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
         results.append(run_task(f"hellaswag[{src}]", items))
 
     # PIQA (acc_norm primary)
-    ds, src = try_load([("ybisk/piqa", {"split": "validation", "trust_remote_code": True}),
-                        ("piqa", {"split": "validation", "trust_remote_code": True})])
+    ds, src = try_load(
+        [
+            ("ybisk/piqa", {"split": "validation", "trust_remote_code": True}),
+            ("piqa", {"split": "validation", "trust_remote_code": True}),
+        ]
+    )
     if ds is not None:
         items = []
         for r in list(ds)[:limit]:
@@ -1276,14 +1783,20 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
         results.append(run_task(f"piqa[{src}]", items))
 
     # Winogrande (acc). partial scoring: ctx=prefix+option, cont=suffix after blank
-    ds, src = try_load([("allenai/winogrande", {"name": "winogrande_xl", "split": "validation",
-                                                "trust_remote_code": True})])
+    ds, src = try_load(
+        [
+            (
+                "allenai/winogrande",
+                {"name": "winogrande_xl", "split": "validation", "trust_remote_code": True},
+            )
+        ]
+    )
     if ds is not None:
         items = []
         for r in list(ds)[:limit]:
             s = r["sentence"]
             idx = s.index("_")
-            suffix = s[idx + 1:]
+            suffix = s[idx + 1 :]
             reqs, conts = [], []
             for opt in (r["option1"], r["option2"]):
                 cids = tok.encode(s[:idx] + opt)
@@ -1295,8 +1808,13 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
         results.append(run_task(f"winogrande[{src}]", items))
 
     # MMLU subset (acc), 0-shot
-    subjects = ["abstract_algebra", "college_computer_science", "high_school_world_history",
-                "professional_medicine", "moral_scenarios"]
+    subjects = [
+        "abstract_algebra",
+        "college_computer_science",
+        "high_school_world_history",
+        "professional_medicine",
+        "moral_scenarios",
+    ]
     mmlu_scores = []
     for subj in subjects:
         ds, src = try_load([("cais/mmlu", {"name": subj, "split": "test"})])
@@ -1307,8 +1825,10 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
         for r in list(ds)[: max(50, limit // 4)]:
             q = r["question"]
             opts = r["choices"]
-            head = (f"The following are multiple choice questions (with answers) about "
-                    f"{readable}.\n\n{q}\n")
+            head = (
+                f"The following are multiple choice questions (with answers) about "
+                f"{readable}.\n\n{q}\n"
+            )
             for i, o in enumerate(opts):
                 head += f"{chr(65 + i)}. {o}\n"
             head += "Answer:"
@@ -1319,19 +1839,24 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
     if mmlu_scores:
         mmlu_avg = sum(mmlu_scores) / len(mmlu_scores)
         print(f"# TASK mmlu_subset n_subj={len(mmlu_scores)} acc={mmlu_avg:.4f}", flush=True)
-        results.append({"task": "mmlu_subset", "n": len(mmlu_scores), "acc": mmlu_avg,
-                        "acc_norm": mmlu_avg})
+        results.append(
+            {"task": "mmlu_subset", "n": len(mmlu_scores), "acc": mmlu_avg, "acc_norm": mmlu_avg}
+        )
 
     # primary metric per task (acc_norm for arc/hellaswag/piqa, acc for winogrande/mmlu)
     def primary(r):
         return r["acc"] if r["task"].startswith(("winogrande", "mmlu")) else r["acc_norm"]
+
     prim = [primary(r) for r in results]
     avg = sum(prim) / len(prim) if prim else float("nan")
     print("# ================ DOWNSTREAM SUMMARY ================", flush=True)
     print(f"# tag={tag} PPL={ppl:.3f} per-GPU-MB={mem}", flush=True)
     for r in results:
-        print(f"#   {r['task']:<28} acc={r['acc']:.4f} acc_norm={r['acc_norm']:.4f} "
-              f"primary={primary(r):.4f} (n={r['n']})", flush=True)
+        print(
+            f"#   {r['task']:<28} acc={r['acc']:.4f} acc_norm={r['acc_norm']:.4f} "
+            f"primary={primary(r):.4f} (n={r['n']})",
+            flush=True,
+        )
     print(f"# AVG normalized primary = {avg:.4f}", flush=True)
     with open(f"/cache/qb_downstream_{tag}.csv", "w") as f:
         f.write("task,n,acc,acc_norm,primary\n")
@@ -1341,29 +1866,63 @@ def _downstream_impl(tp: int, tag: str, moe: str, dense_layers: str, calib_file:
     print(f"# downstream CSV -> /cache/qb_downstream_{tag}.csv", flush=True)
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=120 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def downstream(tag: str = "ds", moe: str = "dense", dense_layers: str = "", calib_file: str = "",
-               limit: int = 400, max_len: int = 2048, sparse_proj: str = "both",
-               route_slot: int = 0) -> None:
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=120 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def downstream(
+    tag: str = "ds",
+    moe: str = "dense",
+    dense_layers: str = "",
+    calib_file: str = "",
+    limit: int = 400,
+    max_len: int = 2048,
+    sparse_proj: str = "both",
+    route_slot: int = 0,
+) -> None:
     _downstream_impl(2, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot)
 
 
-@app.function(gpu="RTX-PRO-6000:4", timeout=120 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def downstream4(tag: str = "ds", moe: str = "dense", dense_layers: str = "", calib_file: str = "",
-                limit: int = 400, max_len: int = 2048, sparse_proj: str = "both",
-                route_slot: int = 0) -> None:
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=120 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def downstream4(
+    tag: str = "ds",
+    moe: str = "dense",
+    dense_layers: str = "",
+    calib_file: str = "",
+    limit: int = 400,
+    max_len: int = 2048,
+    sparse_proj: str = "both",
+    route_slot: int = 0,
+) -> None:
     # 4-GPU variant: route-slot keeps raw NVFP4 + packed codes resident, so experts must shard over
     # more GPUs to fit (tp=2 OOMs at the first-22 anchor).
     _downstream_impl(4, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot)
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=360 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def recon(tag: str = "rc", dense_layers: str = "", calib_file: str = "cal4", recon_io: str = "",
-          recon_layers: str = "", steps: int = 200, scale_only: bool = False, limit: int = 400,
-          max_len: int = 2048) -> None:
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=360 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def recon(
+    tag: str = "rc",
+    dense_layers: str = "",
+    calib_file: str = "cal4",
+    recon_io: str = "",
+    recon_layers: str = "",
+    steps: int = 200,
+    scale_only: bool = False,
+    limit: int = 400,
+    max_len: int = 2048,
+) -> None:
     """A3 layerwise repair: QB_RECON trains the listed sparse MoE layers vs the dumped teacher I/O
     during load, packs the repaired weights, then runs downstream eval on the repaired model in the
     same job. Repaired weights persist to /cache/qb_reconw_{tag}_dev*.pt for later serving."""
@@ -1381,37 +1940,84 @@ def recon(tag: str = "rc", dense_layers: str = "", calib_file: str = "cal4", rec
     _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len)
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def qmap(tag: str = "qm", dense_layers: str = "", max_len: int = 2048, moe: str = "dense",
-         probe_layers: str = "0,20,40", calib_file: str = "") -> None:
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def qmap(
+    tag: str = "qm",
+    dense_layers: str = "",
+    max_len: int = 2048,
+    moe: str = "dense",
+    probe_layers: str = "0,20,40",
+    calib_file: str = "",
+) -> None:
     _qmap_impl(2, tag, dense_layers, max_len, moe, probe_layers, calib_file)
 
 
-@app.function(gpu="RTX-PRO-6000:2", timeout=90 * MIN, volumes={"/cache": vol},
-              secrets=[modal.Secret.from_name("huggingface")])
-def calib(tag: str = "cal1", max_len: int = 2048, dump: bool = False,
-          sparse_dump: bool = False, dense_layers: str = "", calib_file: str = "") -> None:
-    _calib_impl(2, tag, max_len, dump=dump, sparse_dump=sparse_dump,
-                dense_layers=dense_layers, calib_file=calib_file)
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def calib(
+    tag: str = "cal1",
+    max_len: int = 2048,
+    dump: bool = False,
+    sparse_dump: bool = False,
+    dense_layers: str = "",
+    calib_file: str = "",
+) -> None:
+    _calib_impl(
+        2,
+        tag,
+        max_len,
+        dump=dump,
+        sparse_dump=sparse_dump,
+        dense_layers=dense_layers,
+        calib_file=calib_file,
+    )
 
 
 @app.local_entrypoint()
-def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int = 4096,
-         dense: str = "bf16", kv: str = "fp8", moe: str = "off",
-         tag: str = "qm", dense_layers: str = "", probe_layers: str = "0,20,40",
-         calib_file: str = "", limit: int = 400, recon_io: str = "", recon_layers: str = "",
-         steps: int = 200, scale_only: bool = False, sparse_proj: str = "both",
-         route_slot: int = 0) -> None:
+def main(
+    mode: str = "baseline",
+    tp: int = 2,
+    eager: bool = False,
+    max_len: int = 4096,
+    dense: str = "bf16",
+    kv: str = "fp8",
+    moe: str = "off",
+    tag: str = "qm",
+    dense_layers: str = "",
+    probe_layers: str = "0,20,40",
+    calib_file: str = "",
+    limit: int = 400,
+    recon_io: str = "",
+    recon_layers: str = "",
+    steps: int = 200,
+    scale_only: bool = False,
+    sparse_proj: str = "both",
+    route_slot: int = 0,
+) -> None:
     if mode == "test_so":
         test_so.remote()
     elif mode == "glm_inspect":
         glm_inspect.remote()
     elif mode == "glm_baseline":
-        glm_baseline.remote(tp=tp, eager=eager, max_len=max_len,
-                            dense=(dense if dense in ("nvfp4", "bf16") else "nvfp4"),
-                            moe=(moe if moe != "off" else "dense"), dense_layers=dense_layers,
-                            sparse_proj=sparse_proj, route_slot=route_slot)
+        glm_baseline.remote(
+            tp=tp,
+            eager=eager,
+            max_len=max_len,
+            dense=(dense if dense in ("nvfp4", "bf16") else "nvfp4"),
+            moe=(moe if moe != "off" else "dense"),
+            dense_layers=dense_layers,
+            sparse_proj=sparse_proj,
+            route_slot=route_slot,
+        )
     elif mode == "versions":
         versions.remote()
     elif mode == "dumpsrc":
@@ -1432,28 +2038,60 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
     elif mode == "sweep4":
         sweep4.remote()
     elif mode == "qmap":
-        qmap.remote(tag=tag, dense_layers=dense_layers, max_len=max_len,
-                    moe=(moe if moe != "off" else "dense"), probe_layers=probe_layers,
-                    calib_file=calib_file)
+        qmap.remote(
+            tag=tag,
+            dense_layers=dense_layers,
+            max_len=max_len,
+            moe=(moe if moe != "off" else "dense"),
+            probe_layers=probe_layers,
+            calib_file=calib_file,
+        )
     elif mode == "calib":
         calib.remote(tag=tag, max_len=max_len)
     elif mode == "dumpio":
         calib.remote(tag=tag, max_len=max_len, dump=True)
     elif mode == "dumpio2":
         # A3 reio2: sparse-trajectory (serve-consistent) I/O dump under the A2-49 policy.
-        calib.remote(tag=tag, max_len=max_len, sparse_dump=True,
-                     dense_layers=dense_layers, calib_file=(calib_file or "cal4"))
+        calib.remote(
+            tag=tag,
+            max_len=max_len,
+            sparse_dump=True,
+            dense_layers=dense_layers,
+            calib_file=(calib_file or "cal4"),
+        )
     elif mode == "downstream":
-        downstream.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
-                          dense_layers=dense_layers, calib_file=calib_file, limit=limit,
-                          max_len=max_len, sparse_proj=sparse_proj, route_slot=route_slot)
+        downstream.remote(
+            tag=tag,
+            moe=(moe if moe != "off" else "dense"),
+            dense_layers=dense_layers,
+            calib_file=calib_file,
+            limit=limit,
+            max_len=max_len,
+            sparse_proj=sparse_proj,
+            route_slot=route_slot,
+        )
     elif mode == "downstream4":
-        downstream4.remote(tag=tag, moe=(moe if moe != "off" else "dense"),
-                           dense_layers=dense_layers, calib_file=calib_file, limit=limit,
-                           max_len=max_len, sparse_proj=sparse_proj, route_slot=route_slot)
+        downstream4.remote(
+            tag=tag,
+            moe=(moe if moe != "off" else "dense"),
+            dense_layers=dense_layers,
+            calib_file=calib_file,
+            limit=limit,
+            max_len=max_len,
+            sparse_proj=sparse_proj,
+            route_slot=route_slot,
+        )
     elif mode == "recon":
-        recon.remote(tag=tag, dense_layers=dense_layers, calib_file=(calib_file or "cal4"),
-                     recon_io=recon_io, recon_layers=recon_layers, steps=steps,
-                     scale_only=scale_only, limit=limit, max_len=max_len)
+        recon.remote(
+            tag=tag,
+            dense_layers=dense_layers,
+            calib_file=(calib_file or "cal4"),
+            recon_io=recon_io,
+            recon_layers=recon_layers,
+            steps=steps,
+            scale_only=scale_only,
+            limit=limit,
+            max_len=max_len,
+        )
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)
