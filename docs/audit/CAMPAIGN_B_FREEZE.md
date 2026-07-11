@@ -67,4 +67,4 @@ The quadbit vLLM plugin's expert-parallel local-expert loop calls `torch.unique(
 (`cudaErrorStreamCaptureUnsupported`; traceback in `docs/audit/logs/glm_graphfail.log`). All DeepSeek/GLM
 rows are eager because of this. The Llama sparse-MLP path (`quadbit::fused_mlp` torch.library op) is already
 graph-captured (Table C). P4 = make the MoE/plugin path graph-safe or document the blocker at the exact
-operation level. See `docs/p4/host_sync_audit.md`.
+operation level. See [host_sync_audit.md](../p4/host_sync_audit.md).
