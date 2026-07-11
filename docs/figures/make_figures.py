@@ -130,6 +130,103 @@ def fig5_pareto():
     save(fig, "fig5_pareto")
 
 
+def fig_ds_pareto():
+    # DeepSeek-V4-Flash downstream Pareto: x = active sparse expert-FLOP %, y = downstream AVG.
+    # Source: data/deepseek_final.csv (frozen final table). Gates at .718 / .728.
+    rows = read_csv(DATA / "deepseek_final.csv")
+    style = {
+        "dense": (OK["grey"], "o", "dense NVFP4"),
+        "c_down49": (OK["green"], "*", "c_down49 (down-only, 2 GPU)"),
+        "c_down60": (OK["sky"], "^", "c_down60 (down-only, 2 GPU)"),
+        "d2_slot2": (OK["orange"], "D", "D2 route-slot (2 dense, 4 GPU)"),
+        "d1_slot1": (OK["red"], "v", "D1 route-slot (1 dense, 4 GPU)"),
+        "c_gateup49": (OK["purple"], "s", "c_gateup49 (gate_up-only)"),
+        "a2_49": (OK["blue"], "X", "a2_49 (both-proj)"),
+    }
+    fig, ax = plt.subplots(figsize=(5.2, 3.6))
+    ax.axhline(0.718, color=OK["grey"], ls="--", lw=0.9)
+    ax.axhline(0.728, color=OK["grey"], ls=":", lw=0.9)
+    ax.text(50, 0.7185, ".718 gate", fontsize=6.5, color=OK["grey"], va="bottom", ha="right")
+    ax.text(50, 0.7285, ".728 stretch", fontsize=6.5, color=OK["grey"], va="bottom", ha="right")
+    for r in rows:
+        key = r["policy"]
+        if key not in style:
+            continue
+        c, mk, lab = style[key]
+        x, y = float(r["active_sparse_flop_pct"]), float(r["avg_primary"])
+        ax.scatter(x, y, s=130, color=c, marker=mk, zorder=3, edgecolor="white",
+                   linewidth=0.8, label=lab)
+    ax.set_xlabel("active sparse expert-FLOP % (real sparsity, not layer %)")
+    ax.set_ylabel("downstream AVG (higher better)")
+    ax.set_title("DeepSeek-V4-Flash: training-free sparse-FP4 Pareto\n"
+                 "c_down49 cleanest 2-GPU; D2 max sparse-FLOP (4-GPU)", fontsize=8.5)
+    ax.legend(fontsize=6.3, loc="lower left", frameon=False)
+    ax.margins(x=0.08, y=0.12)
+    save(fig, "fig_ds_pareto")
+
+
+def fig_ds_designspace():
+    # Capability design-space: what recovers training-free downstream AVG. Source:
+    # data/wsa_downstream.csv + deepseek_final.csv. Gate at .718; dense ref .7383.
+    rows = [
+        ("magnitude 2:4 (100% sparse)", 0.5096, False),
+        ("routed Wanda alone (100%)", 0.5092, False),
+        ("A3 local repair (49%)", 0.6964, False),
+        ("both-proj all-sparse a2_49 (49%)", 0.6966, False),
+        ("gate_up-only anchor (49%)", 0.7056, False),
+        ("route-slot D2 (33% FLOP)", 0.7304, True),
+        ("proj-anchor c_down49 (49% lyr)", 0.7354, True),
+    ]
+    fig, ax = plt.subplots(figsize=(6.6, 3.2))
+    y = np.arange(len(rows))
+    for yi, (name, avg, ok) in zip(y, rows):
+        c = OK["green"] if ok else OK["red"]
+        ax.barh(yi, avg, color=c, alpha=0.85, edgecolor="white")
+        ax.text(avg + 0.006, yi, f"{avg:.3f}", va="center", ha="left", fontsize=7.5)
+        ax.text(0.46, yi, f"  {name}", va="center", ha="left", fontsize=7.5, color="white")
+    ax.axvline(0.718, color=OK["grey"], ls="--", lw=1.0)
+    ax.axvline(0.7383, color=OK["grey"], ls=":", lw=1.0)
+    ax.text(0.718, len(rows) - 0.3, ".718 gate", fontsize=6.5, color=OK["grey"], ha="center")
+    ax.text(0.7383, len(rows) - 0.3, "dense", fontsize=6.5, color=OK["grey"], ha="center")
+    ax.set_xlim(0.45, 0.76); ax.set_yticks([])
+    ax.set_xlabel("downstream AVG (training-free)")
+    ax.set_title("DeepSeek design-space: only structural placement recovers capability\n"
+                 "(magnitude/Wanda/A3/all-sparse fail; projection anchoring + route-slot pass)",
+                 fontsize=8.5)
+    save(fig, "fig_ds_designspace")
+
+
+def fig_glm_transfer():
+    # Structural sparse-FP4 mechanism transfers DeepSeek -> GLM-5.2. Same mechanism on the y-axis;
+    # left = DeepSeek Δ downstream AVG (pt, from deepseek_final.csv), right = GLM Δ PPL (glm_results.md).
+    # Both orderings agree: route-tail and down-proj are safe; gate/up carries the tax.
+    # (mechanism, deepseek_delta_pt, glm_delta_ppl, safe)
+    rows = [
+        ("route tail (D2: top-2 dense)", -0.79, 0.065, True),
+        ("down projection (49% lyr)", -0.29, 0.209, True),
+        ("gate/up projection (49% lyr)", -3.27, 0.432, False),
+    ]
+    fig, (axl, axr) = plt.subplots(1, 2, figsize=(7.4, 2.6), sharey=True)
+    y = np.arange(len(rows))
+    for yi, (_, ds, glm, ok) in zip(y, rows):
+        c = OK["green"] if ok else OK["red"]
+        axl.barh(yi, ds, color=c, alpha=0.85, edgecolor="white")
+        axl.text(ds - 0.05, yi, f"{ds:+.2f}", va="center", ha="right", fontsize=7.5)
+        axr.barh(yi, glm, color=c, alpha=0.85, edgecolor="white")
+        axr.text(glm + 0.008, yi, f"{glm:+.3f}", va="center", ha="left", fontsize=7.5)
+    axl.set_yticks(y)
+    axl.set_yticklabels([r[0] for r in rows], fontsize=7.5)
+    axl.set_xlabel("DeepSeek Δ downstream AVG (pt)")
+    axl.set_title("DeepSeek-V4-Flash\n(downstream AVG)", fontsize=8)
+    axl.invert_xaxis()
+    axr.set_xlabel("GLM-5.2 Δ PPL (lower better)")
+    axr.set_title("GLM-5.2 transfer\n(held-out PPL)", fontsize=8)
+    axr.margins(x=0.18)
+    fig.suptitle("Structural sparse-FP4 mechanism transfers to GLM-5.2: down + route-tail safe, "
+                 "gate/up expensive", fontsize=8.5, y=1.02)
+    save(fig, "fig_glm_transfer")
+
+
 def fig7_designspace():
     rows = [
         ("eager sparse win", "diagnostic only", OK["yellow"]),
@@ -230,4 +327,7 @@ if __name__ == "__main__":
     fig5_pareto()
     fig6_dist_scaling()
     fig7_designspace()
+    fig_ds_pareto()
+    fig_ds_designspace()
+    fig_glm_transfer()
     print("# done", flush=True)

@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-07-08T22:51:03.992691</dc:date>
+    <dc:date>2026-07-11T18:57:30.112557</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -40,7 +40,7 @@ Q 106.604411 30.230004 106.604411 33.667284
 L 106.604411 57.040788 
 Q 106.604411 60.478068 114.193211 60.478068 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_3">
     <path d="M 212.847611 60.478068 
@@ -53,7 +53,7 @@ Q 205.258811 30.230004 205.258811 33.667284
 L 205.258811 57.040788 
 Q 205.258811 60.478068 212.847611 60.478068 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_4">
     <path d="M 311.502011 60.478068 
@@ -66,7 +66,7 @@ Q 303.913211 30.230004 303.913211 33.667284
 L 303.913211 57.040788 
 Q 303.913211 60.478068 311.502011 60.478068 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_5">
     <path d="M 114.193211 139.535508 
@@ -79,7 +79,7 @@ Q 106.604411 105.850164 106.604411 109.287444
 L 106.604411 136.098228 
 Q 106.604411 139.535508 114.193211 139.535508 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_6">
     <path d="M 212.847611 139.535508 
@@ -92,7 +92,7 @@ Q 205.258811 105.850164 205.258811 109.287444
 L 205.258811 136.098228 
 Q 205.258811 139.535508 212.847611 139.535508 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_7">
     <path d="M 311.502011 125.786388 
@@ -105,7 +105,7 @@ Q 303.913211 104.131524 303.913211 107.568804
 L 303.913211 122.349108 
 Q 303.913211 125.786388 311.502011 125.786388 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #f0e442; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #f0e442; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_8">
     <path d="M 311.502011 148.128708 
@@ -118,7 +118,7 @@ Q 303.913211 126.473844 303.913211 129.911124
 L 303.913211 144.691428 
 Q 303.913211 148.128708 311.502011 148.128708 
 z
-" clip-path="url(#pac3ca139d3)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p39f3d49b40)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="text_1">
     <!-- Fig 1. System overview: dense NVFP4 baseline vs quadbit sparse-FP4 path -->
@@ -1766,7 +1766,7 @@ z
   </g>
  </g>
  <defs>
-  <clipPath id="pac3ca139d3">
+  <clipPath id="p39f3d49b40">
    <rect x="48.929531" y="7.543956" width="379.44" height="171.864"/>
   </clipPath>
  </defs>

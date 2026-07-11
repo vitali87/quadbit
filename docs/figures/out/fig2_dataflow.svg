@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-07-08T22:51:04.101385</dc:date>
+    <dc:date>2026-07-11T18:57:30.188921</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -40,7 +40,7 @@ Q 106.148514 54.035712 106.148514 56.696832
 L 106.148514 88.098048 
 Q 106.148514 90.759168 113.737314 90.759168 
 z
-" clip-path="url(#p28f43ab740)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p27d2d85034)" style="fill: #eeeeee; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_3">
     <path d="M 176.724354 90.759168 
@@ -53,7 +53,7 @@ Q 169.135554 54.035712 169.135554 56.696832
 L 169.135554 88.098048 
 Q 169.135554 90.759168 176.724354 90.759168 
 z
-" clip-path="url(#p28f43ab740)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p27d2d85034)" style="fill: #56b4e9; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_4">
     <path d="M 239.711394 90.759168 
@@ -66,7 +66,7 @@ Q 232.122594 54.035712 232.122594 56.696832
 L 232.122594 88.098048 
 Q 232.122594 90.759168 239.711394 90.759168 
 z
-" clip-path="url(#p28f43ab740)" style="fill: #0072b2; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p27d2d85034)" style="fill: #0072b2; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_5">
     <path d="M 302.698434 90.759168 
@@ -79,7 +79,7 @@ Q 295.109634 54.035712 295.109634 56.696832
 L 295.109634 88.098048 
 Q 295.109634 90.759168 302.698434 90.759168 
 z
-" clip-path="url(#p28f43ab740)" style="fill: #009e73; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p27d2d85034)" style="fill: #009e73; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_6">
     <path d="M 365.685474 90.759168 
@@ -92,7 +92,7 @@ Q 358.096674 54.035712 358.096674 56.696832
 L 358.096674 88.098048 
 Q 358.096674 90.759168 365.685474 90.759168 
 z
-" clip-path="url(#p28f43ab740)" style="fill: #0072b2; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p27d2d85034)" style="fill: #0072b2; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="patch_7">
     <path d="M 428.672514 90.759168 
@@ -105,7 +105,7 @@ Q 421.083714 54.035712 421.083714 56.696832
 L 421.083714 88.098048 
 Q 421.083714 90.759168 428.672514 90.759168 
 z
-" clip-path="url(#p28f43ab740)" style="fill: #e69f00; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
+" clip-path="url(#p27d2d85034)" style="fill: #e69f00; stroke: #333333; stroke-width: 0.8; stroke-linejoin: miter"/>
    </g>
    <g id="text_1">
     <!-- Fig 2. Sparse MLP / expert dataflow (one graph-capturable launch chain) -->
@@ -1397,7 +1397,7 @@ z
   </g>
  </g>
  <defs>
-  <clipPath id="p28f43ab740">
+  <clipPath id="p27d2d85034">
    <rect x="101.595234" y="7.2" width="379.44" height="133.056"/>
   </clipPath>
  </defs>
