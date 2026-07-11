@@ -2,8 +2,9 @@
 
 Large-model transfer of the DeepSeek-proven structural sparse-FP4 policies to GLM-5.2 on 8x RTX PRO
 6000 (SM120, EP), under the quadbit plugin in vLLM 0.24.0. Source logs:
-`scratchpad/glm_{dense_ppl,down49,gateup49,routeslot2}.log`. Sparse-policy runs at commit `8bb08c0`;
-dense PPL row at `53ab7d3`.
+`scratchpad/glm_{dense_ppl,down49,gateup49,routeslot2}.log`; downstream evidence
+`docs/audit/logs/glm_downstream.log`. Sparse-policy runs at commit `8bb08c0`; dense PPL row at `53ab7d3`;
+downstream smoke suite at `cc00b8b`.
 
 ## Load / serving baseline (the make-or-break gate)
 
@@ -41,6 +42,27 @@ projections on the tail 6/8 slots. Estimate, not a measured kernel speedup.
 decode steps are counted; the earlier end-to-end figures (prompt+gen throughput) were ~0.2-0.3 tok/s
 lower. All rows measured identically, so cross-policy comparison holds either way.
 
+## Downstream capability (P1 smoke suite)
+
+The MC log-likelihood harness (ARC-C, HellaSwag, Winogrande, and a 5-subject MMLU subset; PIQA is
+excluded because `ybisk/piqa` is not loadable on the serve image, same as the DeepSeek 4-task table) is
+tokenizer-agnostic (it scores continuations with `llm.get_tokenizer()`), so it runs unchanged on GLM
+through the same 8-GPU EP load. Two runs, `limit=200` per task: dense NVFP4 reference vs the route-slot
+D2 policy. This directly tests whether D2's small PPL gap hides a downstream collapse. It does not.
+
+| policy | ARC-C | HellaSwag | Winogrande | MMLU-5 | **AVG** | PPL |
+|---|---|---|---|---|---|---|
+| dense (ref) | 0.655 | 0.780 | 0.750 | 0.856 | **0.7603** | 3.171 |
+| **route-slot D2** | 0.650 | 0.780 | 0.725 | 0.848 | **0.7508** | 3.216 |
+| Δ | -0.005 | 0.000 | -0.025 | -0.008 | **-0.0095** | +0.045 |
+
+D2 holds within **0.95 pt AVG** of dense with no task collapsing (HellaSwag exactly flat; ARC-C and MMLU
+within the n=200 / n=5 sampling band; Winogrande -2.5 pt is the largest move and near Winogrande's
+per-200 noise). The downstream PPL (3.216) tracks the serving PPL (3.236). This is a small smoke suite,
+not a full benchmark, but it removes the specific reviewer objection that D2's low PPL cost could mask a
+downstream regression. Commands: `--mode glm_downstream --moe {dense | sparse --sparse-proj both
+--route-slot 2 --dense-layers "0..37"} --limit 200`. Logs: `docs/audit/logs/glm_downstream.log`.
+
 ## What transfers
 
 - **The DeepSeek structural rule holds on GLM.** Down-only sparsity costs about half the capability of
@@ -58,11 +80,13 @@ lower. All rows measured identically, so cross-policy comparison holds either wa
 
 ## Honest caveats (do not overclaim)
 
-- **PPL is the only quality metric measured on GLM.** The downstream MC harness (ARC-C/HellaSwag/
-  Winogrande/MMLU) is DeepSeek-tokenizer-specific and was not re-run on GLM (8-GPU cost). PPL
-  divergence + coherence prove the mechanism transfers and the sparse path is active; the **absolute
-  capability-preservation numbers of record are DeepSeek's** (full downstream AVG). GLM PPL deltas are
-  directionally consistent with DeepSeek's downstream deltas, nothing more.
+- **Quality evidence is PPL plus a small downstream smoke suite, not a full benchmark.** GLM now has
+  both teacher-forced PPL (all four policies) and a 4-task MC downstream comparison (dense vs route-slot
+  D2, `limit=200`, above); the D2 downstream AVG holds within 0.95 pt of dense, matching the small PPL
+  gap. This backs D2's capability preservation directly on GLM, not by DeepSeek analogy. What is still
+  not measured on GLM: full-size benchmarks, and downstream numbers for the down49/gateup49 rows (only
+  their PPL is measured). The **most thorough downstream evidence of record is still DeepSeek's** (full
+  AVG across every policy); GLM's is a confirmation smoke suite on the Pareto winner.
 - **Sparse path is active, not a dense trap.** Each sparse run logs exactly 304 dense-anchor lines
   (38 anchored layers x 8 workers); layers 38-74 pack to 2:4 codes. Route-slot's KV collapse to 241k
   tokens independently confirms raw+codes co-residency.
