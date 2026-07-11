@@ -32,6 +32,8 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | Wide-TMA-plus-swizzle lifted unit sparse 2012k->2731k (+36%), deployable 1486k->2116k (+42%) | `cuda/matmul_sp_wide_swz2.cu`, `cuda/matmul_sp_full_wide.cu`; `docs/paper.md` Section 5 | backed |
 | Sparse advantage over quadbit's own dense is ~1.33x at roofline, not 2x | `docs/paper.md` Section 5 (2012k vs 1510k @8192) | backed |
 | Speed-path ceiling table (bf16/CUTLASS/dense/sparse at 4096/8192/16384) | `harness/bench_vs_bf16.py`, `harness/cutlass_fp4.py`; `docs/paper.md` Section 5 | backed |
+| mma / ldmatrix / scale / 2:4-metadata bit-layouts derived empirically by probe-and-verify, validated to relative error 0 | `harness/verify_sparse_2lvl.py` (maxrel 0), `harness/probe_ldmatrix.py`; `docs/paper.md` Section 3 | backed |
+| SM120 lacks the `tcgen05`/UMMA tensor-memory path (B200/SM100 only), so every FP4 GEMM runs through warp-level `mma.sync`/`mma.sp` | `docs/hardware.md`; `docs/paper.md` Section 2 | backed |
 
 ## 3. Graph-captured split-K decode win
 
@@ -115,8 +117,10 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | PCIe all-reduce comm 0.32-0.45 ms vs 1.3-2.5 ms expert compute (no NVLink caveat) | `harness/moe_dist.py` | backed |
 | Real-weight per-expert-output 2:4-FP4 tax ~cos 0.70 (random-act worst case); MoE accuracy recovery is future work | `harness/moe_layer.py` | backed |
 | DeepSeek-V4-Flash NVFP4 weights load in vLLM 0.24 on 2x RTX PRO 6000 (FlashInfer CUTLASS MoE selected) | `harness/serve_dsv4.py` (serve3 log) | backed |
-| The model's FP8 (ue8m0 W8A8) attention GEMM has NO SM120 kernel: DeepGEMM SF-transform asserts, CUTLASS c3x scaled_mm no-dispatch -> forward cannot init on consumer Blackwell (ecosystem gap, not quadbit) | `harness/serve_dsv4.py` (serve3/serve4 logs) | backed |
-| In-vLLM graph-captured sparse MoE serving (end-to-end, this model) | `harness/serve_dsv4.py` quadbit mode; staged .so + FusedMoE hook implemented | reserved (future work, gated on ecosystem FP8 SM120 support / Hopper host) |
+| Vanilla vLLM cannot init the model's FP8 (ue8m0 W8A8) attention on SM120 (DeepGEMM SF-transform asserts, CUTLASS c3x scaled_mm no-dispatch) -- an ecosystem gap, not quadbit | `harness/serve_dsv4.py` (serve3/serve4 logs) | backed |
+| That ecosystem gap is OVERTURNED by the SM120-unblock plugin (block-FP8 dequant, MLA o_proj reimpl, DSA Lightning-Indexer logits, cooperative-topk override) -> DeepSeek-V4-Flash serves end-to-end on SM120 | `harness/qb_vllm_plugin/qb_sm120_plugin.py`; `docs/paper.md` Section 10.1 | backed |
+| In-vLLM EAGER sparse-FP4 MoE serving (this model, end-to-end): downstream c_down49 (2 GPU) / D2 (4 GPU) / GLM (8 GPU) all ran through the quadbit sparse op | `harness/serve_dsv4.py`; `docs/deepseek_final_table.md`, `docs/glm_results.md` | backed |
+| In-vLLM GRAPH-CAPTURED sparse MoE serving (this model) | blocked by the plugin EP host-sync (see Section 8 graph row); all serving rows are eager | reserved (future work; blocker is the plugin, not ecosystem FP8) |
 
 ## 8. Training-free capability-preserving structural sparsity (DeepSeek + GLM transfer)
 
@@ -135,9 +139,9 @@ ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-F
 | Do NOT conflate sparse layer % with active sparse FLOP %; PPL is not the quality metric | `docs/deepseek_final_table.md` column notes | backed |
 | GLM-5.2 architecturally compatible: glm_moe_dsa supported in vLLM 0.24.0, NVFP4 routed experts identical scheme | `harness/serve_dsv4.py --mode glm_inspect`; `docs/glm_feasibility.md` | backed |
 | GLM-5.2-NVFP4 = 432.9 GiB; does NOT fit on 2 or 4 RTX PRO 6000, needs 8 (EP) | `glm_inspect` safetensors-index probe; `docs/glm_feasibility.md` | backed |
-| GLM-5.2 loads + generates coherently on SM120 under the quadbit plugin; DSA runs natively (`FLASHINFER_MLA_SPARSE_SM120` + `DEEPSEEK_V32_INDEXER`), 8-GPU EP | `harness/serve_dsv4.py --mode glm_baseline`; `docs/glm_results.md`; `scratchpad/glm_dense_ppl.log` | backed |
-| GLM structural transfer: down-only (+0.209 PPL) costs ~half of gate/up (+0.432 PPL) at matched 49%-layer coverage; same mechanism as DeepSeek | `docs/glm_results.md` down49/gateup49; `glm_{down49,gateup49}.log` | backed |
-| GLM route-slot D2 (top-2 dense, tail-6 sparse) = highest sparse FLOP (~37%) at lowest cost (+0.065 PPL); dual residency fits 8 GPUs at 241k-vs-607k KV | `docs/glm_results.md` routeslot2; `glm_routeslot2.log` | backed |
+| GLM-5.2 loads + generates coherently on SM120 under the quadbit plugin; DSA runs natively (`FLASHINFER_MLA_SPARSE_SM120` + `DEEPSEEK_V32_INDEXER`), 8-GPU EP | `harness/serve_dsv4.py --mode glm_baseline`; `docs/glm_results.md`; `docs/audit/logs/glm_runs.log` | backed |
+| GLM structural transfer: down-only (+0.209 PPL) costs ~half of gate/up (+0.432 PPL) at matched 49%-layer coverage; same mechanism as DeepSeek | `docs/glm_results.md` down49/gateup49; `docs/audit/logs/glm_runs.log` | backed |
+| GLM route-slot D2 (top-2 dense, tail-6 sparse) = highest sparse FLOP (~37%) at lowest cost (+0.065 PPL); dual residency fits 8 GPUs at 241k-vs-607k KV | `docs/glm_results.md` routeslot2; `docs/audit/logs/glm_runs.log` | backed |
 | GLM quality measured by held-out PPL only; downstream AVG not re-run on GLM (DeepSeek-specific harness) | `docs/glm_results.md` caveats | backed (scope limit stated) |
-| GLM sparse path graph-capturable end-to-end | plugin EP loop `torch.unique().tolist()` host-sync blocks CUDA-graph capture (`qb_sm120_plugin.py:1255`); all GLM rows eager | reserved (future work; not a DSA/memory/loader blocker) |
+| GLM sparse path graph-capturable end-to-end | plugin EP loop `torch.unique().tolist()` host-sync blocks CUDA-graph capture (`qb_sm120_plugin.py:1255`); all GLM rows eager; traceback `docs/audit/logs/glm_graphfail.log` | reserved (future work; not a DSA/memory/loader blocker) |
 | Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |

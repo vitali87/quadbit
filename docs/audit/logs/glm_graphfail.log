@@ -1,0 +1,42 @@
+# GLM graph-capture FAILURE (negative evidence) - one clean worker traceback
+# reproduce: any Env-M MoE run with enforce_eager=False (omit --eager).
+# full log: scratchpad/glm_gate_full.log (app ap-4HlCFH92u83COJ8uETXWcR)
+# root cause: plugin EP local-expert loop torch.unique(local).tolist() = device->host sync,
+#             illegal under CUDA-graph stream capture. NOT a DSA/attention/memory/loader blocker.
+--------------------------------------------------------------------------------
+    buf7 = torch.ops.vllm.moe_forward_shared.default(buf4, buf5, buf6, None, arg5_1, 0)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/_ops.py", line 865, in __call__
+    return self._op(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/runner/moe_runner.py", line 161, in _moe_forward_shared
+    return layer._forward_impl(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/runner/moe_runner.py", line 823, in _forward_impl
+    shared_output, hidden_states = self._apply_quant_method(
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/runner/moe_runner.py", line 567, in _apply_quant_method
+    fused_out = self.routed_experts.forward_modular(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/routed_experts.py", line 1091, in forward_modular
+    return self.quant_method.apply(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/qb_sm120_plugin.py", line 1255, in patched_moe_apply
+    for le in torch.unique(local).tolist():
+              ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/_jit_internal.py", line 636, in fn
+    return if_false(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/_jit_internal.py", line 636, in fn
+    return if_false(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/functional.py", line 1074, in _return_output
+    output, _, _ = _unique_impl(input, sorted, return_inverse, return_counts, dim)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/torch/functional.py", line 967, in _unique_impl
+    output, inverse_indices, counts = torch._unique2(
+                                      ^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: operation not permitted when stream is capturing
+Search for `cudaErrorStreamCaptureUnsupported' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+...
+(EngineCore) RuntimeError: Engine core initialization failed. Failed core proc(s): {'EngineCore': 1}
