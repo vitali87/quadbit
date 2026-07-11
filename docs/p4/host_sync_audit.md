@@ -65,7 +65,33 @@ These run at weight load (`process_weights_after_loading`) or only under `QB_DUM
 
 | # | lines | issue | plan |
 |---|-------|-------|------|
-| D1 | 733,741-743 | ctypes `lib.quantize_act_nvfp4_2lvl` / `lib.sparse_moe_mm_2lvl` launch kernels; if they use the **default stream**, they are invisible to torch's capture stream (not captured, or capture error) | verify the `.so` launch stream; **Route B**: wrap `fused_mlp`/`seg_gemm` as a proper `torch.library`/C++ custom op that takes and launches on the current stream (mirrors the already-graph-safe Llama `quadbit::fused_mlp`) |
+| D1 | 733,741-743 | ctypes `lib.quantize_act_nvfp4_2lvl` / `lib.sparse_moe_mm_2lvl` launch kernels | **RESOLVED to a narrow stream-plumbing fix** (verified in `cuda/sparse_fp4_lib.cu`), not a custom-op rewrite. See finding below. |
+
+### D1 finding — the `.so` is mostly already capture-ready
+
+Read of `cuda/sparse_fp4_lib.cu` (frozen) shows the fix is narrow, and explains why Llama Table C already
+captures while the MoE path does not:
+
+- **Fused entries are stream-safe.** `fused_mlp_2lvl` (601) and `fused_mlp_2lvl_skdown` (1033) take a
+  `void *stream` and launch **every** kernel (`quant_act_2lvl_k`, `swiglu_*`, `matmul_sp`) with
+  `<<<..., 0, s>>>` on that stream (609-615, 1041-1047, 567). This is the Llama `quadbit::fused_mlp`
+  path — already graph-captured (Table C). No change needed.
+- **`sparse_moe_mm_2lvl` (1026) also takes a stream** and launches `matmul_sp_moe<<<..., stream>>>`
+  (1022). **But its wrapper does `return stream ? 0 : cudaDeviceSynchronize()` (1030)** — so passing the
+  plugin's literal `0` (line 743) both runs on the legacy default stream **and forces a device sync every
+  call**. Fix: pass `torch.cuda.current_stream().cuda_stream` instead of `0`.
+- **`quantize_act_nvfp4_2lvl` (312) is the one un-stream-safe entry the MoE path uses** — it launches
+  `quant_act_2lvl_k<<<batch, 256>>>` (313) with **no stream** (legacy default stream 0; the build is not
+  `--default-stream per-thread`, see `harness/build_so.py`). This needs a `void *stream` param added and
+  `<<<batch, 256, 0, s>>>`, then a `.so` rebuild under CUDA 12.8. The identical launcher already exists
+  stream-parameterized *inside* `fused_mlp_2lvl` at 609, so the change is mechanical.
+
+**Net M2 code:** (1) add `void *stream` to `quantize_act_nvfp4_2lvl` in the `.cu`; rebuild `.so` via
+`build_so.py`. (2) in the plugin's `seg_gemm`/`quant_act`, pass `current_stream().cuda_stream` to both
+`quantize_act_nvfp4_2lvl` and `sparse_moe_mm_2lvl` (kills D1 **and** the hidden per-call
+`cudaDeviceSynchronize`). (3) vectorize `build_routing` to fixed capacity (A2/A3) so shapes are static and
+no host reads remain. All three are validated on the standalone harness before any vLLM integration. The
+frozen `.cu`/`.so` on `main` are untouched; changes live on `p4-graph-capture`.
 | D2 | 730-732,740,751-752,1167 | in-forward `torch.empty`/`zeros` sized by data-dependent `r`/`r_pad`/`t` | with A2/A3 padded to fixed capacity and a persistent workspace, allocations become fixed-shape; PyTorch's capture memory pool then handles them |
 
 ## Prioritized plan
