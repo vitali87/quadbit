@@ -1606,12 +1606,15 @@ def _downstream_impl(
     max_len: int,
     sparse_proj: str = "both",
     route_slot: int = 0,
+    glm: bool = False,
 ) -> None:
     """WS-A downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
     acc/acc_norm: per choice, sum teacher-forced logprob of the continuation tokens via vLLM
     prompt_logprobs; pick argmax) over ARC-C / HellaSwag / PIQA / Winogrande / MMLU-subset. Same
     bespoke DeepSeek-V4-Flash init as _qmap_impl so the quadbit sparse plugin + fp8-KV + rope
-    overrides are identical. GSM8K skipped (generative, ~2 tok/s sparse decode = not cheap)."""
+    overrides are identical. GSM8K skipped (generative, ~2 tok/s sparse decode = not cheap).
+    glm=True loads GLM-5.2-NVFP4 (8-GPU EP, no DeepSeek rope/tokenizer) instead; the MC eval is
+    tokenizer-agnostic (uses llm.get_tokenizer()) so it transfers unchanged."""
     import math
     import os
     import subprocess
@@ -1636,27 +1639,43 @@ def _downstream_impl(
         out = subprocess.run(q, capture_output=True, text=True).stdout
         return [int(ln) for ln in out.strip().splitlines()]
 
-    rope = {
-        "rope_type": "yarn",
-        "factor": 16,
-        "original_max_position_embeddings": 65536,
-        "beta_fast": 32,
-        "beta_slow": 1,
-    }
     t0 = time.time()
-    llm = LLM(
-        model=MODEL,
-        tokenizer_mode="deepseek_v4",
-        tensor_parallel_size=tp,
-        enforce_eager=True,
-        trust_remote_code=True,
-        max_model_len=max_len,
-        gpu_memory_utilization=0.95,
-        kv_cache_dtype="fp8",
-        max_num_batched_tokens=max(2048, max_len),
-        hf_overrides={"rope_scaling": rope},
-        disable_log_stats=True,
-    )
+    if glm:
+        # GLM-5.2 keeps its own rope/config (1M ctx); no DeepSeek yarn override or tokenizer_mode.
+        # 8-GPU EP, eager (GLM's EP MoE is not graph-capturable). Same QB env set above applies.
+        llm = LLM(
+            model=GLM_MODEL,
+            tensor_parallel_size=tp,
+            enforce_eager=True,
+            trust_remote_code=True,
+            max_model_len=max_len,
+            gpu_memory_utilization=0.92,
+            kv_cache_dtype="fp8",
+            max_num_batched_tokens=max_len,
+            enable_expert_parallel=True,
+            disable_log_stats=True,
+        )
+    else:
+        rope = {
+            "rope_type": "yarn",
+            "factor": 16,
+            "original_max_position_embeddings": 65536,
+            "beta_fast": 32,
+            "beta_slow": 1,
+        }
+        llm = LLM(
+            model=MODEL,
+            tokenizer_mode="deepseek_v4",
+            tensor_parallel_size=tp,
+            enforce_eager=True,
+            trust_remote_code=True,
+            max_model_len=max_len,
+            gpu_memory_utilization=0.95,
+            kv_cache_dtype="fp8",
+            max_num_batched_tokens=max(2048, max_len),
+            hf_overrides={"rope_scaling": rope},
+            disable_log_stats=True,
+        )
     tok = llm.get_tokenizer()
     mem = smi()
     print(
@@ -1921,6 +1940,28 @@ def downstream4(
 
 
 @app.function(
+    gpu="RTX-PRO-6000:8",
+    timeout=360 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def glm_downstream(
+    tag: str = "glm",
+    moe: str = "dense",
+    dense_layers: str = "",
+    calib_file: str = "",
+    limit: int = 200,
+    max_len: int = 2048,
+    sparse_proj: str = "both",
+    route_slot: int = 0,
+) -> None:
+    # GLM-5.2 downstream smoke (P1): same MC eval as DeepSeek, 8-GPU EP, GLM load (glm=True).
+    _downstream_impl(
+        8, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot, glm=True
+    )
+
+
+@app.function(
     gpu="RTX-PRO-6000:2",
     timeout=360 * MIN,
     volumes={"/cache": vol},
@@ -2079,6 +2120,17 @@ def main(
         )
     elif mode == "downstream":
         downstream.remote(
+            tag=tag,
+            moe=(moe if moe != "off" else "dense"),
+            dense_layers=dense_layers,
+            calib_file=calib_file,
+            limit=limit,
+            max_len=max_len,
+            sparse_proj=sparse_proj,
+            route_slot=route_slot,
+        )
+    elif mode == "glm_downstream":
+        glm_downstream.remote(
             tag=tag,
             moe=(moe if moe != "off" else "dense"),
             dense_layers=dense_layers,
