@@ -10,78 +10,97 @@ is stale.
 
 ## Abstract
 
-Consumer and pro Blackwell cards (SM120: RTX PRO 6000, RTX 5090) ship FP4 tensor cores, but
-the software that reaches them is thin. cuBLAS exposes dense FP4 only. CUTLASS ships a dense
-(example 79b) and a sparse (example 80b) NVFP4 GEMM for SM120, but the block-scaled path has
-documented correctness and autotuner problems in practice, and no library wraps a sparse FP4
-kernel in a real deployment stack. SM120 also lacks the `tcgen05`/UMMA tensor-memory path that
-the datacenter B200 (SM100) uses, so every FP4 GEMM here must run through warp-level
-`mma.sync` and `mma.sp`.
+Consumer and pro Blackwell cards (SM120: RTX PRO 6000, RTX 5090) ship FP4 tensor cores, and the
+dense-NVFP4 software that reaches them is now strong. FlashInfer's `mm_fp4` (`b12x`/`cutlass`),
+vLLM's `modelopt_fp4`, and SGLang's FlashInfer CUTLASS `fp4_gemm` all bind the native W4A4 path
+on this card, and on a same-card, same-shape, fp32-reference-gated leaderboard they beat our
+hand-written two-level dense kernel by 1.35 to 2.2x. We report that plainly: quadbit does not
+claim dense FP4 speed leadership on SM120. Dense FP4 is commoditized; the open Pareto corner is
+*sparse* FP4, and that is what quadbit targets. (SM120 also lacks the `tcgen05`/UMMA
+tensor-memory path the datacenter B200 (SM100) uses, so every FP4 GEMM here runs through
+warp-level `mma.sync` and `mma.sp`, whose operand, scale, and 2:4-metadata bit-layouts we first
+derived by probe-and-verify, validated to relative error 0.)
 
-We hand-write, in raw PTX compiled with `nvcc -arch=sm_120a`, a dense FP4 GEMM that reaches
-the SM120 compute ceiling and a 2:4-sparse FP4 GEMM that reaches the SM120 bandwidth roofline,
-having first derived the mma, `ldmatrix`, scale, and metadata bit-layouts empirically by
-probe-and-verify (validated to relative error 0). We then build the deployment stack around
-them: a weight packer, a fused NVFP4 activation quantizer, an `nn.Linear` drop-in, fused
-transformer-block glue kernels, and a pair-granular one-shot-plus-QAT recovery pipeline.
+We contribute a deployable 2:4-sparse FP4 stack for SM120. **First, two-level sparse FP4
+kernels** (per-16 `ue4m3` local plus per-row and per-column fp32 global rescale) whose deployed
+accuracy equals the trained fake-quant/QAT checkpoint, closing the single-level deploy gap
+(11.89 → 8.95 PPL); they beat CUTLASS 80b (the only other sparse FP4 kernel in existence) on
+every shape and beat even the best dense FlashInfer kernel in wall-clock on every Llama-3-8B
+prefill shape (1.07 to 1.38x) — if a weight can be 2:4-pruned, quadbit sparse is the fastest way
+to run its FP4 GEMM on the platform. **Second, serving integration**: the sparse MLP runs inside
+a vLLM-style stack as a `torch.library` custom op that CUDA-graph capture includes, giving a real
+end-to-end Pareto row on recovered Llama-3.1-8B-Instruct — sparse wins decode and total request
+latency in the interactive/low-batch, long-generation regime (81 of 112 cells) while NVFP4 keeps
+the prefill-bound corner. **Third, cross-architecture sparse-policy transfer**: on
+DeepSeek-V4-Flash and GLM-5.2-NVFP4 (whose Deep Sparse Attention runs natively on SM120) the
+accuracy cost of sparsity is a *placement* problem — down-projection sparsity is nearly free
+while gate/up carries the tax, and a route-slot policy (top experts dense, low-weight tail 2:4)
+is the best quality/sparse-FLOP tradeoff. On GLM-5.2 the DeepSeek rule transfers: route-slot D2
+costs +0.065 held-out PPL and preserves a 4-task downstream smoke-suite average to within about
+one point of dense (.7508 vs .7603, no task collapsing). On accuracy the deployed dense path is
+W4A4 and costs +0.63 PPL with no calibration; sparse deploys at its trained accuracy but stays a
+real PPL behind dense, so sparse is a speed Pareto point conditioned on prunability, not an
+accuracy win.
 
-Since we began, the SM120 dense-FP4 baseline moved: FlashInfer's `mm_fp4` now ships a
-CUDA-13 `b12x` NVFP4 path plus a `cutlass` path, and on a full backend leaderboard (same card,
-same shapes, same fp32-reference correctness gate) they beat our hand-written two-level dense
-kernel by 1.35 to 2.2x. We report that honestly: quadbit does not win the dense FP4 race on
-SM120. The result that stands is a Pareto point no shipping library provides. First, quadbit is
-the only *deployed* 2:4-sparse FP4 GEMM on SM120: FlashInfer, SGLang, and vLLM ship no sparse
-FP4 path, and CUTLASS's sparse 80b is an unwrapped example with documented block-scaled
-problems. Second, our sparse kernel beats CUTLASS 80b on every shape (1.01 to 1.12x) and, more
-importantly, beats the *best available dense* FP4 kernel (FlashInfer `b12x`/`cutlass`) in
-wall-clock on every Llama-3-8B prefill shape (1.07 to 1.38x): if a weight can be 2:4-pruned, the
-fastest way to run its FP4 GEMM on SM120 is quadbit sparse. Third, on accuracy the deployed dense
-kernel is W4A4 (weights and activations both 4-bit, because the tensor core multiplies fp4 by
-fp4), and with a per-16 two-level NVFP4 recipe using no calibration data it costs +0.63 PPL on
-Llama-3.1-8B-Instruct, at or below the modelopt-calibrated reference; sparse recovery deploys at
-its trained accuracy through a two-level sparse kernel but stays about 1.56 PPL behind dense, so
-sparse is a speed-only Pareto point, not an accuracy win. Two SM120 stack facts fell out of the
-leaderboard and matter for anyone deploying: FlashInfer's `cudnn` FP4 backend fails on every
-shape (the shipped cuDNN is below the 9.14 that SM120 FP4 needs), and its fast `b12x` path
-collapses about 2.2x at large serving batch (tokens >= 65536), where only its `cutlass` path holds.
+Limitations we state up front: the MoE plugin path is eager-only (a plugin host-sync blocks
+CUDA-graph capture, so the DeepSeek/GLM serving numbers are eager-vs-eager, not
+production-vs-production); GLM-5.2 requires 8x RTX PRO 6000; the GLM downstream evidence is a
+small 4-task smoke suite, not an exhaustive benchmark; all-MLP sparsity carries a real PPL tax
+that training-free repair does not close; and dense FP4 speed belongs to the ecosystem baselines.
 
 ---
 
 ## 1. Introduction
 
 FP4 is the smallest numeric format with tensor-core support on Blackwell, and on paper it
-promises roughly 4x the throughput of bf16 and 4x smaller weights. On the datacenter B200
-that promise is largely delivered by NVIDIA's own libraries through the `tcgen05` UMMA path.
-On the consumer and pro cards that most people can actually buy, SM120, the situation is
-different: the tensor cores are present, the UMMA path is absent, and the library coverage is
-partial and in places buggy. That gap is the subject of this paper.
+promises roughly 4x the throughput of bf16 and 4x smaller weights. When we began, the SM120 FP4
+software was thin and the natural target was a fast dense kernel. That target has since been
+commoditized: FlashInfer, vLLM, and SGLang now all reach the native dense NVFP4 W4A4 path on this
+card, and FlashInfer's CUDA-13 `b12x`/`cutlass` kernels beat our hand-written dense kernel by
+1.35 to 2.2x (Section 4). Dense FP4 on SM120 is no longer where the open problem is.
 
-We set out to answer a concrete question: on SM120, can a hand-written kernel plus a real
-deployment stack turn FP4 into a usable speedup on real language models, and what does 4-bit
-actually cost in accuracy once you account for the fact that the hardware quantizes
-activations too? Answering it required deriving the low-level layouts ourselves (the SM120 FP4
-operand, scale, and 2:4 metadata layouts are not documented at the bit level), building both a
-dense and a sparse kernel to their respective hardware ceilings, and then quantifying accuracy
+The open Pareto corner is *sparse* FP4. No mainstream serving stack exposes a 2:4-sparse FP4
+deployment path on SM120: FlashInfer, SGLang, and vLLM ship none, and CUTLASS 80b — the only
+other sparse FP4 kernel in existence — is an unwrapped example with documented block-scaled
+problems, not a model-level deployment. quadbit's differentiator is therefore not dense speed but
+*deployable* sparse FP4: a kernel whose semantics match fake-quant/QAT, wired into a real serving
+stack, with model-level sparsity policy validated across Llama, DeepSeek, and GLM-style
+architectures. This paper measures that corner honestly — where sparse FP4 wins, where it does
+not, and what the accuracy costs once the hardware quantizes activations too. Answering it
+required deriving the SM120 FP4 operand, scale, and 2:4-metadata layouts ourselves (undocumented
+at the bit level), building the sparse kernel to the bandwidth roofline, and quantifying accuracy
 on real checkpoints rather than asserting it.
 
 Our contributions:
 
-1. **Empirically derived SM120 FP4 layouts.** The dense block-scaled `mma.sync` and sparse
-   `mma.sp::ordered_metadata` operand, scale, and metadata bit-layouts, recovered by
-   probe-and-verify and validated to relative error 0 (Section 3).
-2. **A dense FP4 GEMM at the compute ceiling** and the false-roofline lesson that a probe whose
-   own load pattern is the limit will lie about the hardware ceiling (Section 4).
-3. **A 2:4-sparse FP4 GEMM at the bandwidth roofline**, via a wide-TMA-plus-swizzle design that
-   lifted sparse throughput +36% over a false intermediate ceiling, and that beats CUTLASS 80b
-   on the shapes that ship (Section 5).
-4. **A deployment stack**: packer, fused activation quantizer, `nn.Linear` drop-in, and fused
-   transformer-block glue kernels that convert the raw GEMM wins into end-to-end block speedups
-   of 2 to 5.8x over eager bf16 (Section 6).
-5. **An honest accuracy accounting**: dense FP4 is W4A4 and costs +0.63 PPL with no
-   calibration, matched to the modelopt reference; the widely quoted +0.3 is a weight-only
-   W4A16 number that the hardware never runs (Section 7).
-6. **A pair-granular recovery pipeline** and a clear-eyed report that on a real 8B model sparse
-   recovery is currently data-limited and does not yet beat dense (Section 8).
+**C1. An SM120 FP4 landscape measurement (Sections 4-5).** On a same-card, same-shape,
+fp32-reference-gated backend leaderboard, quadbit dense loses to FlashInfer best-of-backend
+(`b12x`/`cutlass`) by 1.35 to 2.2x, so we pivot away from any dense-speed-leadership claim. The
+sparse kernel, by contrast, beats CUTLASS 80b (the only other sparse FP4 kernel) on every shape
+and beats even the best dense FlashInfer kernel in wall-clock on every Llama-8B prefill shape
+(1.07 to 1.38x) — the SM120 sparse-FP4 operand, scale, and 2:4-metadata layouts derived by
+probe-and-verify (relative error 0) underpin it.
+
+**C2. Deployable two-level sparse FP4 (Sections 3, 5, 8).** A two-level sparse kernel (per-16
+`ue4m3` local plus per-row and per-column fp32 global rescale) whose deployed accuracy *equals*
+the trained fake-quant/QAT checkpoint, closing the single-level deploy gap (11.89 → 8.95 PPL)
+that made prior sparse-FP4 results undeployable. Around it: a packer, fused activation quantizer,
+`nn.Linear` drop-in, and fused block kernels.
+
+**C3. Serving integration (Section 9).** The sparse MLP runs inside a vLLM-style serving stack as
+a `torch.library` custom op that vLLM's fullgraph compile and CUDA-graph capture include, with
+correct sparse output (guarded against a silent dense fall-back). On recovered
+Llama-3.1-8B-Instruct, graph-vs-graph, sparse wins decode and total request latency in the
+interactive/low-batch, long-generation regime (81 of 112 cells); NVFP4 keeps the prefill-bound
+corner. The MoE plugin path (C4) is eager-only, so full production CUDA-graph parity there is
+future work.
+
+**C4. Cross-architecture sparse-policy transfer (Section 10).** On DeepSeek-V4-Flash and GLM-5.2
+the accuracy cost of sparsity is a *placement* problem that transfers across architectures:
+down-projection sparsity is far less damaging than gate/up, and a route-slot policy (top experts
+dense, low-weight tail 2:4) gives the best quality/sparse-FLOP tradeoff. A 4-task GLM downstream
+smoke suite rebuts the "PPL says fine but downstream collapses" concern for the route-slot D2
+policy (AVG .7508 vs dense .7603, no task collapsing).
 
 ---
 
@@ -598,7 +617,7 @@ truncated QAT were worse than the SparseGPT baseline (13.06).
 
 ---
 
-## 10. Distributed sparse-FP4 MoE on a large model (DeepSeek-V4-Flash)
+## 10. Cross-architecture sparse-policy transfer (DeepSeek-V4-Flash and GLM-5.2)
 
 Sections 4 to 9 establish sparse FP4 on a single dense model (Llama-3-8B) on one GPU. The obvious
 reviewer questions are whether the approach (i) transfers to a large model, (ii) transfers to a
@@ -705,10 +724,20 @@ fallback. Anchoring MoE layers 0-37 dense and sparsifying 38-74 (49.3%), held-ou
 moves by **+0.209 for down-only vs +0.432 for gate/up** -- the same "down safe, gate/up expensive"
 mechanism at roughly half the tax -- while route-slot D2 (top-2 dense, tail 2:4) gives the **best
 quality and the highest sparse-FLOP together (+0.065 PPL, ~37% FLOP)**, mirroring DeepSeek's D2. Figure
-`fig_glm_transfer` places the two models side by side. To check that D2's small PPL cost is not hiding a
-downstream collapse, we also run the tokenizer-agnostic MC harness on GLM (ARC-C, HellaSwag, Winogrande,
-MMLU-5; `limit=200`): route-slot D2 holds **AVG .7508 vs dense .7603, -0.95pt**, matching the PPL gap,
-with no task collapsing. Two honest limits remain: this GLM downstream evidence is a small smoke suite on
+`fig_glm_transfer` places the two models side by side. **Route-slot D2 is the headline GLM policy**, and
+to check that its small PPL cost is not hiding a downstream collapse we run the tokenizer-agnostic MC
+harness on GLM (the same ARC-C/HellaSwag/Winogrande/MMLU-5 suite as DeepSeek, PIQA excluded because
+`ybisk/piqa` is not loadable on the serve image, so both are 4-task; `limit=200`):
+
+| GLM policy | ARC-C | HellaSwag | Winogrande | MMLU-5 | AVG | PPL |
+|---|---|---|---|---|---|---|
+| dense (ref) | .655 | .780 | .750 | .856 | **.7603** | 3.171 |
+| **route-slot D2** | .650 | .780 | .725 | .848 | **.7508** | 3.216 |
+
+D2 holds **within 0.95 pt AVG of dense with no task collapsing** (HellaSwag exactly flat; ARC-C and MMLU
+within the n=200 / n=5 band; Winogrande's -2.5 pt is the largest single move and near its per-200 noise),
+so the small PPL gap does not mask a downstream regression. Two honest limits remain: this GLM downstream
+evidence is a small 4-task smoke suite on
 the D2 policy only (full benchmarks, and downstream numbers for the down-only/gate-up rows, are still
 unmeasured on GLM, so the most complete capability accounting of record remains DeepSeek's); and all GLM
 rows run eager, because the plugin's expert-parallel local-expert loop uses a host-syncing
@@ -809,6 +838,22 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 - **MoE accuracy recovery untried.** The MoE experts are pruned 2:4 by magnitude only; calibrated
   SparseGPT / distillation on the experts (the dense-model levers of Section 8) are not yet applied at
   MoE scale. The per-expert-output tax (cos ~0.70 on random activations) is reported un-repaired.
+- **The MoE plugin path is eager-only; its serving numbers are eager-vs-eager, not
+  production-vs-production** (Section 10). The quadbit vLLM plugin's expert-parallel local-expert loop
+  uses a host-syncing `torch.unique(...).tolist()` (`qb_sm120_plugin.py:1255`) that is illegal under
+  CUDA-graph stream capture (`cudaErrorStreamCaptureUnsupported`), so every DeepSeek/GLM row runs with
+  `enforce_eager=True`. The Llama sparse-MLP serving result (Section 9, Table C) *is* graph-vs-graph, but
+  the MoE cross-architecture rows are not; removing the plugin host-sync to make expert-parallel MoE
+  graph-capturable is future work (P4), not a DSA, attention, memory, or loader blocker.
+- **GLM-5.2 requires 8x RTX PRO 6000.** At 432.9 GiB it does not fit on 2 or 4 cards; the smaller
+  footprint DeepSeek-V4-Flash enjoyed (down-only at 2 GPUs) does not transfer. Route-slot dual residency
+  fits on the 8-GPU host but drops KV capacity from 606k to 241k tokens (raw NVFP4 + 2:4 codes
+  co-resident), so long-context KV pressure is the trade.
+- **GLM downstream is a smoke suite, not a full benchmark.** The GLM quality evidence is held-out PPL
+  (all policies) plus a 4-task MC downstream comparison on the route-slot D2 policy only (Section 10).
+  Full-size benchmarks, and downstream numbers for the down-only/gate-up GLM rows, are unmeasured; we
+  make **no claim of exhaustive GLM downstream preservation**. The most complete downstream accounting of
+  record remains DeepSeek's (full AVG across every policy).
 
 ---
 
@@ -827,14 +872,17 @@ stays ~1.56 PPL behind dense, so the sparse advantage is speed, conditioned on p
 contribution is a hand-written kernel plus deployment stack that occupies a Pareto corner (sparse
 FP4, deployed, fastest-for-prunable) that CUTLASS, FlashInfer, SGLang, and vLLM leave empty.
 
-Two results extend this beyond the dense single-GPU story (Section 10.1). First, on a large MoE the
-accuracy cost is not a fixed tax but a placement problem: sparsifying only down projections in later
-layers, or only the low-weight routed slots, preserves downstream capability **training-free** on
-DeepSeek-V4-Flash (-0.29pt at 49% of MoE layers sparse; a per-expert weight repair, by contrast,
-fails). Second, the same structural rules transfer to **GLM-5.2** served on 8x RTX PRO 6000, whose Deep
-Sparse Attention runs natively on SM120 -- down-only sparsity costs about half of gate/up sparsity
-there too. Both run eager; graph-capturable expert-parallel MoE and a GLM downstream sweep are the
-remaining work.
+The strongest results extend this beyond the dense single-GPU story into cross-architecture
+sparse-policy transfer (Section 10). First, on a large MoE the accuracy cost is not a fixed tax but a
+placement problem: sparsifying only down projections in later layers, or only the low-weight routed
+slots, preserves downstream capability **training-free** on DeepSeek-V4-Flash (-0.29pt at 49% of MoE
+layers sparse; a per-expert weight repair, by contrast, fails). Second, the same structural rules
+transfer to **GLM-5.2** served on 8x RTX PRO 6000, whose Deep Sparse Attention runs natively on SM120:
+down-only sparsity costs about half of gate/up there too, and the route-slot D2 policy costs +0.065
+held-out PPL while preserving a 4-task downstream smoke-suite average to within about one point of dense
+(.7508 vs .7603, no task collapsing) -- so D2's small PPL cost is not masking a downstream collapse. Both
+models run eager; graph-capturable expert-parallel MoE (blocked only by a plugin host-sync), a full GLM
+downstream benchmark, and MoE accuracy recovery are the remaining work.
 
 ---
 
