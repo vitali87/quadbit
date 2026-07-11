@@ -77,7 +77,7 @@ Our contributions:
 fp32-reference-gated backend leaderboard, quadbit dense loses to FlashInfer best-of-backend
 (`b12x`/`cutlass`) by 1.35 to 2.2x, so we pivot away from any dense-speed-leadership claim. The
 sparse kernel, by contrast, beats CUTLASS 80b (the only other sparse FP4 kernel) on every shape
-and beats even the best dense FlashInfer kernel in wall-clock on every Llama-8B prefill shape
+and beats even the best dense FlashInfer kernel in wall-clock on every Llama-3-8B prefill shape
 (1.07 to 1.38x) — the SM120 sparse-FP4 operand, scale, and 2:4-metadata layouts derived by
 probe-and-verify (relative error 0) underpin it.
 
@@ -624,7 +624,7 @@ reviewer questions are whether the approach (i) transfers to a large model, (ii)
 Mixture-of-Experts architecture, and (iii) works across multiple GPUs. We answer all three on
 **DeepSeek-V4-Flash** (284B total / 13B active, 256 routed + 1 shared expert per MoE layer, top-6,
 `moe_intermediate` 2048, hidden 4096, 43 layers, MLA + sparse-index attention). This is a strictly
-harder setting than Llama-8B: the MLP FLOPs live in hundreds of routed experts behind a router, not a
+harder setting than Llama-3-8B: the MLP FLOPs live in hundreds of routed experts behind a router, not a
 single `LlamaMLP`, so the dense-MLP operator of Sections 6/9 does not attach.
 
 **The experts are MXFP4, not the config's FP8.** The checkpoint's `quantization_config` advertises
@@ -649,7 +649,7 @@ the segmented operator matches the per-expert kernel at cos 1.000000 with zero n
 
 **Coverage.** quadbit sparsifies every routed and shared expert MLP; the router, MLA attention,
 embeddings and lm_head stay dense NVFP4. That is **~91% of model parameters** and **~80% of active
-linear FLOPs per token** (top-6/256 experts + shared). In dense Llama-8B the MLP is ~66% of
+linear FLOPs per token** (top-6/256 experts + shared). In dense Llama-3-8B the MLP is ~66% of
 parameters, so the sparse coverage is *higher* for the large MoE, not lower -- the result transfers,
 and transfers to more of the model.
 
@@ -734,8 +734,8 @@ harness on GLM (the same ARC-C/HellaSwag/Winogrande/MMLU-5 suite as DeepSeek, PI
 | dense (ref) | .655 | .780 | .750 | .856 | **.7603** | 3.171 |
 | **route-slot D2** | .650 | .780 | .725 | .848 | **.7508** | 3.216 |
 
-D2 holds **within 0.95 pt AVG of dense with no task collapsing** (HellaSwag exactly flat; ARC-C and MMLU
-within the n=200 / n=5 band; Winogrande's -2.5 pt is the largest single move and near its per-200 noise),
+D2 holds **within 0.95 pt AVG of dense with no task collapsing** (HellaSwag exactly flat; ARC-C and MMLU-5
+within the n=200 / n=50-per-subject band; Winogrande's -2.5 pt is the largest single move and near its per-200 noise),
 so the small PPL gap does not mask a downstream regression. Two honest limits remain: this GLM downstream
 evidence is a small 4-task smoke suite on
 the D2 policy only (full benchmarks, and downstream numbers for the down-only/gate-up rows, are still
@@ -847,7 +847,7 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   graph-capturable is future work (P4), not a DSA, attention, memory, or loader blocker.
 - **GLM-5.2 requires 8x RTX PRO 6000.** At 432.9 GiB it does not fit on 2 or 4 cards; the smaller
   footprint DeepSeek-V4-Flash enjoyed (down-only at 2 GPUs) does not transfer. Route-slot dual residency
-  fits on the 8-GPU host but drops KV capacity from 606k to 241k tokens (raw NVFP4 + 2:4 codes
+  fits on the 8-GPU host but drops KV capacity from 607k to 241k tokens (raw NVFP4 + 2:4 codes
   co-resident), so long-context KV pressure is the trade.
 - **GLM downstream is a smoke suite, not a full benchmark.** The GLM quality evidence is held-out PPL
   (all policies) plus a 4-task MC downstream comparison on the route-slot D2 policy only (Section 10).
