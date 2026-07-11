@@ -57,7 +57,7 @@ D2 policy. This directly tests whether D2's small PPL gap hides a downstream col
 | Δ | -0.005 | 0.000 | -0.025 | -0.008 | **-0.0095** | +0.045 |
 
 D2 holds within **0.95 pt AVG** of dense with no task collapsing (HellaSwag exactly flat; ARC-C and MMLU
-within the n=200 / n=5 sampling band; Winogrande -2.5 pt is the largest move and near Winogrande's
+within the n=200 / n=50-per-subject sampling band; Winogrande -2.5 pt is the largest move and near Winogrande's
 per-200 noise). The downstream PPL (3.216) tracks the serving PPL (3.236). This is a small smoke suite,
 not a full benchmark, but it removes the specific reviewer objection that D2's low PPL cost could mask a
 downstream regression. Commands: `--mode glm_downstream --moe {dense | sparse --sparse-proj both

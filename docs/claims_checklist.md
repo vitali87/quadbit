@@ -143,6 +143,7 @@ ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-F
 | GLM structural transfer: down-only (+0.209 PPL) costs ~half of gate/up (+0.432 PPL) at matched 49%-layer coverage; same mechanism as DeepSeek | `docs/glm_results.md` down49/gateup49; `docs/audit/logs/glm_runs.log` | backed |
 | GLM route-slot D2 (top-2 dense, tail-6 sparse) = highest sparse FLOP (~37%) at lowest cost (+0.065 PPL); dual residency fits 8 GPUs at 241k-vs-607k KV | `docs/glm_results.md` routeslot2; `docs/audit/logs/glm_runs.log` | backed |
 | GLM route-slot D2 downstream AVG holds within -0.95pt of dense (.7508 vs .7603, tokenizer-agnostic MC harness on 8-GPU EP) | `docs/glm_results.md` downstream table; `docs/audit/logs/glm_downstream.log` | backed |
-| GLM quality: D2 has PPL + downstream smoke suite; down49/gateup49 rows PPL-only; no full benchmarks on GLM | `docs/glm_results.md` caveats | backed (scope limit stated) |
+| GLM D2 quality is supported by PPL plus a 4-task downstream smoke suite; NOT a full downstream benchmark (down49/gateup49 rows PPL-only) | `docs/glm_results.md` caveats; `docs/audit/logs/glm_downstream.log` | backed (scope limit stated) |
+| No claim of exhaustive GLM downstream preservation | paper §10 / §12 limitations | limitation (explicit) |
 | GLM sparse path graph-capturable end-to-end | plugin EP loop `torch.unique().tolist()` host-sync blocks CUDA-graph capture (`qb_sm120_plugin.py:1255`); all GLM rows eager; traceback `docs/audit/logs/glm_graphfail.log` | reserved (future work; not a DSA/memory/loader blocker) |
 | Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |
