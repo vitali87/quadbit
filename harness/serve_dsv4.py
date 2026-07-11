@@ -2022,9 +2022,13 @@ def main(
     elif mode == "glm_inspect":
         glm_inspect.remote()
     elif mode == "glm_baseline":
+        # main defaults eager=False, but GLM's EP MoE path is NOT graph-capturable (the plugin's
+        # local-expert loop host-syncs via torch.unique(...).tolist(), illegal under stream capture),
+        # so graph capture aborts the run. Force eager -- it is currently the only working GLM path;
+        # revisit if/when the plugin's expert loop is made capture-safe.
         glm_baseline.remote(
             tp=tp,
-            eager=eager,
+            eager=True,
             max_len=max_len,
             dense=(dense if dense in ("nvfp4", "bf16") else "nvfp4"),
             moe=(moe if moe != "off" else "dense"),
