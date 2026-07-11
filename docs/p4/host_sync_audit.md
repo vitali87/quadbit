@@ -105,6 +105,16 @@ All three validated on the standalone harness before any vLLM integration. The f
 `main` are untouched; changes live on `p4-graph-capture`.
 | D2 | 730-732,740,751-752,1167 | in-forward `torch.empty`/`zeros` sized by data-dependent `r`/`r_pad`/`t` | with A2/A3 padded to fixed capacity and a persistent workspace, allocations become fixed-shape; PyTorch's capture memory pool then handles them |
 
+## M2 for the fused path already exists (reuse it)
+
+`quadbit_serve.py:1554` ("Milestone 2: capture ONE `fused_mlp_2lvl` block per fixed shape as a CUDA
+graph; verify replay == eager") is a complete, proven standalone capture harness for the **fused Llama
+sparse MLP**: persistent buffers, `stream = current_stream().cuda_stream` passed through, eager-vs-graph
+p50/p95/min timing, cos/relL2/nonfinite correctness, across decode tp=128 and prefill 2048/8192/16384/
+65536. This is why Table C captures. **So M2 is done for the fused path.** P4's novel graph work is the
+**MoE seg path only** (`quantize_act_nvfp4_2lvl` + `sparse_moe_mm_2lvl` + `build_routing`), which reuses
+this same capture pattern once the three M2 code items above land.
+
 ## Prioritized plan
 
 1. **M1 code (low-risk, this milestone):** gate B1 behind `_INSTR` so the counter sync leaves the steady
