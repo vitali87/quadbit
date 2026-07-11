@@ -165,6 +165,37 @@ def fig_ds_pareto():
     save(fig, "fig_ds_pareto")
 
 
+def fig_ds_designspace():
+    # Capability design-space: what recovers training-free downstream AVG. Source:
+    # data/wsa_downstream.csv + deepseek_final.csv. Gate at .718; dense ref .7383.
+    rows = [
+        ("magnitude 2:4 (100% sparse)", 0.5096, False),
+        ("routed Wanda alone (100%)", 0.5092, False),
+        ("A3 local repair (49%)", 0.6964, False),
+        ("both-proj all-sparse a2_49 (49%)", 0.6966, False),
+        ("gate_up-only anchor (49%)", 0.7056, False),
+        ("route-slot D2 (33% FLOP)", 0.7304, True),
+        ("proj-anchor c_down49 (49% lyr)", 0.7354, True),
+    ]
+    fig, ax = plt.subplots(figsize=(6.6, 3.2))
+    y = np.arange(len(rows))
+    for yi, (name, avg, ok) in zip(y, rows):
+        c = OK["green"] if ok else OK["red"]
+        ax.barh(yi, avg, color=c, alpha=0.85, edgecolor="white")
+        ax.text(avg + 0.006, yi, f"{avg:.3f}", va="center", ha="left", fontsize=7.5)
+        ax.text(0.01, yi, f"  {name}", va="center", ha="left", fontsize=7.5, color="white")
+    ax.axvline(0.718, color=OK["grey"], ls="--", lw=1.0)
+    ax.axvline(0.7383, color=OK["grey"], ls=":", lw=1.0)
+    ax.text(0.718, len(rows) - 0.3, ".718 gate", fontsize=6.5, color=OK["grey"], ha="center")
+    ax.text(0.7383, len(rows) - 0.3, "dense", fontsize=6.5, color=OK["grey"], ha="center")
+    ax.set_xlim(0.45, 0.76); ax.set_yticks([])
+    ax.set_xlabel("downstream AVG (training-free)")
+    ax.set_title("DeepSeek design-space: only structural placement recovers capability\n"
+                 "(magnitude/Wanda/A3/all-sparse fail; projection anchoring + route-slot pass)",
+                 fontsize=8.5)
+    save(fig, "fig_ds_designspace")
+
+
 def fig7_designspace():
     rows = [
         ("eager sparse win", "diagnostic only", OK["yellow"]),
@@ -266,4 +297,5 @@ if __name__ == "__main__":
     fig6_dist_scaling()
     fig7_designspace()
     fig_ds_pareto()
+    fig_ds_designspace()
     print("# done", flush=True)
