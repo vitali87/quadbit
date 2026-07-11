@@ -196,6 +196,37 @@ def fig_ds_designspace():
     save(fig, "fig_ds_designspace")
 
 
+def fig_glm_transfer():
+    # Structural sparse-FP4 mechanism transfers DeepSeek -> GLM-5.2. Same mechanism on the y-axis;
+    # left = DeepSeek Δ downstream AVG (pt, from deepseek_final.csv), right = GLM Δ PPL (glm_results.md).
+    # Both orderings agree: route-tail and down-proj are safe; gate/up carries the tax.
+    # (mechanism, deepseek_delta_pt, glm_delta_ppl, safe)
+    rows = [
+        ("route tail (D2: top-2 dense)", -0.79, 0.065, True),
+        ("down projection (49% lyr)", -0.29, 0.209, True),
+        ("gate/up projection (49% lyr)", -3.27, 0.432, False),
+    ]
+    fig, (axl, axr) = plt.subplots(1, 2, figsize=(7.4, 2.6), sharey=True)
+    y = np.arange(len(rows))
+    for yi, (_, ds, glm, ok) in zip(y, rows):
+        c = OK["green"] if ok else OK["red"]
+        axl.barh(yi, ds, color=c, alpha=0.85, edgecolor="white")
+        axl.text(ds - 0.05, yi, f"{ds:+.2f}", va="center", ha="right", fontsize=7.5)
+        axr.barh(yi, glm, color=c, alpha=0.85, edgecolor="white")
+        axr.text(glm + 0.008, yi, f"{glm:+.3f}", va="center", ha="left", fontsize=7.5)
+    axl.set_yticks(y)
+    axl.set_yticklabels([r[0] for r in rows], fontsize=7.5)
+    axl.set_xlabel("DeepSeek Δ downstream AVG (pt)")
+    axl.set_title("DeepSeek-V4-Flash\n(downstream AVG)", fontsize=8)
+    axl.invert_xaxis()
+    axr.set_xlabel("GLM-5.2 Δ PPL (lower better)")
+    axr.set_title("GLM-5.2 transfer\n(held-out PPL)", fontsize=8)
+    axr.margins(x=0.18)
+    fig.suptitle("Structural sparse-FP4 mechanism transfers to GLM-5.2: down + route-tail safe, "
+                 "gate/up expensive", fontsize=8.5, y=1.02)
+    save(fig, "fig_glm_transfer")
+
+
 def fig7_designspace():
     rows = [
         ("eager sparse win", "diagnostic only", OK["yellow"]),
@@ -298,4 +329,5 @@ if __name__ == "__main__":
     fig7_designspace()
     fig_ds_pareto()
     fig_ds_designspace()
+    fig_glm_transfer()
     print("# done", flush=True)

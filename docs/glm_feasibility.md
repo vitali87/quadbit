@@ -1,5 +1,10 @@
 # GLM-5.2 transfer feasibility (Phase 2)
 
+> **RESOLVED (Phase 3):** the open load-gate risk below cleared. GLM-5.2 loads and generates
+> coherently on 8x RTX PRO 6000 (SM120); DSA runs natively (`FLASHINFER_MLA_SPARSE_SM120`); the
+> structural sparse policies transfer. Full result: `docs/glm_results.md`. Only caveat found is
+> graph capture (eager-only, plugin host-sync in the EP loop), not a DSA/kernel/memory blocker.
+
 Probe: `serve_dsv4.py --mode glm_inspect` (CPU-only, `nvidia/GLM-5.2-NVFP4`). No assumptions carried
 over from DeepSeek; every row below is measured from the checkpoint config + safetensors index or the
 installed vLLM registry.

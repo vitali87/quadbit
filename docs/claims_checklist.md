@@ -135,6 +135,9 @@ ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-F
 | Do NOT conflate sparse layer % with active sparse FLOP %; PPL is not the quality metric | `docs/deepseek_final_table.md` column notes | backed |
 | GLM-5.2 architecturally compatible: glm_moe_dsa supported in vLLM 0.24.0, NVFP4 routed experts identical scheme | `harness/serve_dsv4.py --mode glm_inspect`; `docs/glm_feasibility.md` | backed |
 | GLM-5.2-NVFP4 = 432.9 GiB; does NOT fit on 2 or 4 RTX PRO 6000, needs 8 (EP) | `glm_inspect` safetensors-index probe; `docs/glm_feasibility.md` | backed |
-| GLM-5.2 loads + generates coherently on SM120 under the quadbit plugin (DSA attention) | `harness/serve_dsv4.py --mode glm_baseline` (8-GPU gate) | **reserved (blocked): job queued on scarce 8x RTX PRO 6000 capacity; DSA-on-SM120 unverified until it schedules** |
-| GLM sparse structural transfer (down-anchor / route-slot) preserves capability | Phase 3, gated on the GLM load gate above | reserved (blocked on the 8-GPU load gate) |
+| GLM-5.2 loads + generates coherently on SM120 under the quadbit plugin; DSA runs natively (`FLASHINFER_MLA_SPARSE_SM120` + `DEEPSEEK_V32_INDEXER`), 8-GPU EP | `harness/serve_dsv4.py --mode glm_baseline`; `docs/glm_results.md`; `scratchpad/glm_dense_ppl.log` | backed |
+| GLM structural transfer: down-only (+0.209 PPL) costs ~half of gate/up (+0.432 PPL) at matched 49%-layer coverage; same mechanism as DeepSeek | `docs/glm_results.md` down49/gateup49; `glm_{down49,gateup49}.log` | backed |
+| GLM route-slot D2 (top-2 dense, tail-6 sparse) = highest sparse FLOP (~37%) at lowest cost (+0.065 PPL); dual residency fits 8 GPUs at 241k-vs-607k KV | `docs/glm_results.md` routeslot2; `glm_routeslot2.log` | backed |
+| GLM quality measured by held-out PPL only; downstream AVG not re-run on GLM (DeepSeek-specific harness) | `docs/glm_results.md` caveats | backed (scope limit stated) |
+| GLM sparse path graph-capturable end-to-end | plugin EP loop `torch.unique().tolist()` host-sync blocks CUDA-graph capture (`qb_sm120_plugin.py:1255`); all GLM rows eager | reserved (future work; not a DSA/memory/loader blocker) |
 | Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |
