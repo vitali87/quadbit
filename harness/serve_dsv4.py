@@ -48,6 +48,56 @@ app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
+@app.function(gpu="RTX-PRO-6000:8", timeout=90 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def glm_baseline(tp: int = 8, eager: bool = True, max_len: int = 2048, dense: str = "nvfp4",
+                 moe: str = "dense", dense_layers: str = "", sparse_proj: str = "both",
+                 route_slot: int = 0) -> None:
+    """GLM-5.2 transfer load + coherence gate on 8x RTX PRO 6000 (EP). Tests: (a) 8-GPU schedule,
+    (b) glm_moe_dsa loads on SM120 under the quadbit plugin, (c) DSA attention runs, (d) coherent
+    generation. moe=dense first (NVFP4->bf16 dequant experts, no sparse); moe=sparse + dense_layers/
+    sparse_proj/route_slot reuses the DeepSeek-proven structural policies on GLM's expert path."""
+    import os
+    import subprocess
+    import time
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = dense
+    os.environ["QB_MOE"] = moe
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
+    os.environ["QB_SPARSE_PROJ"] = sparse_proj
+    os.environ["QB_ROUTE_SLOT"] = str(route_slot)
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    print(f"# GLM-5.2 baseline: {GLM_MODEL} dense={dense} moe={moe} tp={tp} eager={eager} "
+          f"dense_layers=[{dense_layers}] proj={sparse_proj} route_slot={route_slot} on "
+          f"{torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+
+    # GLM keeps its own rope/config (1M context); do NOT force DeepSeek's yarn override.
+    kw = dict(model=GLM_MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=0.92, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max_len, enable_expert_parallel=True)
+    t0 = time.time()
+    llm = LLM(**kw)
+    print(f"  load+init forward ok in {time.time() - t0:.0f}s", flush=True)
+
+    prompts = ["The capital of France is", "def fibonacci(n):", "The three primary colors are",
+               "Water is made of hydrogen and"]
+    sp = SamplingParams(temperature=0.0, max_tokens=32)
+    outs = llm.generate(prompts, sp)
+    for o in outs:
+        print(f"  [gen] {o.prompt!r} -> {o.outputs[0].text!r}", flush=True)
+    ntok = sum(len(o.outputs[0].token_ids) for o in outs)
+    mem = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True).stdout.strip()
+    print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
+    ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
+    print(f"# GLM baseline {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
+          f"(glm_moe_dsa on SM120, tp={tp} EP, eager={eager})", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000:2", timeout=60 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def unblock(tp: int = 2, eager: bool = True, max_len: int = 2048, dense: str = "bf16",
@@ -1357,6 +1407,11 @@ def main(mode: str = "baseline", tp: int = 2, eager: bool = False, max_len: int 
         test_so.remote()
     elif mode == "glm_inspect":
         glm_inspect.remote()
+    elif mode == "glm_baseline":
+        glm_baseline.remote(tp=tp, eager=eager, max_len=max_len,
+                            dense=(dense if dense in ("nvfp4", "bf16") else "nvfp4"),
+                            moe=(moe if moe != "off" else "dense"), dense_layers=dense_layers,
+                            sparse_proj=sparse_proj, route_slot=route_slot)
     elif mode == "versions":
         versions.remote()
     elif mode == "dumpsrc":
