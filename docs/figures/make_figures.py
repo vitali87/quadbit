@@ -130,6 +130,41 @@ def fig5_pareto():
     save(fig, "fig5_pareto")
 
 
+def fig_ds_pareto():
+    # DeepSeek-V4-Flash downstream Pareto: x = active sparse expert-FLOP %, y = downstream AVG.
+    # Source: data/deepseek_final.csv (frozen final table). Gates at .718 / .728.
+    rows = read_csv(DATA / "deepseek_final.csv")
+    style = {
+        "dense": (OK["grey"], "o", "dense NVFP4"),
+        "c_down49": (OK["green"], "*", "c_down49 (down-only, 2 GPU)"),
+        "c_down60": (OK["sky"], "^", "c_down60 (down-only, 2 GPU)"),
+        "d2_slot2": (OK["orange"], "D", "D2 route-slot (2 dense, 4 GPU)"),
+        "d1_slot1": (OK["red"], "v", "D1 route-slot (1 dense, 4 GPU)"),
+        "c_gateup49": (OK["purple"], "s", "c_gateup49 (gate_up-only)"),
+        "a2_49": (OK["blue"], "X", "a2_49 (both-proj)"),
+    }
+    fig, ax = plt.subplots(figsize=(5.2, 3.6))
+    ax.axhline(0.718, color=OK["grey"], ls="--", lw=0.9)
+    ax.axhline(0.728, color=OK["grey"], ls=":", lw=0.9)
+    ax.text(50, 0.7185, ".718 gate", fontsize=6.5, color=OK["grey"], va="bottom", ha="right")
+    ax.text(50, 0.7285, ".728 stretch", fontsize=6.5, color=OK["grey"], va="bottom", ha="right")
+    for r in rows:
+        key = r["policy"]
+        if key not in style:
+            continue
+        c, mk, lab = style[key]
+        x, y = float(r["active_sparse_flop_pct"]), float(r["avg_primary"])
+        ax.scatter(x, y, s=130, color=c, marker=mk, zorder=3, edgecolor="white",
+                   linewidth=0.8, label=lab)
+    ax.set_xlabel("active sparse expert-FLOP % (real sparsity, not layer %)")
+    ax.set_ylabel("downstream AVG (higher better)")
+    ax.set_title("DeepSeek-V4-Flash: training-free sparse-FP4 Pareto\n"
+                 "c_down49 cleanest 2-GPU; D2 max sparse-FLOP (4-GPU)", fontsize=8.5)
+    ax.legend(fontsize=6.3, loc="lower left", frameon=False)
+    ax.margins(x=0.08, y=0.12)
+    save(fig, "fig_ds_pareto")
+
+
 def fig7_designspace():
     rows = [
         ("eager sparse win", "diagnostic only", OK["yellow"]),
@@ -230,4 +265,5 @@ if __name__ == "__main__":
     fig5_pareto()
     fig6_dist_scaling()
     fig7_designspace()
+    fig_ds_pareto()
     print("# done", flush=True)
