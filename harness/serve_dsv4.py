@@ -172,10 +172,14 @@ def glm_baseline(
         except Exception as e:  # noqa: BLE001 - timing must never abort the quality eval
             print(f"# serve B=1 prompt={plen}: timing skipped ({type(e).__name__})", flush=True)
             continue
+        # dec_s = prefill + gtok decode steps; the gen=1 call above is prefill + 1 step, so
+        # (dec_s - prefill_s) isolates the remaining gtok-1 decode steps -> true decode-only rate.
+        dec_only = max(1e-6, dec_s - prefill_s)
+        steps = max(1, gtok - 1)
         print(
             f"# serve B=1 prompt={plen} gen={gen}: prefill(TTFT~){prefill_s:.2f}s "
-            f"decode {gtok}tok in {dec_s:.2f}s = {gtok / max(dec_s, 1e-6):.2f} tok/s "
-            f"TPOT {dec_s / max(gtok, 1):.3f}s",
+            f"decode-only {steps}tok in {dec_only:.2f}s = {steps / dec_only:.2f} tok/s "
+            f"TPOT {dec_only / steps:.3f}s (end-to-end {gtok / max(dec_s, 1e-6):.2f} tok/s)",
             flush=True,
         )
 
@@ -184,7 +188,7 @@ def glm_baseline(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
+    print(f"  per-GPU mem used (MB): {mem.splitlines()}", flush=True)
     ok = ntok > 0 and all(o.outputs[0].text.strip() for o in outs)
     print(
         f"# GLM baseline {'PASS' if ok else 'FAIL'} dense={dense} moe={moe} "
@@ -278,7 +282,7 @@ def unblock(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
+    print(f"  per-GPU mem used (MB): {mem.splitlines()}", flush=True)
     # audit the actual dense path taken (nvfp4 vs per-layer bf16 fallback) for honest labeling
     try:
         import qb_sm120_plugin as _p
@@ -382,7 +386,7 @@ def baseline(tp: int = 2, eager: bool = False, max_len: int = 4096) -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    print(f"  per-GPU mem used (MB): {mem.split(chr(10))}", flush=True)
+    print(f"  per-GPU mem used (MB): {mem.splitlines()}", flush=True)
     print(
         f"# baseline {'PASS' if ntok > 0 else 'FAIL'} (graph_capture={'eager-OFF' if not eager else 'eager'})",
         flush=True,

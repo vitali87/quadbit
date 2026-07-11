@@ -3,7 +3,8 @@
 # (arrows, approx, minus, times, Delta, micro) to LaTeX so any font renders them.
 set -euo pipefail
 cd "$(dirname "$0")"
-export PATH="/Library/TeX/texbin:$PATH"
+# MacTeX installs here and is not on PATH by default; prepend only if present (portable elsewhere).
+[ -d /Library/TeX/texbin ] && export PATH="/Library/TeX/texbin:$PATH"
 HDR="$(mktemp)"
 cat > "$HDR" <<'TEX'
 \usepackage{newunicodechar}

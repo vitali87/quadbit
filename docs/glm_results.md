@@ -23,18 +23,23 @@ dense PPL row at `53ab7d3`.
 
 75 MoE layers (first 3 dense via `first_k_dense_replace=3`), 256+1 experts, top-8. Anchor = MoE layers
 0-37 kept NVFP4-dense; sparsify 38-74 (37 layers, 49.3%). PPL = teacher-forced over a 114-token
-held-out passage. Serving = B=1, prompt 512, gen 64.
+held-out passage. Serving = B=1, prompt 512, gen 64; **decode tok/s is decode-only** (the prefill of a
+separate gen=1 call is subtracted, isolating the 63 decode steps), not end-to-end.
 
-| policy | anchor | sparse layers | active sparse FLOP¹ | PPL | Δ PPL | decode tok/s | TPOT s | KV tokens | mem/GPU | coherent |
+| policy | anchor | sparse layers | active sparse FLOP¹ | PPL | Δ PPL | decode tok/s² | TPOT s | KV tokens | mem/GPU | coherent |
 |---|---|---|---|---|---|---|---|---|---|---|
-| dense (ref) | all | 0 | 0 | 3.171 | — | 1.58 | 0.635 | 606,528 | 91.7 GB | ✓ |
-| **down49** | 0-37 | 38-74 (down) | ~16% | 3.380 | **+0.209** | 1.52 | 0.660 | 586,752 | 92.3 GB | ✓ |
-| **route-slot D2** | 0-37 | 38-74 (tail-6/8, both) | ~37% | **3.236** | **+0.065** | 1.81 | 0.552 | 241,152 | 91.7 GB | ✓ |
-| gateup49 (control) | 0-37 | 38-74 (gate/up) | ~33% | 3.603 | **+0.432** | 1.90 | 0.527 | 647,424 | 91.7 GB | ✓ |
+| dense (ref) | all | 0 | 0 | 3.171 | — | 1.79 | 0.558 | 606,528 | 91.7 GB | ✓ |
+| **down49** | 0-37 | 38-74 (down) | ~16% | 3.380 | **+0.209** | 1.71 | 0.586 | 586,752 | 92.3 GB | ✓ |
+| **route-slot D2** | 0-37 | 38-74 (tail-6/8, both) | ~37% | **3.236** | **+0.065** | 2.10 | 0.477 | 241,152 | 91.7 GB | ✓ |
+| gateup49 (control) | 0-37 | 38-74 (gate/up) | ~33% | 3.603 | **+0.432** | 2.12 | 0.472 | 647,424 | 91.7 GB | ✓ |
 
 ¹ Active sparse FLOP % = (sparse layers / 75) x (sparse projection share of expert FLOP) x (sparse slot
 share). down = down-proj only (~1/3 of expert FLOP); gate/up = w13 (~2/3); route-slot = both
 projections on the tail 6/8 slots. Estimate, not a measured kernel speedup.
+
+² decode-only tok/s = 63 / (gen-64 wall - gen-1 wall), subtracting the second prefill so only the 63
+decode steps are counted; the earlier end-to-end figures (prompt+gen throughput) were ~0.2-0.3 tok/s
+lower. All rows measured identically, so cross-policy comparison holds either way.
 
 ## What transfers
 

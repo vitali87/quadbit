@@ -183,7 +183,7 @@ def fig_ds_designspace():
         c = OK["green"] if ok else OK["red"]
         ax.barh(yi, avg, color=c, alpha=0.85, edgecolor="white")
         ax.text(avg + 0.006, yi, f"{avg:.3f}", va="center", ha="left", fontsize=7.5)
-        ax.text(0.01, yi, f"  {name}", va="center", ha="left", fontsize=7.5, color="white")
+        ax.text(0.46, yi, f"  {name}", va="center", ha="left", fontsize=7.5, color="white")
     ax.axvline(0.718, color=OK["grey"], ls="--", lw=1.0)
     ax.axvline(0.7383, color=OK["grey"], ls=":", lw=1.0)
     ax.text(0.718, len(rows) - 0.3, ".718 gate", fontsize=6.5, color=OK["grey"], ha="center")
