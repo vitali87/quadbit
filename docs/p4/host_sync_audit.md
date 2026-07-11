@@ -86,12 +86,23 @@ captures while the MoE path does not:
   `<<<batch, 256, 0, s>>>`, then a `.so` rebuild under CUDA 12.8. The identical launcher already exists
   stream-parameterized *inside* `fused_mlp_2lvl` at 609, so the change is mechanical.
 
-**Net M2 code:** (1) add `void *stream` to `quantize_act_nvfp4_2lvl` in the `.cu`; rebuild `.so` via
-`build_so.py`. (2) in the plugin's `seg_gemm`/`quant_act`, pass `current_stream().cuda_stream` to both
-`quantize_act_nvfp4_2lvl` and `sparse_moe_mm_2lvl` (kills D1 **and** the hidden per-call
-`cudaDeviceSynchronize`). (3) vectorize `build_routing` to fixed capacity (A2/A3) so shapes are static and
-no host reads remain. All three are validated on the standalone harness before any vLLM integration. The
-frozen `.cu`/`.so` on `main` are untouched; changes live on `p4-graph-capture`.
+**Net M2 code (caller-safe):**
+
+1. **Additive `.cu` symbol, NOT a signature change.** `quantize_act_nvfp4_2lvl` is called from ~40 sites
+   across the harnesses (`repair.py`, `leaderboard_fp4.py`, `moe_seg.py`, `moe_layer.py`, `serve_dsv4.py`,
+   `quadbit_serve.py`, ... and the plugin) all with `argtypes=[c_void_p]*4+[c_int]*2`, and it is also
+   defined in `dense_nvfp4_fast_lib.cu`. Changing its signature breaks every caller. Instead add a new
+   `quantize_act_nvfp4_2lvl_s(const void*, void*, void*, void*, int, int, void *stream)` that launches
+   `quant_act_2lvl_k<<<batch, 256, 0, (cudaStream_t)stream>>>` (the identical stream-parameterized launch
+   already lives inside `fused_mlp_2lvl` at line 609). Old symbol unchanged; rebuild `.so` via
+   `build_so.py`.
+2. In the capture path (`seg_gemm`/`quant_act`), call `quantize_act_nvfp4_2lvl_s` and pass
+   `torch.cuda.current_stream().cuda_stream`, and pass the same stream to `sparse_moe_mm_2lvl` instead of
+   the literal `0` (kills D1 **and** the hidden per-call `cudaDeviceSynchronize` at line 1030).
+3. Vectorize `build_routing` to fixed capacity (A2/A3) so shapes are static and no host reads remain.
+
+All three validated on the standalone harness before any vLLM integration. The frozen `.cu`/`.so` on
+`main` are untouched; changes live on `p4-graph-capture`.
 | D2 | 730-732,740,751-752,1167 | in-forward `torch.empty`/`zeros` sized by data-dependent `r`/`r_pad`/`t` | with A2/A3 padded to fixed capacity and a persistent workspace, allocations become fixed-shape; PyTorch's capture memory pool then handles them |
 
 ## Prioritized plan
