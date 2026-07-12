@@ -126,7 +126,7 @@ dense anchored/grouped projection path, which lacks a fused dense NVFP4 grouped-
 
 The original blocker was the plugin's local-expert loop calling `torch.unique(local).tolist()`, a
 device->host sync illegal under stream capture (`cudaErrorStreamCaptureUnsupported`; historical traceback
-`docs/audit/logs/glm_graphfail.log`). P4 replaced it with a graph-safe fixed-capacity device-routing path
+[docs/audit/logs/glm_graphfail.log](logs/glm_graphfail.log)). P4 replaced it with a graph-safe fixed-capacity device-routing path
 (`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`); DeepSeek-D2 captures FULL decode 2/2 and
 GLM route-slot D2 captures PIECEWISE 3/3 + FULL 2/2 (pool 1.01 GiB/GPU, DSA native), both quality-neutral
 vs the frozen eager path, drop=0. See [docs/p4/m4_d2_verdict.md](../p4/m4_d2_verdict.md),
