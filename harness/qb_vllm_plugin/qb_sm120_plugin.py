@@ -90,7 +90,7 @@ def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
     # keep w_scale_2 on-device (broadcast multiply): float(w_scale_2) would host-sync, illegal under
     # CUDA-graph capture (the dense-anchor route runs this INSIDE the captured region). A 0-dim tensor
     # multiply is bit-identical to the scalar multiply, so the frozen eager path is unaffected.
-    s2 = w_scale_2 if isinstance(w_scale_2, torch.Tensor) else torch.as_tensor(w_scale_2, device=dev)
+    s2 = w_scale_2 if isinstance(w_scale_2, torch.Tensor) else torch.as_tensor(w_scale_2, device=w_scale_e4m3.device)
     return (vals * bs * s2.to(torch.float32)).to(torch.bfloat16)
 
 
@@ -184,7 +184,7 @@ def _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap):
 
     out = torch.empty(e * cap, out_dim, dtype=torch.bfloat16, device=xs.device)
     for le in range(e):
-        s2 = ws2 if ws2.ndim == 0 else (ws2[le, 0] if ws2.ndim > 1 else ws2[le])
+        s2 = ws2 if (not isinstance(ws2, torch.Tensor) or ws2.ndim == 0) else (ws2[le, 0] if ws2.ndim > 1 else ws2[le])
         we = _dequant_nvfp4_expert(w[le], ws[le], s2)  # [out_dim, in] bf16
         out[le * cap:(le + 1) * cap] = (
             xs[le * cap:(le + 1) * cap].float() @ we.float().t()).to(torch.bfloat16)
