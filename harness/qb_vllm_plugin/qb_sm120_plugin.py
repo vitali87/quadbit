@@ -306,6 +306,12 @@ if _SPARSE_PROJ not in ("both", "down", "gateup"):
 # 0 = off. Raises active sparse expert-FLOP vs projection anchoring by leaving the low-weight tail
 # sparse while the dominant experts stay dense. Needs raw NVFP4 kept resident (see pack path).
 _ROUTE_SLOT = int(os.environ.get("QB_ROUTE_SLOT", "0"))
+# P4 graph-safe MoE path (opt-in). When set, the sparse `both` apply routes through the graph-capturable
+# _seg_apply_gs (fixed-capacity device routing + current-stream launches) instead of the frozen eager
+# build_routing path, so vLLM can CUDA-graph the MoE forward. QB_GRAPH_CAP is the fixed per-local-expert
+# row capacity (compile-time constant for capture); off-rank / overflow rows are dropped deterministically.
+_GRAPH = os.environ.get("QB_GRAPH") == "1"
+_GRAPH_CAP = int(os.environ.get("QB_GRAPH_CAP", "0"))  # 0 -> sized per-forward from token count (eager only)
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
@@ -1102,6 +1108,19 @@ def install() -> None:
     # (order among the k is irrelevant to the downstream set-attention). Correctness-first.
     def _topk_into(logits, seq_lens, topk_indices, topk_tokens):
         rows, width = logits.shape
+        if _GRAPH:
+            # A6 graph-safe indexer top-k: no seq_lens.cpu() copy and no Python row loop (both break
+            # capture). Mask positions >= seq_len to -inf, one batched top-k, then invalidate slots
+            # beyond each row's seq_len to -1. Same selected set as the eager loop; fully static shapes.
+            topk_indices[:rows, :topk_tokens] = -1
+            k = min(topk_tokens, width)
+            ar = torch.arange(width, device=logits.device).unsqueeze(0)
+            n = seq_lens.reshape(-1)[:rows].to(torch.long).clamp(0, width).unsqueeze(1)
+            idx = torch.topk(logits.masked_fill(ar >= n, float("-inf")), k, dim=1).indices
+            rk = torch.arange(k, device=logits.device).unsqueeze(0)
+            topk_indices[:rows, :k] = torch.where(rk < n, idx.to(topk_indices.dtype),
+                                                  torch.full_like(idx, -1, dtype=topk_indices.dtype))
+            return
         sl = seq_lens.reshape(-1).cpu().tolist()  # copy once; .item() per row would sync every iter
         topk_indices[:rows, :topk_tokens] = -1
         for r in range(rows):
@@ -1287,6 +1306,27 @@ def _install_moe() -> None:
             proj = layer._qb_proj
             if _ROUTE_SLOT > 0 and proj == "both":
                 y = _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y)
+                if shared_experts is not None and shared_experts_input is not None:
+                    shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+                return y
+            if _GRAPH and proj == "both" and _GRAPH_CAP > 0:
+                # P4 graph-capturable `both` apply (M3-A/B/C validated). Fixed-capacity DEVICE routing
+                # with off-rank slots sink-routed keeps every shape static and removes all host syncs, so
+                # vLLM can CUDA-graph the MoE forward. Overflow / off-rank rows dropped deterministically.
+                # NOTE: skips the eager path's _sanitize NaN guardrail (it host-syncs); the graph path is
+                # opt-in for capture and relies on finite inputs (see the sparse NaN note above).
+                assign_g = topk_ids.reshape(-1).to(torch.long)
+                tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
+                w_g = topk_weights.reshape(-1).to(torch.float32)
+                emap = getattr(layer, "expert_map", None)
+                if emap is not None:
+                    local_g = emap[assign_g]
+                    valid_g = local_g >= 0
+                    local_g = local_g.clamp_min(0)
+                else:
+                    local_g, valid_g = assign_g, None
+                _seg_apply_gs(sp, x, tok_g, local_g, w_g, layer._qb_gu, layer._qb_dn, ii, h, ee,
+                              _GRAPH_CAP, on_input, y, valid_g)
                 if shared_experts is not None and shared_experts_input is not None:
                     shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
                 return y
