@@ -120,7 +120,7 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 | Vanilla vLLM cannot init the model's FP8 (ue8m0 W8A8) attention on SM120 (DeepGEMM SF-transform asserts, CUTLASS c3x scaled_mm no-dispatch) -- an ecosystem gap, not quadbit | `harness/serve_dsv4.py` (serve3/serve4 logs) | backed |
 | That ecosystem gap is OVERTURNED by the SM120-unblock plugin (block-FP8 dequant, MLA o_proj reimpl, DSA Lightning-Indexer logits, cooperative-topk override) -> DeepSeek-V4-Flash serves end-to-end on SM120 | `harness/qb_vllm_plugin/qb_sm120_plugin.py`; `docs/paper.md` Section 10.1 | backed |
 | In-vLLM EAGER sparse-FP4 MoE serving (this model, end-to-end): downstream c_down49 (2 GPU) / D2 (4 GPU) / GLM (8 GPU) all ran through the quadbit sparse op | `harness/serve_dsv4.py`; `docs/deepseek_final_table.md`, `docs/glm_results.md` | backed |
-| In-vLLM GRAPH-CAPTURED sparse MoE serving (this model) | P4: plugin host-sync replaced by fixed-capacity device routing; DeepSeek-D2 graph-captures (FULL decode 2/2), A frozen 4.12 == C captured 4.06, DSA native, drop=0; `docs/p4/m4_d2_verdict.md` | backed (see Section 9 P4) |
+| In-vLLM GRAPH-CAPTURED sparse MoE serving (this model) | P4: plugin host-sync replaced by fixed-capacity device routing; DeepSeek-D2 graph-captures (FULL decode 2/2), A frozen 4.12 == C captured 4.06, DSA native, drop=0; [docs/p4/m4_d2_verdict.md](p4/m4_d2_verdict.md) | backed (see Section 9 P4) |
 
 ## 8. Training-free capability-preserving structural sparsity (DeepSeek + GLM transfer)
 
@@ -145,7 +145,7 @@ ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-F
 | GLM route-slot D2 downstream AVG holds within -0.95pt of dense (.7508 vs .7603, tokenizer-agnostic MC harness on 8-GPU EP) | `docs/glm_results.md` downstream table; `docs/audit/logs/glm_downstream.log` | backed |
 | GLM D2 quality is supported by PPL plus a 4-task downstream smoke suite; NOT a full downstream benchmark (down49/gateup49 rows PPL-only) | `docs/glm_results.md` caveats; `docs/audit/logs/glm_downstream.log` | backed (scope limit stated) |
 | No claim of exhaustive GLM downstream preservation | paper §10 / §12 limitations | limitation (explicit) |
-| GLM sparse path graph-capturable end-to-end | P4: route-slot D2 graph-captures on 8 GPUs (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU), A frozen 4.0040 == C captured 4.1565, DSA `sparse_mla_sm120_decode_dsv3_2` native, drop=0; `docs/p4/m4_glm_d2_verdict.md` | backed (see Section 9 P4) |
+| GLM sparse path graph-capturable end-to-end | P4: route-slot D2 graph-captures on 8 GPUs (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU), A frozen 4.0040 == C captured 4.1565, DSA `sparse_mla_sm120_decode_dsv3_2` native, drop=0; [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md) | backed (see Section 9 P4) |
 | Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |
 
 ## 9. P4 graph-enablement of the deployed sparse MoE path (SM120)

@@ -19,7 +19,7 @@ downstream smoke suite at `cc00b8b`.
   (`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`), and route-slot D2 now **fully
   CUDA-graph-captures on 8 GPUs** (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU, DSA sparse-MLA native),
   quality-neutral vs the frozen eager path (A eager 4.0040 ≡ C captured 4.1565 on an 80-tok passage,
-  both coherent, drop=0). See `docs/p4/m4_glm_d2_verdict.md`. The "graph-capturable EP MoE is future
+  both coherent, drop=0). See [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md). The "graph-capturable EP MoE is future
   work" caveat is **overturned**; the rows below stay eager as the deployed-quality reference.
 - Weights 432.9 GiB; model load 54.62 GiB/GPU (~360 s); init engine ~127 s.
 
@@ -95,5 +95,5 @@ downstream regression. Commands: `--mode glm_downstream --moe {dense | sparse --
   tokens independently confirms raw+codes co-residency.
 - **Graph-enabled (P4).** Route-slot D2 CUDA-graph-captures on 8 GPUs (the old expert-loop host-sync was
   replaced by a fixed-capacity device-routing path); the rows above stay eager as the deployed-quality
-  reference. See `docs/p4/m4_glm_d2_verdict.md`.
+  reference. See [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md).
 - GLM needs 8 GPUs (433 GiB); the 2/4-GPU footprint DeepSeek enjoyed does not transfer.

@@ -90,7 +90,7 @@ def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
     # keep w_scale_2 on-device (broadcast multiply): float(w_scale_2) would host-sync, illegal under
     # CUDA-graph capture (the dense-anchor route runs this INSIDE the captured region). A 0-dim tensor
     # multiply is bit-identical to the scalar multiply, so the frozen eager path is unaffected.
-    s2 = w_scale_2 if isinstance(w_scale_2, torch.Tensor) else torch.as_tensor(w_scale_2, device=w_scale_e4m3.device)
+    s2 = w_scale_2.to(device=w_scale_e4m3.device) if isinstance(w_scale_2, torch.Tensor) else torch.as_tensor(w_scale_2, device=w_scale_e4m3.device)
     return (vals * bs * s2.to(torch.float32)).to(torch.bfloat16)
 
 

@@ -362,7 +362,8 @@ def _graph_gate_body(
                 "beta_fast": 32, "beta_slow": 1}
         kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
                   max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
-                  max_num_seqs=max_seqs, enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+                  max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
+                  enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
         try:
             llm = LLM(tokenizer_mode="deepseek_v4", **kw)
         except Exception as ex:  # noqa: BLE001
