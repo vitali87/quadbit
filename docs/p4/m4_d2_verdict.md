@@ -1,5 +1,10 @@
 # P4 Milestone 4 — DeepSeek route-slot D2 verdict: PASS (graph-captures, quality-neutral)
 
+> **Historical (P4 milestone record).** The "decode-speed limit needs a fused dense NVFP4 grouped-GEMM"
+> conclusion below is **superseded by C1**: FlashInfer's native `group_gemm_nvfp4_nt_groupwise` expresses
+> the dense-anchor branch (no custom CUDA), and native-captured D2 decodes 5.82 tok/s. See
+> [docs/c1/verdict.md](../c1/verdict.md).
+
 The **deployed route-slot D2 policy** (top-2 highest-weight slots per token DENSE raw-NVFP4, low-weight
 tail 2:4-sparse both-proj, first-22 layers fully dense) **fully CUDA-graph-captures inside vLLM** on
 SM120 (4-GPU EP), coherent generation, and the captured PPL matches the frozen deployed path. This is the
