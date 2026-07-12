@@ -1296,6 +1296,11 @@ def _install_moe() -> None:
 
     STATS["moe_calls"] = 0
     STATS["sparse_expert_calls"] = 0
+    # originals, captured BEFORE patching, so dense-anchor layers can be delegated to the native
+    # FlashInfer fused NVFP4 MoE (fast + already graph-capturable on SM120) under QB_GRAPH instead of
+    # the decode-slow all-E dequant loop. Only used for _qb_native layers; sparse layers are unaffected.
+    orig_moe_pw = ModelOptNvFp4FusedMoE.process_weights_after_loading
+    orig_moe_apply = ModelOptNvFp4FusedMoE.apply
 
     def patched_moe_pw(self, layer):
         # Keep the RAW NVFP4 expert weights on the layer (dequant on the fly in apply); do NOT run
@@ -1326,6 +1331,15 @@ def _install_moe() -> None:
         do_pack = (qb_moe == "sparse" and not is_anchor) or is_probe
         if is_anchor:
             layer._qb_dense_anchor = True
+            if _GRAPH:
+                # graph mode: run the NATIVE weight processing (CUTLASS NVFP4 layout) + delegate apply to
+                # the native fused MoE (fast, graph-safe) instead of the decode-slow all-E dequant loop.
+                orig_moe_pw(self, layer)
+                layer._qb_native = True
+                if first:
+                    print(f"[qb_sm120] dense-anchor layer {layer_idx}: NATIVE fused NVFP4 MoE "
+                          "(QB_GRAPH delegate)", flush=True)
+                return None
             if first:
                 print(f"[qb_sm120] dense-anchor layer {layer_idx}: kept NVFP4 (no packing)", flush=True)
             return None
@@ -1402,6 +1416,10 @@ def _install_moe() -> None:
     def patched_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
                           shared_experts_input=None):
         STATS["moe_calls"] += 1
+        if getattr(layer, "_qb_native", False):
+            # dense-anchor layer under QB_GRAPH: native FlashInfer fused NVFP4 MoE (fast, graph-safe).
+            return orig_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
+                                  shared_experts_input)
         t, h = x.shape
         y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
         topk = topk_ids.shape[1]

@@ -67,7 +67,19 @@ grouped-GEMM that reads packed weights — the sparse 2:4 path has `sparse_moe_m
 none). So capture takes ~10 min (8.6 s/graph) and decode is slow vs the frozen path (which iterates only
 present experts). This is **correct-but-slow**: capture succeeds, memory is bounded (1.99 GiB pool),
 output is bit-faithful. Making it fast needs a dense NVFP4 grouped-GEMM kernel (a DIY build) or
-delegating anchor layers to the native FlashInfer fused MoE — future work.
+delegating anchor layers to the native FlashInfer fused MoE.
+
+### Native-delegation attempt (does not fix down49)
+
+Delegating whole-dense anchor layers to vLLM's native fused NVFP4 MoE (`_qb_native` → `orig_apply`,
+behind `QB_GRAPH`) was tried (log `p4_m4_down49_Cnative.log`, tp=2, cap=128, max_len=1024). It
+**captures cleanly** (FULL decode 2/2, pool 1.74 GiB) with **PPL 4.4266** and coherent generation, but
+decode stays **~0.66 tok/s**. Native delegation only accelerates the **22 fully-dense layers**; down49's
+**43 sparse layers are projection-anchored** (sparse `down_proj` + dense `gate_up`), and a whole-layer
+fused MoE cannot cover a **single anchored projection** inside a split-projection layer. So those 43
+layers keep the `_dense_seg_gs` range(E) loop and dominate decode. **Conclusion:** the down49 decode win
+requires a per-projection dense NVFP4 grouped-GEMM kernel (DIY); native delegation is the right lever only
+for route-slot D2's whole-expert dense slots, not for down49's projection anchoring.
 
 ## Acceptance (task 1 + task 3)
 
