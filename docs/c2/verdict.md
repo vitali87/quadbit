@@ -9,7 +9,7 @@ one graph mode (captured), one memory-accounting method — an apples-to-apples 
 
 | model | GPUs | dense NVFP4 fused (baseline) | quadbit D2 native captured | dense decode advantage |
 |---|---|---|---|---|
-| DeepSeek-V4-Flash | 4 | **48.248 tok/s**, 40.83 GiB wt, 0.18 pool, PPL 4.1222 | 5.972 tok/s, 51.7 GiB wt, 2.08 pool, PPL 4.0943 | **8.1× decode, −21% weight mem** |
+| DeepSeek-V4-Flash | 4 | **48.248 tok/s**, 40.83 GiB wt, 0.18 pool, PPL 4.1222 | 5.972 tok/s, 51.7 GiB wt, 1.10 pool, PPL 4.0943 | **8.1× decode, −21% weight mem** |
 | GLM-5.2 | 8 | **33.810 tok/s**, 54.62 GiB wt, 0.10 pool, PPL 3.9572 | 5.367 tok/s, 68.98 GiB wt, 0.80 pool, PPL 4.0674 | **6.3× decode, −21% weight mem** |
 
 DSA native on both baselines and both quadbit rows (`sparse_mla_sm120_decode_dsv4` /
@@ -30,16 +30,16 @@ no decode advantage.
 
 Route-slot D2's dual residency (raw NVFP4 dense slots + 2:4 sparse codes co-resident) costs **+27%
 (DeepSeek: 51.7 vs 40.83) / +26% (GLM: 68.98 vs 54.62) weight memory per GPU**, a larger graph pool
-(2.08 vs 0.18; 0.80 vs 0.10 GiB), and collapses KV capacity (GLM: 236,672 vs 629,760 tokens, −62%). The
+(1.10 vs 0.18; 0.80 vs 0.10 GiB), and collapses KV capacity (GLM: 236,672 vs 629,760 tokens, −62%). The
 sparse policy does not reduce memory; it raises it.
 
 ## V4. Quality — **matched-to-slightly-worse; report deltas, not adjectives.**
 
 - mito80 PPL is noise-dominated (80 tokens) and a wash: DeepSeek D2 4.0943 vs dense 4.1222; GLM D2 4.0674
   vs dense 3.9572. **Not used for ranking** (protocol rule 1).
-- Downstream MC smoke (the real evidence): DeepSeek D2 .7304 vs dense .7383 = **−0.79 pt** (`paper.md`
-  §10); GLM D2 .7508 vs dense .7603 = **−0.95 pt** (`glm_results.md`). Acceptable under the Pareto
-  framing, but a small loss, not a gain.
+- Downstream MC smoke (the real evidence): DeepSeek D2 .7304 vs dense .7383 = **−0.79 pt**
+  ([paper.md](../paper.md) §10); GLM D2 .7508 vs dense .7603 = **−0.95 pt**
+  ([glm_results.md](../glm_results.md)). Acceptable under the Pareto framing, but a small loss, not a gain.
 
 ## V5. SOTA label — **"graph-enabled transfer result, not speed SOTA."**
 

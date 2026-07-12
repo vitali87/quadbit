@@ -31,7 +31,7 @@ and B3. Toolchain env M. Raw logs `docs/audit/logs/c2_glm_*.log`.
   68.98 GiB weights (+26%) + 0.80 pool with only 236,672 KV tokens (−62%). Dual residency both raises
   weight memory and collapses KV capacity.
 - **V4 quality: intact but a small loss.** mito80 PPL is a wash (4.0674 vs 3.9572, 80-token noise). The
-  real downstream evidence (`glm_results.md`, tokenizer-agnostic MC, `limit=200`): D2 .7508 vs dense
+  real downstream evidence ([glm_results.md](../glm_results.md), tokenizer-agnostic MC, `limit=200`): D2 .7508 vs dense
   .7603 = **−0.95 pt**, no task collapse — acceptable under the Pareto framing, but a loss, not a gain.
 
 **GLM bottom line:** the graph-enabled sparse-policy transfer is real (D2 captures, DSA native, downstream

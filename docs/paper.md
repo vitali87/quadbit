@@ -801,7 +801,7 @@ SOTA; its contribution is the only deployed 2:4-sparse FP4 MoE, training-free ca
 structural sparsity that transfers across architectures and graph-captures with native DSA (downstream
 within ~1 pt), and the prefill/large-M kernel Pareto of Section 5 (a kernel microbench, not re-measured in
 serving here). The remaining MoE decode gap is a kernel problem, a fused sparse grouped decode GEMM at
-tiny M, identified but not built. Board: `docs/c2/verdict.md`; logs `docs/audit/logs/c2_*.log`.
+tiny M, identified but not built. Board: [docs/c2/verdict.md](c2/verdict.md); logs `docs/audit/logs/c2_*.log`.
 
 ---
 

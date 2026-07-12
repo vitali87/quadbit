@@ -160,12 +160,12 @@ production-wide decode-speed win over other serving stacks.
 Same harness as C1 (`graph_gate4` / `glm_graph_gate` / `_graph_gate_body`), same mito80 PPL passage, same
 decode-only formula, same graph mode. `baseline=dense_nvfp4` sets `QB_MOE=off` so vLLM's native
 FlashInfer-CUTLASS NVFP4 fused MoE runs (the production dense path) with attention/DSA still SM120-unblocked.
-Env M. Full result `docs/c2/verdict.md`; logs `docs/audit/logs/c2_*.log`.
+Env M. Full result [docs/c2/verdict.md](../c2/verdict.md); logs `docs/audit/logs/c2_*.log`.
 
 | row | command (prefix `uv run modal run --detach harness/serve_dsv4.py`) | GPU | result |
 |---|---|---|---|
 | A1 DeepSeek dense baseline captured | `::graph_gate4 --cap 128 --max-seqs 2 --baseline dense_nvfp4` | 4 | PPL 4.1222, **48.248 tok/s**, 40.83 GiB wt, 0.18 pool |
-| A4 DeepSeek D2 native captured | `::graph_gate4 --cap 128 --max-seqs 2 --dense-layers 0,1,..,21 --dense-anchor-backend native_nvfp4` | 4 | PPL 4.0943, 5.972 tok/s, 51.7 GiB wt, 2.08 pool |
+| A4 DeepSeek D2 native captured | `::graph_gate4 --cap 128 --max-seqs 2 --dense-layers 0,1,..,21 --dense-anchor-backend native_nvfp4` | 4 | PPL 4.0943, 5.972 tok/s, 51.7 GiB wt, 1.10 pool |
 | B1 GLM dense baseline captured | `::glm_graph_gate --cap 128 --max-seqs 2 --baseline dense_nvfp4` | 8 | PPL 3.9572, **33.810 tok/s**, 54.62 GiB wt, 0.10 pool |
 | B3 GLM D2 native captured | `::glm_graph_gate --cap 128 --max-seqs 2 --dense-layers 0,1,..,37 --dense-anchor-backend native_nvfp4` | 8 | PPL 4.0674, 5.367 tok/s, 68.98 GiB wt, 0.80 pool |
 

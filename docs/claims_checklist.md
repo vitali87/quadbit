@@ -178,13 +178,13 @@ Removes the P4 dense-anchor decode bottleneck by delegation, no custom CUDA. Bra
 ## 11. C2 SOTA board — dense NVFP4 fused MoE is the SM120 MoE decode SOTA (measured)
 
 Direct same-harness board (branch `c2-sota-board`) vs the strongest dense/NVFP4 baseline that runs on
-SM120. Full docs `docs/c2/{sota_board,deepseek_sota,glm_sota,verdict}.md`; logs `docs/audit/logs/c2_*.log`.
+SM120. Full docs [sota_board](../c2/sota_board.md) / [deepseek_sota](../c2/deepseek_sota.md) / [glm_sota](../c2/glm_sota.md) / [verdict](../c2/verdict.md); logs `docs/audit/logs/c2_*.log`.
 
 | Claim | Evidence | Status |
 |-------|----------|--------|
 | Dense NVFP4 fused MoE (vLLM native FlashInfer-CUTLASS, QB_MOE=off) beats quadbit sparse D2 on decode | DeepSeek captured 48.248 vs 5.972 tok/s (8.1x); GLM captured 33.810 vs 5.367 tok/s (6.3x); same harness/passage/graph; `c2_ds_*`/`c2_glm_*` logs | backed |
 | quadbit sparse D2 is NOT a decode-speed SOTA on SM120 MoE | above board; C1's 11.3x was vs the dequant loop (0.514), not the dense path | backed (negative) |
-| Route-slot D2 dual residency INCREASES memory vs dense | weights +27% DeepSeek (51.7 vs 40.83) / +26% GLM (68.98 vs 54.62); GLM KV 236,672 vs 629,760 tok (-62%); pool 2.08/0.80 vs 0.18/0.10 GiB | backed (negative) |
+| Route-slot D2 dual residency INCREASES memory vs dense | weights +27% DeepSeek (51.7 vs 40.83) / +26% GLM (68.98 vs 54.62); GLM KV 236,672 vs 629,760 tok (-62%); pool 1.10/0.80 vs 0.18/0.10 GiB | backed (negative) |
 | C2 quality: mito80 PPL is protocol-noise, excluded from ranking; downstream is the metric | D2 vs dense mito80 wash; downstream -0.79pt DeepSeek / -0.95pt GLM (paper §10, glm_results) | backed |
 | Vanilla vLLM (no plugin) runs DeepSeek-V4-Flash NVFP4 on SM120 | fails to init (ue8m0 FP8 attention); the plugin's attention/DSA unblock is what lets the dense MoE baseline run at all | not claimed (disproven) |
 | SGLang NVFP4 MoE baseline for these models on SM120 | unavailable (not in serve image; no SM120 DSA path); reported, not hidden | n/a (recorded) |

@@ -16,7 +16,7 @@ FlashInfer 0.6.14/cubin 0.6.13, torch 2.11.0+cu130). Raw logs `docs/audit/logs/c
 | decode-only tok/s | **48.248** (wall1 0.223, wall64 1.528) | **5.972** (wall1 0.619, wall64 11.168) |
 | weights GiB/GPU | 40.83 | 51.7 (+27%, dual residency raw NVFP4 + 2:4 codes) |
 | KV cache GiB/GPU | 42.64 (120,416 tok, 58.8× concurrency) | 25.98 |
-| graph-capture pool GiB | 0.18 | 2.08 (C1) |
+| graph-capture pool GiB | 0.18 | 1.10 |
 | DSA | `sparse_mla_sm120_decode_dsv4` native (autotuned), `DEEPSEEK_SPARSE_SWA`, `fp8_ds_mla` KV | same, native |
 | route/drop/overflow | n/a (dense, no fixed-cap routing) | cap=128, max_seqs=2, drop=0 |
 | load+capture time | 956 s | ~1100 s (C1) |
@@ -40,12 +40,13 @@ dequant loop, **not** a comparison to the production dense path A1.
   on decode. At decode (M=1–2 rows) the sparse path's multi-stage machinery (fixed-cap device routing +
   2:4 sparse experts + dual-residency dense anchor) cannot match vLLM's single autotuned fused NVFP4
   grouped GEMM; the 2:4 sparsity advantage is a prefill/large-M bandwidth effect, absent at decode.
-- **V3 memory: dense wins.** Dense 40.83 GiB weights + 0.18 GiB pool; D2 51.7 GiB weights (+27%) + 2.08
+- **V3 memory: dense wins.** Dense 40.83 GiB weights + 0.18 GiB pool; D2 51.7 GiB weights (+27%) + 1.10
   GiB pool, and D2's KV headroom is 25.98 vs 42.64 GiB. The sparse policy **increases** total memory
   (dual residency), it does not reduce it.
 - **V4 quality: matched-to-slightly-worse.** mito80 PPL is a wash (4.0943 vs 4.1222, 80-token noise, not
-  a quality win for either — do not rank on it). The real downstream evidence (400-item MC, `paper.md`
-  §10): DeepSeek D2 .7304 vs dense .7383 = **−0.79 pt** — acceptable under the Pareto framing, but a small
+  a quality win for either — do not rank on it). The real downstream evidence (400-item MC,
+  [paper.md](../paper.md) §10): DeepSeek D2 .7304 vs dense .7383 = **−0.79 pt** — acceptable under the
+  Pareto framing, but a small
   loss, not a gain.
 
 **DeepSeek bottom line:** on decode and memory the production dense NVFP4 fused MoE is the SM120 SOTA;

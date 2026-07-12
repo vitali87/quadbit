@@ -37,26 +37,25 @@ direct SOTA board against the strongest dense/NVFP4 baseline that actually runs 
 
 ## The board
 
-Decode tok/s, PPL (mito62), graph mode, GPUs, memory. **PENDING** = run in flight; filled on completion.
-Raw logs `docs/audit/logs/c2_*.log`.
+Decode tok/s, PPL (mito80), graph mode, GPUs, memory. Raw logs `docs/audit/logs/c2_*.log`.
 
 ### DeepSeek-V4-Flash (4 GPU EP, route-slot D2 policy where sparse)
 
 | # | row | MoE path | graph | PPL (mito80) | decode tok/s | weights GiB/GPU | pool GiB | DSA | log |
 |---|---|---|---|---:|---:|---:|---:|---|---|
 | A1 | **dense NVFP4 baseline** | vLLM native FlashInfer-CUTLASS fused NVFP4 (QB_MOE=off) | captured (FULL+PIECE) | 4.1222 | **48.248** | 40.83 | 0.18 | native | `c2_ds_dense_baseline_C.log` |
-| A4 | **quadbit D2 native captured** | route-slot D2, `group_gemm_nvfp4` anchor | captured (FULL) | 4.0943 | **5.972** | 51.7 | 2.08² | native | `c2_ds_d2_native_C.log` |
+| A4 | **quadbit D2 native captured** | route-slot D2, `group_gemm_nvfp4` anchor | captured (FULL) | 4.0943 | **5.972** | 51.7 | 1.10² | native | `c2_ds_d2_native_C.log` |
 | A5 | quadbit D2 native eager (ablation) | route-slot D2, native anchor, eager | eager | 4.0483¹ | 1.637¹ | — | — | native | C1 `c1_d2_native_B.log` |
 | A6 | dequant captured (historical bottleneck) | route-slot D2, dequant `_dense_seg_gs` | captured | 3.9746¹ | 0.514¹ | — | — | native | C1 `c1_d2_dequant_C.log` |
 
 ¹ C1 numbers, measured on the identical `_graph_gate_body` passage + decode formula, directly comparable.
-² D2 pool 2.08 GiB/GPU (C1). D2 weights 51.7 GiB/GPU = +27% over the dense baseline's 40.83 (dual
+² D2 pool 1.10 GiB/GPU (C2 run).  D2 weights 51.7 GiB/GPU = +27% over the dense baseline's 40.83 (dual
 residency: raw NVFP4 dense slots + 2:4 sparse codes co-resident); D2 KV headroom 25.98 GiB vs dense 42.64.
 
 **Headline (DeepSeek, decode + memory): the dense NVFP4 fused MoE baseline dominates.** It decodes at
 **48.248 tok/s vs quadbit D2's 5.972** (same C2 build, same harness) = the dense baseline is **8.1× faster
 at decode**, using **less** weight memory (40.83 vs 51.7 GiB/GPU, D2 +27% from dual residency) and a
-smaller graph pool (0.18 vs 2.08 GiB). mito80 PPL is a wash (D2 4.0943 vs dense 4.1222, 80-token noise).
+smaller graph pool (0.18 vs 1.10 GiB). mito80 PPL is a wash (D2 4.0943 vs dense 4.1222, 80-token noise).
 C1's 11.3× was measured against the crippled dequant loop (0.514 tok/s), not this production dense path.
 The quadbit sparse advantage is **not** a decode-speed or decode-memory win; see the verdict for where it
 does live (training-free quality-preserving structural sparsity + graph-enabled cross-arch transfer; and
@@ -71,8 +70,8 @@ the prefill/large-M kernel Pareto, `paper.md` §5, not re-measured here).
 | B2 | quadbit route-slot D2 eager (ref) | D2, eager | eager | — | 2.10² | — | — | native | C1 / glm_results |
 | B5 | dequant captured (ablation) | D2, dequant loop | captured | 4.157²·ᵖ | — | — | — | native | C1 / P4 |
 
-² GLM D2 pool 1.21 GiB/GPU, eager decode ref 2.10 tok/s (C1). ᵖ GLM dequant-captured PPL 4.157 is on a
-different short passage vs mito80 → protocol-mismatched, excluded from the quality ranking.
+² GLM D2 eager decode ref 2.10 tok/s (C1); the B3 pool 0.80 GiB is the C2 run. ᵖ GLM dequant-captured PPL
+4.157 is on a different short passage vs mito80 → protocol-mismatched, excluded from the quality ranking.
 
 **Headline (GLM, decode + memory): dense NVFP4 fused MoE baseline wins decode 33.810 vs D2 5.367 = 6.30×**
 (same C2 build), DSA `FLASHINFER_MLA_SPARSE_SM120` native both. Dense 54.62 GiB weights + 0.10 pool, KV
@@ -90,5 +89,5 @@ quality, `glm_results.md`): D2 .7508 vs dense .7603 = −0.95 pt, intact but a s
 
 ## Verdicts
 
-See `docs/c2/verdict.md` for V1–V5 once the board is filled. DeepSeek detail: `docs/c2/deepseek_sota.md`;
-GLM detail: `docs/c2/glm_sota.md`.
+See [docs/c2/verdict.md](verdict.md) for V1–V5. DeepSeek detail: [docs/c2/deepseek_sota.md](deepseek_sota.md);
+GLM detail: [docs/c2/glm_sota.md](glm_sota.md).
