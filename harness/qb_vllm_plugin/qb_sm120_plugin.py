@@ -421,6 +421,11 @@ _ROUTE_SLOT = int(os.environ.get("QB_ROUTE_SLOT", "0"))
 # row capacity (compile-time constant for capture); off-rank / overflow rows are dropped deterministically.
 _GRAPH = os.environ.get("QB_GRAPH") == "1"
 _GRAPH_CAP = int(os.environ.get("QB_GRAPH_CAP", "0"))  # 0 -> sized per-forward from token count (eager only)
+# cap must be a positive multiple of _BN: route_fixed_cap tiles per-expert rows into _BN-row blocks and
+# builds eblk as arange(e*cap//_BN)//(cap//_BN). A non-multiple misaligns the block->expert map, and
+# cap<_BN makes cap//_BN==0 (div-by-zero / zero blocks, all work silently dropped). Fail fast at import.
+if _GRAPH_CAP and _GRAPH_CAP % _BN:
+    raise ValueError(f"QB_GRAPH_CAP={_GRAPH_CAP} must be a positive multiple of _BN={_BN}")
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
