@@ -118,10 +118,17 @@ Results in `docs/glm_results.md` (downstream table); logs `docs/audit/logs/glm_d
 `uv run --no-project --with matplotlib --with numpy python docs/figures/make_figures.py` -> `out/*.{svg,pdf}`
 (reads `docs/figures/data/*.csv`). Paper: `bash docs/build_paper.sh` (repo-root safe) -> `docs/paper.{pdf,tex}`.
 
-## Graph-capture / host-sync limit (negative, Env M)
+## Graph-capture / host-sync limit (RESOLVED by P4, merge `919ca7d`, tag `p4-graph-enabled-moe`)
 
-The GLM/DeepSeek EP MoE path is **not** CUDA-graph-capturable: the plugin's local-expert loop calls
-`torch.unique(local).tolist()` (`qb_sm120_plugin.py:1255`), a device->host sync illegal under stream
-capture (`cudaErrorStreamCaptureUnsupported`). Reproduce by launching any Env-M MoE run with
-`enforce_eager=False`; the failing traceback is archived at `docs/audit/logs/glm_graphfail.log`. This is a
-plugin limitation, not a DSA/attention/memory/loader blocker.
+Graph capture is no longer future work for the deployed sparse MoE policy path: DeepSeek-D2 and GLM
+route-slot D2 graph-capture on SM120 with quality matching eager. The remaining speed limitation is the
+dense anchored/grouped projection path, which lacks a fused dense NVFP4 grouped-GEMM.
+
+The original blocker was the plugin's local-expert loop calling `torch.unique(local).tolist()`, a
+device->host sync illegal under stream capture (`cudaErrorStreamCaptureUnsupported`; historical traceback
+[docs/audit/logs/glm_graphfail.log](logs/glm_graphfail.log)). P4 replaced it with a graph-safe fixed-capacity device-routing path
+(`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`); DeepSeek-D2 captures FULL decode 2/2 and
+GLM route-slot D2 captures PIECEWISE 3/3 + FULL 2/2 (pool 1.01 GiB/GPU, DSA native), both quality-neutral
+vs the frozen eager path, drop=0. See [docs/p4/m4_d2_verdict.md](../p4/m4_d2_verdict.md),
+[docs/p4/m4_glm_d2_verdict.md](../p4/m4_glm_d2_verdict.md). This is
+a graph-correctness and graph-enablement result, **not** a production-wide decode-speed win.
