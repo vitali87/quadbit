@@ -1,0 +1,84 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-TsBOJmIDHP69N2VrtSaRat
+Building image im-yY6F0ZlpfWs4spCeMoQ4zF
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.8.1-py3-none-any.whl size=32390 sha256=1df59c6f76bf053c53c02c4ddf9ca8f069a88e353d879073d56a1331111d9b48
+  Stored in directory: /tmp/pip-ephem-wheel-cache-69jrsbax/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.8.1
+Saving image...
+Image saved, took 1.98s
+
+Built image im-yY6F0ZlpfWs4spCeMoQ4zF in 6.58s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# torch 2.11.0+cu130 | NVIDIA RTX PRO 6000 Blackwell Server Edition cap (12, 0) | flashinfer group_gemm_nvfp4
+# shapes: b_w (32, 4096, 2048) b_sf_arg (32, 4096, 256) a_fp4 (4096, 2048) a_sf_arg (7936, 256) alpha (32,) m_indptr (33,)
+# ROW {'tag': 'gate_up', 'E': 32, 'cos_nat_ref': 0.9909570813179016, 'relL2': 0.13448445330161787, 'maxabs': 0.0703125, 'nf': 0, 'eager_b': 0.2853119969367981, 'cos_cap': 0.9909570813179016, 'graph_b': 0.24544000625610352, 'capture': 'OK', 'eager_a': 5.652336120605469}
+# ROW {'tag': 'gate_up', 'E': 64, 'cos_nat_ref': 0.9909748435020447, 'relL2': 0.13435197126167353, 'maxabs': 0.0704345703125, 'nf': 0, 'eager_b': 0.5199680030345917, 'cos_cap': 0.9909748435020447, 'graph_b': 0.47918400168418884, 'capture': 'OK', 'eager_a': 11.016096115112305}
+# ROW {'tag': 'down', 'E': 32, 'cos_nat_ref': 0.9909695982933044, 'relL2': 0.13439366419052134, 'maxabs': 0.071044921875, 'nf': 0, 'eager_b': 0.17614400386810303, 'cos_cap': 0.9909695982933044, 'graph_b': 0.14043200016021729, 'capture': 'OK', 'eager_a': 3.2763359546661377}
+# ROW {'tag': 'down', 'E': 64, 'cos_nat_ref': 0.9909735918045044, 'relL2': 0.1343703426870094, 'maxabs': 0.072265625, 'nf': 0, 'eager_b': 0.30486398935317993, 'cos_cap': 0.9909735918045044, 'graph_b': 0.26555199921131134, 'capture': 'OK', 'eager_a': 6.551504135131836}
+# c1_dense_anchor done
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-TsBOJmIDHP69N2VrtSaRat

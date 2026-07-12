@@ -157,6 +157,20 @@ branch `p4-graph-capture` / PR #16; main frozen at `campaign-b-freeze-a91c5d9`.
 |-------|----------|--------|
 | A. Deployed sparse MoE policies graph-capture on SM120 | DeepSeek-D2 (FULL decode 2/2) + GLM route-slot D2 (PIECEWISE 3/3 + FULL 2/2), DSA native SM120, drop=0, no host sync / no in-capture alloc; `docs/p4/m4_d2_verdict.md`, `docs/p4/m4_glm_d2_verdict.md`, logs `p4_m4_d2_{A,C}.log` / `p4_m4_glm_d2_{A,C}.log` | backed |
 | B. Graph capture is quality-neutral for deployed policies | DeepSeek-D2 A 4.12 vs C 4.06; GLM-D2 A 4.0040 vs C 4.1565 (same short-passage harness), both coherent. Caveat: GLM dense baseline 3.171 uses a different 114-token policy-sweep passage, so only A-vs-C is the valid capture-neutrality comparison | backed (caveat) |
-| C. Graph-enabled sparse MoE is a decode-speed win | Deployed policies capture correctly, but decode is limited by the unfused dense anchored/grouped path; a fused dense NVFP4 grouped-GEMM remains future work | limited / NOT generally claimed |
+| C. Graph-enabled sparse MoE decode bottleneck removed | C1: the dense anchored/grouped path is delegated to FlashInfer's native grouped NVFP4 GEMM; captured DeepSeek-D2 decodes 5.82 tok/s (Section 10 C1 table); superseded, see Section 10 rows below | backed (native delegate) |
 | D. GLM quality (PPL + 4-task downstream smoke suite, not exhaustive) | D2 smoke AVG .7508 vs dense .7603 (Section 8 rows 145-147); no full-benchmark claim | backed (scope limit stated) |
 | E. CUTLASS / dense-baseline positioning | CUTLASS 80b is sparse-kernel prior art (Section 5 rows 29-30); FlashInfer/vLLM/SGLang are dense NVFP4 ecosystem baselines (Section 1 rows 18-22); quadbit does NOT claim dense FP4 speed leadership | guarded |
+
+## 10. C1 native dense-anchor delegation (SM120)
+
+Removes the P4 dense-anchor decode bottleneck by delegation, no custom CUDA. Branch
+`c1-native-dense-anchor`, commits `bda69ae` -> `1333dc4`. Full result `docs/c1/verdict.md`; logs
+`docs/audit/logs/c1_*.log`.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| Dense anchored/grouped projection bottleneck removed by native FlashInfer grouped NVFP4 delegation | FlashInfer 0.6.14 `group_gemm_nvfp4_nt_groupwise`; standalone A/B cos 0.991 vs bf16, nf=0, graph-captures, ~18-25x faster than the dequant loop; `docs/c1/standalone_ab.md`, `docs/audit/logs/c1_dense_anchor.log` | backed |
+| DeepSeek-D2 native-delegated graph path is quality-neutral and faster | PPL 4.0112 (dequant-captured 3.9746, +0.037), decode 5.820 tok/s = 11.3x the dequant-captured 0.514 (same harness), 1.44x frozen-eager 4.04; FULL capture, DSA native; `docs/c1/d2_serving.md`, `docs/audit/logs/c1_d2_native_C.log` | backed |
+| GLM-5.2 route-slot D2 native-delegated graph path transfers | PPL 4.0705 (P4 band), decode 5.296 tok/s = 2.5x eager reference 2.10, PIECEWISE 3/3 + FULL 2/2, DSA `sparse_mla_sm120_decode_dsv3_2` native, coherent; `docs/audit/logs/c1_glm_d2_native_C.log` | backed |
+| Custom dense grouped-GEMM required | Disproven for this stack: FlashInfer's `group_gemm_nvfp4_nt_groupwise` expresses the dense-anchor branch; `grouped_dense_nvfp4_moe_mm_2lvl` not built | not claimed (disproven) |
+| Production-wide decode SOTA | NOT claimed: C1 measures native-delegate vs our own dequant-loop and eager paths (same model/policy), no production-serving-stack baseline table; phrased as a model/policy speed/quality/memory Pareto result | guarded (not claimed) |

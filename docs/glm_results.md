@@ -13,14 +13,22 @@ downstream smoke suite at `cc00b8b`.
   `fp8_ds_mla` format). No silent fallback, no dense trap.
 - **EP**: 32 local / 256 global experts per rank, `FLASHINFER_CUTLASS` NVFP4 MoE backend; the quadbit
   hook patches all 8 workers.
-- **Graph-captured (P4 update).** The rows below were measured eager. The original blocker was our own
-  hook: the EP local-expert loop called `torch.unique(local).tolist()` (a device->host sync), illegal
-  under CUDA-graph stream capture. P4 replaced it with a graph-safe fixed-capacity device-routing path
-  (`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`), and route-slot D2 now **fully
-  CUDA-graph-captures on 8 GPUs** (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU, DSA sparse-MLA native),
-  quality-neutral vs the frozen eager path (A eager 4.0040 ≡ C captured 4.1565 on an 80-tok passage,
-  both coherent, drop=0). See [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md). The "graph-capturable EP MoE is future
-  work" caveat is **overturned**; the rows below stay eager as the deployed-quality reference.
+- **Graph-captured and dense-anchor delegated (P4 + C1).** The policy-sweep rows below were measured
+  eager as the deployed-quality reference. The original blocker was our own hook: the EP local-expert
+  loop called `torch.unique(local).tolist()` (a device->host sync), illegal under CUDA-graph stream
+  capture. P4 replaced it with a graph-safe fixed-capacity device-routing path (`route_fixed_cap` /
+  `_route_slot_apply_gs`, behind `QB_GRAPH`), and route-slot D2 **fully CUDA-graph-captures on 8 GPUs**
+  (PIECEWISE 3/3 + FULL 2/2, DSA sparse-MLA native), quality-neutral vs the frozen eager path (A eager
+  4.0040 ≡ C captured 4.1565 on an 80-tok passage, both coherent, drop=0). C1 then removed the remaining
+  dense-anchor decode-speed limit by delegating the anchored/grouped projection to FlashInfer's native
+  grouped NVFP4 GEMM (`group_gemm_nvfp4_nt_groupwise`, opt-in `QB_DENSE_BACKEND=native_nvfp4`) instead of
+  the dequant-to-bf16 loop, with no custom dense grouped-GEMM. **GLM route-slot D2 native captured: PPL
+  4.0705, decode 5.296 tok/s = 2.5× the eager reference 2.10, PIECEWISE 3/3 + FULL 2/2, DSA
+  `sparse_mla_sm120_decode_dsv3_2` native, pool 1.21 GiB/GPU** ([docs/audit/logs/c1_glm_d2_native_C.log](audit/logs/c1_glm_d2_native_C.log)).
+  The old "graph-correct but dense-loop-slow" limitation is **superseded by native delegation**. See
+  [docs/c1/verdict.md](c1/verdict.md) and [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md). The
+  PPL numbers here (short held-out passage) and the 3.171 dense-baseline (114-token policy-sweep passage)
+  are different protocols; only within-protocol comparisons hold.
 - Weights 432.9 GiB; model load 54.62 GiB/GPU (~360 s); init engine ~127 s.
 
 ## Policy table
@@ -93,7 +101,10 @@ downstream regression. Commands: `--mode glm_downstream --moe {dense | sparse --
 - **Sparse path is active, not a dense trap.** Each sparse run logs exactly 304 dense-anchor lines
   (38 anchored layers x 8 workers); layers 38-74 pack to 2:4 codes. Route-slot's KV collapse to 241k
   tokens independently confirms raw+codes co-residency.
-- **Graph-enabled (P4).** Route-slot D2 CUDA-graph-captures on 8 GPUs (the old expert-loop host-sync was
-  replaced by a fixed-capacity device-routing path); the rows above stay eager as the deployed-quality
-  reference. See [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md).
+- **Graph-enabled + dense-anchor delegated (P4 + C1).** Route-slot D2 CUDA-graph-captures on 8 GPUs (the
+  old expert-loop host-sync was replaced by a fixed-capacity device-routing path), and C1 delegates the
+  dense anchored/grouped projection to FlashInfer's native grouped NVFP4 GEMM, so native-captured GLM-D2
+  decodes at 5.296 tok/s = 2.5× the eager reference; no custom dense grouped-GEMM was required. The rows
+  above stay eager as the deployed-quality reference. See [docs/c1/verdict.md](c1/verdict.md),
+  [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md).
 - GLM needs 8 GPUs (433 GiB); the 2/4-GPU footprint DeepSeek enjoyed does not transfer.

@@ -128,13 +128,23 @@ path is W4A4 and costs +0.63 PPL with no calibration; sparse deploys at
 its trained accuracy but stays a real PPL behind dense, so sparse is a
 speed Pareto point conditioned on prunability, not an accuracy win.
 
-Limitations we state up front: the MoE plugin path is eager-only (a
-plugin host-sync blocks CUDA-graph capture, so the DeepSeek/GLM serving
-numbers are eager-vs-eager, not production-vs-production); GLM-5.2
-requires 8x RTX PRO 6000; the GLM downstream evidence is a small 4-task
-smoke suite, not an exhaustive benchmark; all-MLP sparsity carries a
-real PPL tax that training-free repair does not close; and dense FP4
-speed belongs to the ecosystem baselines.
+The deployed sparse MoE policy path is graph-enabled on SM120 (P4), and
+the prior dense anchored/grouped projection bottleneck is removed by
+delegating those projections to FlashInfer's native grouped NVFP4 GEMM
+(\texttt{group\_gemm\_nvfp4\_nt\_groupwise}, C1), with no custom dense
+grouped-GEMM required. DeepSeek-D2 and GLM route-slot D2 now run as
+graph-enabled, quality-matching deployed policies with native SM120 DSA;
+native-delegate captured DeepSeek-D2 decodes faster than eager (5.82 vs
+4.04 tok/s at matched PPL). Limitations we state up front: this is a
+same-model/same-policy speed/quality/memory Pareto result against our
+own dequant-loop and eager paths, not a production-wide decode-speed win
+over other serving stacks, and dense FP4 speed belongs to the ecosystem
+baselines; the native delegate depends on FlashInfer availability and
+its swizzled NVFP4 scale layout; the GLM graph run is validated on a
+short held-out passage; GLM-5.2 requires 8x RTX PRO 6000; the GLM
+downstream evidence is a small 4-task smoke suite, not an exhaustive
+benchmark; and all-MLP sparsity carries a real PPL tax that
+training-free repair does not close.
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -194,8 +204,12 @@ sparse output (guarded against a silent dense fall-back). On recovered
 Llama-3.1-8B-Instruct, graph-vs-graph, sparse wins decode and total
 request latency in the interactive/low-batch, long-generation regime (81
 of 112 cells); NVFP4 keeps the prefill-bound corner. The MoE plugin path
-(C4) is eager-only, so full production CUDA-graph parity there is future
-work.
+(C4) now graph-captures for the deployed sparse policies (P4), and C1
+removes the dense-anchor decode bottleneck by delegating the
+anchored/grouped projections to FlashInfer's native grouped NVFP4 GEMM
+(\texttt{group\_gemm\_nvfp4\_nt\_groupwise}), with no custom dense
+grouped-GEMM, so the captured DeepSeek-D2 path now decodes faster than
+eager at matched quality.
 
 \textbf{C4. Cross-architecture sparse-policy transfer (Section 10).} On
 DeepSeek-V4-Flash and GLM-5.2 the accuracy cost of sparsity is a
@@ -1225,15 +1239,77 @@ D2 holds \textbf{within 0.95 pt AVG of dense with no task collapsing}
 (HellaSwag exactly flat; ARC-C and MMLU-5 within the n=200 /
 n=50-per-subject band; Winogrande's -2.5 pt is the largest single move
 and near its per-200 noise), so the small PPL gap does not mask a
-downstream regression. Two honest limits remain: this GLM downstream
-evidence is a small 4-task smoke suite on the D2 policy only (full
-benchmarks, and downstream numbers for the down-only/gate-up rows, are
-still unmeasured on GLM, so the most complete capability accounting of
-record remains DeepSeek's); and all GLM rows run eager, because the
-plugin's expert-parallel local-expert loop uses a host-syncing
-\texttt{torch.unique(...).tolist()} that is illegal under CUDA-graph
-stream capture -- graph-capturable expert-parallel MoE is the remaining
-future work, not a DSA, attention, memory, or loader blocker.
+downstream regression. One honest limit remains on quality: this GLM
+downstream evidence is a small 4-task smoke suite on the D2 policy only
+(full benchmarks, and downstream numbers for the down-only/gate-up rows,
+are still unmeasured on GLM, so the most complete capability accounting
+of record remains DeepSeek's).
+
+\textbf{Graph-enabled and dense-anchor delegation (P4 + C1).} The
+PPL/downstream rows above are the deployed quality reference; the
+serving path itself is now graph-enabled and no longer dense-loop-bound.
+P4 replaced the plugin's expert-parallel host-sync
+(\texttt{torch.unique(...).tolist()}, illegal under CUDA-graph stream
+capture) with a fixed-capacity device-routing path, so the deployed
+sparse policies CUDA-graph capture on SM120. C1 then removed the
+remaining dense-anchor decode bottleneck: the anchored/grouped
+projection previously ran a dequant-to-bf16 loop over all local experts,
+and we replaced it with FlashInfer's native grouped NVFP4 GEMM
+(\texttt{group\_gemm\_nvfp4\_nt\_groupwise}, opt-in
+\texttt{QB\_DENSE\_BACKEND=native\_nvfp4}), with no custom dense
+grouped-GEMM. In standalone A/B at DeepSeek shapes the native path
+matches the dequant loop (cos 0.991 vs bf16, no non-finite),
+graph-captures with bit-identical replay, and is \textasciitilde18-25x
+faster. In serving, the native-delegate captured paths decode faster
+than eager at matched quality:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+config
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+GPUs
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+PPL
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+decode tok/s
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+graph
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+DeepSeek D2 dequant, captured (base) & 4 & 3.9746 & 0.514 & FULL \\
+DeepSeek D2 native, eager & 4 & 4.0483 & 1.637 & none \\
+\textbf{DeepSeek D2 native, captured} & 4 & \textbf{4.0112} &
+\textbf{5.820} & FULL \\
+\textbf{GLM route-slot D2 native, captured} & 8 & \textbf{4.0705} &
+\textbf{5.296} & PIECEWISE 3/3 + FULL 2/2 \\
+\end{longtable}
+
+Native-captured DeepSeek-D2 is \textbf{11.3x the dequant-captured
+baseline} (same harness) and \textbf{1.44x the frozen-eager 4.04 tok/s}
+at matched PPL; the speedup decomposes as native backend 3.2x (the
+grouped GEMM is far cheaper than the dequant loop) times capture 3.6x
+(launch-overhead removal, which only pays once each step is cheap). GLM
+route-slot D2 native-captured decodes at \textbf{5.296 tok/s = 2.5x the
+eager reference 2.10}, with DSA
+\texttt{sparse\_mla\_sm120\_decode\_dsv3\_2} native and pool 1.21
+GiB/GPU. These are same-model/same-policy speed/quality/memory Pareto
+results (native delegate vs our own dequant-loop and eager paths), not a
+production-wide decode-speed claim over other serving stacks. Two honest
+limits remain on the serving path: the native delegate depends on
+FlashInfer availability and its swizzled NVFP4 scale layout, and the GLM
+graph rows are validated on a short held-out passage (the dense-baseline
+3.171 uses a different 114-token policy-sweep passage, so only
+within-protocol capture-neutrality comparisons are valid). Full result:
+\texttt{docs/c1/verdict.md}; logs \texttt{docs/audit/logs/c1\_*.log}.
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -1384,17 +1460,27 @@ pair-granular 2:4 for the FP4 sparse path.
   scale. The per-expert-output tax (cos \textasciitilde0.70 on random
   activations) is reported un-repaired.
 \item
-  \textbf{The MoE plugin path is eager-only; its serving numbers are
-  eager-vs-eager, not production-vs-production} (Section 10). The
-  quadbit vLLM plugin's expert-parallel local-expert loop uses a
-  host-syncing \texttt{torch.unique(...).tolist()}
-  (\texttt{qb\_sm120\_plugin.py:1255}) that is illegal under CUDA-graph
-  stream capture (\texttt{cudaErrorStreamCaptureUnsupported}), so every
-  DeepSeek/GLM row runs with \texttt{enforce\_eager=True}. The Llama
-  sparse-MLP serving result (Section 9, Table C) \emph{is}
-  graph-vs-graph, but the MoE cross-architecture rows are not; removing
-  the plugin host-sync to make expert-parallel MoE graph-capturable is
-  future work (P4), not a DSA, attention, memory, or loader blocker.
+  \textbf{The MoE plugin path is graph-enabled and the dense-anchor
+  bottleneck is removed} (Section 10, P4 + C1). P4 replaced the old
+  host-syncing \texttt{torch.unique(...).tolist()} expert loop with a
+  fixed-capacity device-routing path (\texttt{route\_fixed\_cap} /
+  \texttt{\_route\_slot\_apply\_gs}), so the deployed sparse policies
+  CUDA-graph-capture on SM120 (DeepSeek-D2, GLM route-slot D2, native
+  SM120 DSA sparse-MLA, \texttt{drop=0}). C1 then removed the remaining
+  decode-speed limit by delegating the dense anchored/grouped projection
+  to FlashInfer's native grouped NVFP4 GEMM
+  (\texttt{group\_gemm\_nvfp4\_nt\_groupwise}, opt-in
+  \texttt{QB\_DENSE\_BACKEND=native\_nvfp4}) instead of the
+  dequant-to-bf16 loop (\textbf{no custom dense grouped-GEMM was
+  required}), so the captured DeepSeek-D2 path decodes faster than eager
+  (5.82 vs 4.04 tok/s at matched PPL). This is a
+  \textbf{same-model/same-policy speed/quality/memory Pareto result}
+  against our own dequant-loop and eager paths, \textbf{not a
+  production-wide decode-speed win} over other serving stacks. The
+  remaining honest caveats are backend-scoped: the native delegate
+  depends on FlashInfer availability and its swizzled NVFP4 scale
+  layout, and the GLM graph rows are validated on a short held-out
+  passage. Not a DSA, attention, memory, or loader blocker.
 \item
   \textbf{GLM-5.2 requires 8x RTX PRO 6000.} At 432.9 GiB it does not
   fit on 2 or 4 cards; the smaller footprint DeepSeek-V4-Flash enjoyed

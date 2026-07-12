@@ -321,6 +321,7 @@ def _graph_gate_body(
     max_len: int = 2048,
     gpu_mem: float = 0.9,
     glm: bool = False,
+    dense_anchor_backend: str = "dequant",
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -344,11 +345,14 @@ def _graph_gate_body(
     os.environ["QB_DENSE_LAYERS"] = dense_layers
     os.environ["QB_GRAPH"] = "1" if gp else "0"
     os.environ["QB_GRAPH_CAP"] = str(cap)
+    # C1: dense-anchor projection backend. "dequant" = the frozen range(E) dequant-to-bf16 loop
+    # (_dense_seg_gs); "native_nvfp4" = flashinfer group_gemm_nvfp4_nt_groupwise (fused NVFP4 grouped).
+    os.environ["QB_DENSE_BACKEND"] = dense_anchor_backend
     cfg = "C-captured" if (gp and not eager) else ("B-graphpath-eager" if gp else "A-frozen-eager")
     pol = f"proj={proj} route_slot={route_slot} dense_layers=[{dense_layers}]"
     print(f"# M4 graph_gate cfg={cfg} {pol} cap={cap} max_seqs={max_seqs} "
           f"QB_GRAPH={os.environ['QB_GRAPH']} enforce_eager={eager} tp={tp} "
-          f"model={'GLM' if glm else 'DeepSeek'}", flush=True)
+          f"model={'GLM' if glm else 'DeepSeek'} dense_backend={dense_anchor_backend}", flush=True)
 
     t0 = time.time()
     if glm:
@@ -395,7 +399,23 @@ def _graph_gate_body(
             if d and tid in d and math.isfinite(d[tid].logprob)]
     ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
     print(f"# PPL over {len(nlls)}-token passage: {ppl:.4f}", flush=True)
-    print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f})", flush=True)
+
+    # Decode tok/s (C1 speed metric): two-run TTFT-subtracted -- time a 64-token and a 1-token
+    # generation from the same prompt; decode_tps = 63 / (wall64 - wall1) removes the shared prefill.
+    tp = "The history of the Roman empire spans many centuries and"
+    tids = llm.get_tokenizer().encode(tp)
+    def _wall(n):
+        torch.cuda.synchronize()
+        t = time.time()
+        llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=n))
+        torch.cuda.synchronize()
+        return time.time() - t
+    _wall(4)  # warm
+    w1, w64 = _wall(1), _wall(64)
+    dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
+    print(f"# decode tok/s: {dtps:.3f} (wall1={w1:.3f}s wall64={w64:.3f}s)", flush=True)
+    print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f}, "
+          f"decode_tps={dtps:.3f})", flush=True)
 
 
 @app.function(
@@ -438,11 +458,13 @@ def graph_gate4(
     max_seqs: int = 8,
     max_len: int = 2048,
     gpu_mem: float = 0.9,
+    dense_anchor_backend: str = "dequant",
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
-    packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C."""
+    packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
+    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4."""
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
-                     cap, max_seqs, max_len, gpu_mem)
+                     cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend)
 
 
 @app.function(
@@ -462,12 +484,15 @@ def glm_graph_gate(
     max_seqs: int = 8,
     max_len: int = 2048,
     gpu_mem: float = 0.92,
+    dense_anchor_backend: str = "dequant",
 ) -> None:
     """8-GPU P4 M4 graph-capture gate on GLM-5.2 route-slot D2 (directive #4). GLM's EP MoE capture was
     previously blocked by the plugin's torch.unique().tolist() host-sync; the QB_GRAPH graph-safe path
-    (route_fixed_cap) removes it. Config A/B/C as in _graph_gate_body; defaults tp=8, route_slot=2 (D2)."""
+    (route_fixed_cap) removes it. Config A/B/C as in _graph_gate_body; defaults tp=8, route_slot=2 (D2).
+    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4."""
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
-                     cap, max_seqs, max_len, gpu_mem, glm=True)
+                     cap, max_seqs, max_len, gpu_mem, glm=True,
+                     dense_anchor_backend=dense_anchor_backend)
 
 
 @app.function(
@@ -1096,6 +1121,274 @@ def dumpsrc() -> None:
         text=True,
     )
     print(f"\n### vllm flashinfer pin refs:\n{r2.stdout[:1500]}", flush=True)
+
+
+@app.function(image=image)
+def c1_recon() -> None:
+    # C1: does a native fused NVFP4 grouped primitive already exist that can express the dense-anchor
+    # branch? Two shapes matter: (1) D2 route-slot dense group = a FULL MoE over the top-N slots ->
+    # needs ModelOptNvFp4FusedMoE.apply to consume EXTERNAL topk_ids/topk_weights (so we pass top-2);
+    # (2) down49/gateup49 single-projection anchor -> needs a STANDALONE grouped NVFP4 GEMM (fused MoE
+    # can't emit half a MoE). Dump the apply/process_weights source + the flashinfer fused_moe/gemm
+    # API surface so the design note is grounded, not guessed.
+    import inspect
+
+    import vllm
+
+    base = Path(vllm.__file__).parent
+
+    def defs(label, p, keys, ctx=55):
+        print(f"\n===== {label}  ({p}) =====", flush=True)
+        if not p.exists():
+            print(f"  MISSING {p}", flush=True)
+            return
+        text = p.read_text().splitlines()
+        for key in keys:
+            for h in [i for i, ln in enumerate(text) if key in ln][:3]:
+                lo, hi = max(0, h - 1), min(len(text), h + ctx)
+                print(f"  --- '{key}' @ {h + 1} ---", flush=True)
+                print("\n".join(f"{i + 1:4} {text[i]}" for i in range(lo, hi)), flush=True)
+
+    mo = base / "model_executor/layers/quantization/modelopt.py"
+    defs("modelopt ModelOptNvFp4FusedMoE", mo,
+         ["class ModelOptNvFp4FusedMoE",
+          "def process_weights_after_loading",
+          "def apply",
+          "def select_gemm_impl",
+          "flashinfer",
+          "cutlass_fused_moe",
+          "trtllm"], ctx=70)
+
+    # flashinfer API surface: which grouped/MoE/gemm primitives exist + signatures.
+    print("\n===== flashinfer API surface =====", flush=True)
+    try:
+        import flashinfer
+        print("flashinfer", getattr(flashinfer, "__version__", "?"), flush=True)
+        for modname in ["fused_moe", "gemm"]:
+            try:
+                mod = __import__(f"flashinfer.{modname}", fromlist=["x"])
+            except Exception as ex:  # noqa: BLE001
+                print(f"  flashinfer.{modname}: import FAIL {type(ex).__name__}: {ex}", flush=True)
+                continue
+            names = [n for n in dir(mod) if not n.startswith("_")]
+            print(f"\n  --- flashinfer.{modname} public names ---\n  {names}", flush=True)
+            for n in names:
+                obj = getattr(mod, n)
+                if callable(obj) and any(k in n.lower() for k in
+                                         ("moe", "group", "gemm", "fp4", "mxfp4", "nvfp4")):
+                    try:
+                        print(f"    {n}{inspect.signature(obj)}", flush=True)
+                    except (ValueError, TypeError):
+                        print(f"    {n}(...)", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  flashinfer import FAIL {type(ex).__name__}: {ex}", flush=True)
+
+    # vllm's own cutlass_moe / fp4 grouped custom ops (another possible standalone-GEMM source).
+    import subprocess
+    r = subprocess.run(["grep", "-rln", "-e", "cutlass_moe_fp4", "-e", "group_gemm",
+                        "-e", "grouped_gemm", str(base)], capture_output=True, text=True)
+    print(f"\n### vllm files mentioning fp4/grouped gemm:\n{r.stdout}", flush=True)
+
+
+@app.function(image=image)
+def c1_recon2() -> None:
+    # C1 layer-2: the exact tensor contract for group_gemm_nvfp4_nt_groupwise (drop-in for the slow
+    # _dense_seg_gs) + the FlashInfer NVFP4 activation-quant helper (to feed `a`/`a_scale`) + a real
+    # usage example from the FlashInfer test suite (scale swizzle is fiddly; copy a working call).
+    import inspect
+
+    import flashinfer
+    from flashinfer import gemm as figemm
+
+    print(f"flashinfer {flashinfer.__version__}\n", flush=True)
+    for fn in ["group_gemm_nvfp4_nt_groupwise", "mm_fp4"]:
+        obj = getattr(figemm, fn, None)
+        if obj is None:
+            print(f"### {fn}: MISSING", flush=True)
+            continue
+        print(f"\n===== flashinfer.gemm.{fn} SOURCE =====", flush=True)
+        try:
+            print(inspect.getsource(obj), flush=True)
+        except (OSError, TypeError) as ex:
+            print(f"  no source: {ex}; doc:\n{obj.__doc__}", flush=True)
+
+    # NVFP4 activation quant helpers exposed at flashinfer top level / in flashinfer.fp4_quantization.
+    print("\n===== flashinfer nvfp4 quant helpers =====", flush=True)
+    top = [n for n in dir(flashinfer) if any(k in n.lower()
+           for k in ("fp4", "nvfp4", "quantize", "scale_factor", "swizzle"))]
+    print(f"  top-level: {top}", flush=True)
+    for n in top:
+        obj = getattr(flashinfer, n)
+        if callable(obj):
+            try:
+                print(f"    {n}{inspect.signature(obj)}", flush=True)
+            except (ValueError, TypeError):
+                pass
+    for modname in ["fp4_quantization", "utils"]:
+        try:
+            mod = __import__(f"flashinfer.{modname}", fromlist=["x"])
+            names = [n for n in dir(mod) if any(k in n.lower()
+                     for k in ("fp4", "quantize", "scale", "swizzle", "block_scale"))]
+            print(f"  flashinfer.{modname}: {names}", flush=True)
+            for n in names:
+                obj = getattr(mod, n)
+                if callable(obj):
+                    try:
+                        print(f"    {n}{inspect.signature(obj)}", flush=True)
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as ex:  # noqa: BLE001
+            print(f"  flashinfer.{modname}: {type(ex).__name__}: {ex}", flush=True)
+
+    # a real working call: find the test that exercises group_gemm_nvfp4 (scale layout copied from it).
+    import subprocess
+    fi = Path(flashinfer.__file__).parent
+    for root in [fi, fi.parent]:
+        r = subprocess.run(["grep", "-rl", "group_gemm_nvfp4", str(root)],
+                           capture_output=True, text=True)
+        if r.stdout.strip():
+            print(f"\n### files using group_gemm_nvfp4 under {root}:\n{r.stdout}", flush=True)
+            break
+    # also dump the cutlass_fused_moe quant_scales contract (the D2 both-proj alternative).
+    from flashinfer import fused_moe as fimoe
+    print("\n===== cutlass_fused_moe doc (quant_scales contract) =====", flush=True)
+    print((fimoe.cutlass_fused_moe.__doc__ or "no doc")[:3000], flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=30 * MIN, volumes={"/cache": vol})
+def c1_dense_anchor() -> None:
+    # C1 standalone A/B (validation-ladder A): can flashinfer's native grouped NVFP4 GEMM
+    # (group_gemm_nvfp4_nt_groupwise) express the dense-anchor projection that _dense_seg_gs runs as a
+    # decode-slow range(E) dequant loop? Same NVFP4 weights + same fixed-cap seg layout, both paths:
+    #   A (old) = per-expert dequant-to-bf16 then bf16 matmul (mirror of plugin _dense_seg_gs)
+    #   B (native) = one group_gemm_nvfp4 call over the whole seg buffer (acts also NVFP4-quantized)
+    # Report cos/relL2/maxabs/nonfinite vs the true-bf16 grouped matmul AND vs each other, eager +
+    # graph-replay latency, and capture success. This is the GATE: if B cannot express the branch here
+    # (layout / scales / capture / quality), stop and write the failure table before touching serving.
+    import statistics
+
+    import torch
+    import torch.nn.functional as F
+    from flashinfer import SfLayout, nvfp4_quantize
+    from flashinfer.gemm import group_gemm_nvfp4_nt_groupwise
+
+    dev = torch.device("cuda")
+    torch.manual_seed(0)
+    print(f"# torch {torch.__version__} | {torch.cuda.get_device_name(0)} "
+          f"cap {torch.cuda.get_device_capability(0)} | flashinfer group_gemm_nvfp4", flush=True)
+    SFV = 448.0 * 6.0  # (e4m3 max block-scale) * (e2m1 max element)
+
+    def quantize_group_inputs(a_float, b_float, m_indptr):
+        # Verbatim port of flashinfer tests/gemm/test_group_gemm_fp4.py::_quantize_nvfp4_group_inputs:
+        # per-group nvfp4_quantize (128x4 layout, no shuffle) + a_scale placed at 128-aligned swizzle
+        # offsets. .clamp_min guards the empty-expert (all-zero) segment (max=0 -> inf global scale).
+        align = 128
+        a_fp4_c, a_sf_c, b_fp4_c, b_sf_c, alpha_c = [], [], [], [], []
+        for a_g, b_g in zip(a_float, b_float, strict=True):
+            a_gsf = SFV / a_g.float().abs().nan_to_num().max().clamp_min(1e-6)
+            b_gsf = SFV / b_g.float().abs().nan_to_num().max().clamp_min(1e-6)
+            a_q, a_s = nvfp4_quantize(a_g, a_gsf, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+            b_q, b_s = nvfp4_quantize(b_g, b_gsf, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+            a_fp4_c.append(a_q); a_sf_c.append(a_s); b_fp4_c.append(b_q); b_sf_c.append(b_s)
+            alpha_c.append(1.0 / (a_gsf * b_gsf))
+        ng = a_float.shape[0]
+        sf_k = a_sf_c[0].shape[1]
+        mi = m_indptr.cpu().tolist()
+        last = ng - 1
+        last_off = (mi[last] + last * (align - 1)) // align * align
+        total_sf = last_off + a_sf_c[last].shape[0]
+        a_sf_pad = torch.zeros((total_sf, sf_k), dtype=a_sf_c[0].dtype, device=a_float.device)
+        for i in range(ng):
+            off = (mi[i] + i * (align - 1)) // align * align
+            a_sf_pad[off:off + a_sf_c[i].shape[0]] = a_sf_c[i]
+        return (torch.cat(a_fp4_c, 0), torch.stack(b_fp4_c, 0), a_sf_pad, torch.stack(b_sf_c, 0),
+                torch.tensor(alpha_c, dtype=torch.float32, device=a_float.device))
+
+    def stats_ms(fn, it=30):
+        for _ in range(5):
+            fn()
+        torch.cuda.synchronize(); ts = []
+        for _ in range(it):
+            a, b = torch.cuda.Event(True), torch.cuda.Event(True)
+            a.record(); fn(); b.record(); torch.cuda.synchronize(); ts.append(a.elapsed_time(b))
+        return statistics.median(sorted(ts))
+
+    def cos(x, y):
+        return F.cosine_similarity(x.float().flatten(), y.float().flatten(), dim=0).item()
+
+    def relL2(x, y):
+        return (x.float() - y.float()).norm().item() / y.float().norm().clamp_min(1e-9).item()
+
+    # DeepSeek-V4-Flash MoE shapes: hidden H=4096, moe_intermediate I=2048.
+    # gate_up projection: in=H=4096, out=2I=4096. down projection: in=I=2048, out=H=4096.
+    H, I = 4096, 2048
+    cap = 128
+    for tag, (K, N) in [("gate_up", (H, 2 * I)), ("down", (I, H))]:
+        for E in [32, 64]:
+            M = E * cap
+            W = (torch.randn(E, N, K, device=dev, dtype=torch.bfloat16) * (K ** -0.5))
+            X = (torch.randn(M, K, device=dev, dtype=torch.bfloat16) * 0.1)
+            for le in range(0, E, 4):  # every 4th expert empty (zero rows) -> empty-seg case
+                X[le * cap:(le + 1) * cap] = 0
+
+            # --- quantize weights + activations to NVFP4 per the flashinfer test recipe ---
+            m_indptr = (torch.arange(E + 1, device=dev, dtype=torch.int32) * cap)
+            a_fp4, b_w, a_sf_arg, b_sf_arg, alpha = quantize_group_inputs(
+                X.view(E, cap, K), W, m_indptr)
+
+            if E == 32 and tag == "gate_up":
+                print(f"# shapes: b_w {tuple(b_w.shape)} b_sf_arg {tuple(b_sf_arg.shape)} "
+                      f"a_fp4 {tuple(a_fp4.shape)} a_sf_arg {tuple(a_sf_arg.shape)} "
+                      f"alpha {tuple(alpha.shape)} m_indptr {tuple(m_indptr.shape)}", flush=True)
+
+            # --- reference: true-bf16 grouped matmul (ceiling) + old-path dequant-loop analogue ---
+            def ref_bf16():
+                out = torch.empty(M, N, dtype=torch.bfloat16, device=dev)
+                for le in range(E):
+                    out[le * cap:(le + 1) * cap] = (
+                        X[le * cap:(le + 1) * cap].float() @ W[le].float().t()).to(torch.bfloat16)
+                return out
+            y_ref = ref_bf16()
+            eager_a = stats_ms(ref_bf16)
+
+            # --- native path B: group_gemm_nvfp4 ---
+            res = {"tag": tag, "E": E}
+            try:
+                def native():
+                    return group_gemm_nvfp4_nt_groupwise(
+                        a_fp4, b_w, a_sf_arg, b_sf_arg, m_indptr, alpha=alpha,
+                        out_dtype=torch.bfloat16)
+                y_nat = native()
+                res["cos_nat_ref"] = cos(y_nat, y_ref)
+                res["relL2"] = relL2(y_nat, y_ref)
+                res["maxabs"] = (y_nat.float() - y_ref.float()).abs().amax().item()
+                res["nf"] = int((~torch.isfinite(y_nat)).sum().item())
+                res["eager_b"] = stats_ms(native)
+                # capture
+                try:
+                    g = torch.cuda.CUDAGraph()
+                    st = torch.cuda.Stream(); st.wait_stream(torch.cuda.current_stream())
+                    with torch.cuda.stream(st):
+                        for _ in range(3):
+                            native()
+                    torch.cuda.current_stream().wait_stream(st)
+                    with torch.cuda.graph(g):
+                        y_cap = native()
+                    for _ in range(3):
+                        g.replay()
+                    torch.cuda.synchronize()
+                    res["cos_cap"] = cos(y_cap, y_ref)
+                    res["graph_b"] = stats_ms(lambda: g.replay())
+                    res["capture"] = "OK"
+                except Exception as ex:  # noqa: BLE001
+                    res["capture"] = f"FAIL {type(ex).__name__}: {str(ex)[:120]}"
+            except Exception as ex:  # noqa: BLE001
+                res["native"] = f"FAIL {type(ex).__name__}: {str(ex)[:200]}"
+            res["eager_a"] = eager_a
+            print(f"# ROW {res}", flush=True)
+            del W, X, b_w, a_fp4
+            torch.cuda.empty_cache()
+    print("# c1_dense_anchor done", flush=True)
 
 
 @app.function(image=image)

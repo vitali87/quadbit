@@ -121,8 +121,7 @@ Results in `docs/glm_results.md` (downstream table); logs `docs/audit/logs/glm_d
 ## Graph-capture / host-sync limit (RESOLVED by P4, merge `919ca7d`, tag `p4-graph-enabled-moe`)
 
 Graph capture is no longer future work for the deployed sparse MoE policy path: DeepSeek-D2 and GLM
-route-slot D2 graph-capture on SM120 with quality matching eager. The remaining speed limitation is the
-dense anchored/grouped projection path, which lacks a fused dense NVFP4 grouped-GEMM.
+route-slot D2 graph-capture on SM120 with quality matching eager.
 
 The original blocker was the plugin's local-expert loop calling `torch.unique(local).tolist()`, a
 device->host sync illegal under stream capture (`cudaErrorStreamCaptureUnsupported`; historical traceback
@@ -130,5 +129,28 @@ device->host sync illegal under stream capture (`cudaErrorStreamCaptureUnsupport
 (`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`); DeepSeek-D2 captures FULL decode 2/2 and
 GLM route-slot D2 captures PIECEWISE 3/3 + FULL 2/2 (pool 1.01 GiB/GPU, DSA native), both quality-neutral
 vs the frozen eager path, drop=0. See [docs/p4/m4_d2_verdict.md](../p4/m4_d2_verdict.md),
-[docs/p4/m4_glm_d2_verdict.md](../p4/m4_glm_d2_verdict.md). This is
-a graph-correctness and graph-enablement result, **not** a production-wide decode-speed win.
+[docs/p4/m4_glm_d2_verdict.md](../p4/m4_glm_d2_verdict.md).
+
+## Dense-anchor decode bottleneck (REMOVED by C1, branch `c1-native-dense-anchor`, commits `bda69ae` -> `1333dc4`)
+
+The prior dense anchored/grouped projection ran a dequant-to-bf16 loop over all local experts
+(`_dense_seg_gs`), which decode-dominated the captured path. C1 delegates it to FlashInfer's native
+grouped NVFP4 GEMM `group_gemm_nvfp4_nt_groupwise` (opt-in `QB_DENSE_BACKEND=native_nvfp4`, default
+`dequant` untouched), with **no custom dense grouped-GEMM required**. Env **M** (CUDA 13.0, torch
+2.11.0+cu130, vLLM 0.24.0, FlashInfer python 0.6.14 + cubin 0.6.13), RTX PRO 6000 (SM120, `sm_120a`).
+Full result [docs/c1/verdict.md](../c1/verdict.md); standalone A/B [docs/c1/standalone_ab.md](../c1/standalone_ab.md);
+serving A/B/C [docs/c1/d2_serving.md](../c1/d2_serving.md); logs `docs/audit/logs/c1_*.log`.
+
+| row | command (prefix `uv run modal run --detach harness/serve_dsv4.py`) | GPU | env vars | result |
+|---|---|---|---|---|
+| standalone A/B | `::c1_dense_anchor` | 1 | n/a | native vs dequant: cos 0.991, nf=0, captures, ~18-25x |
+| D2 dequant captured (baseline) | `::graph_gate4 --cap 128 --max-seqs 2 --dense-layers 0,1,..,21` | 4 | `QB_GRAPH=1`, `QB_DENSE_BACKEND=dequant` | PPL 3.9746, 0.514 tok/s, FULL |
+| D2 native eager | `::graph_gate4 ... --force-graph-path --eager --dense-anchor-backend native_nvfp4` | 4 | `QB_GRAPH=1`, `QB_DENSE_BACKEND=native_nvfp4` | PPL 4.0483, 1.637 tok/s |
+| **D2 native captured** | `::graph_gate4 ... --dense-anchor-backend native_nvfp4` | 4 | `QB_GRAPH=1`, `QB_DENSE_BACKEND=native_nvfp4` | **PPL 4.0112, 5.820 tok/s, FULL** |
+| **GLM route-slot D2 native captured** | `::glm_graph_gate --cap 128 --max-seqs 2 --dense-layers 0,1,..,37 --dense-anchor-backend native_nvfp4` | 8 | `QB_GRAPH=1`, `QB_DENSE_BACKEND=native_nvfp4` | **PPL 4.0705, 5.296 tok/s, PIECEWISE 3/3 + FULL 2/2** |
+
+Native-captured DeepSeek-D2 is 11.3x the dequant-captured baseline (same harness) and 1.44x frozen-eager;
+the win decomposes as native backend 3.2x times capture 3.6x. GLM-D2 native-captured is 2.5x the eager
+reference 2.10 tok/s (pool 1.21 GiB/GPU, DSA `sparse_mla_sm120_decode_dsv3_2` native). These are
+same-model/same-policy Pareto results against our own dequant-loop and eager paths, **not** a
+production-wide decode-speed win over other serving stacks.
