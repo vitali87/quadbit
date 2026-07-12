@@ -169,20 +169,21 @@ def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
     return y
 
 
-def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y):
+def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y, valid=None):
     # Graph-safe sparse-FP4 MoE seg apply (proj=both). Fixed-capacity DEVICE routing + current-stream
     # launches into buffers whose shapes are compile-time constant (E*cap), so the whole body is
     # CUDA-graph-capturable: no .item(), no host loop, no data-dependent shape. Mirrors the frozen
     # `both` branch's math (route -> quant/seg gate_up -> swiglu -> quant/seg down -> weighted scatter),
     # but replaces build_routing (host sync) with sp.route_fixed_cap and quant_act/seg_gemm (alloc /
     # stream-0 sync) with sp.quant_into/seg_into. assign:[R] local expert per routed slot (R fixed =
-    # T*topk on a single rank). Overflow (>cap rows for one expert) dropped deterministically. Returns
-    # the dropped-row count; writes the routed contribution into y.
+    # T*topk). valid:[R] optional bool mask marking on-rank slots (EP): off-rank slots are sink-routed
+    # so R stays static. Overflow (>cap rows for one expert) dropped deterministically. Returns the
+    # dropped-row count; writes the routed contribution into y.
     import torch
     import torch.nn.functional as F
 
     dev = x.device
-    src, eblk, dropped = sp.route_fixed_cap(assign, e, cap)
+    src, eblk, dropped = sp.route_fixed_cap(assign, e, cap, valid)
     rp = e * cap
     valid = src >= 0
     srcc = src.clamp_min(0)
@@ -826,22 +827,34 @@ def _load_sparse_moe():
                                meta.data_ptr(), c.data_ptr(), ac.shape[0], mpe, r, in_f,
                                ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, _st())
 
-    def route_fixed_cap(assign, e, cap):
+    def route_fixed_cap(assign, e, cap, valid=None):
         # fixed-capacity DEVICE routing (replaces build_routing's host sync + dynamic alloc). assign:[R]
         # local expert per routed row. Returns src:[e*cap] (row index per padded slot, -1=pad), eblk:
         # [e*cap/_BN] (CONSTANT block->expert map), dropped count. No .item()/host loop/dynamic shape;
         # overflow (>cap rows for one expert) dropped deterministically (lowest sorted rows kept).
+        # valid:[R] optional bool mask. On an EP shard, off-rank slots (valid=False) must be dropped
+        # WITHOUT compacting the row set (compaction = data-dependent shape = capture-illegal). They are
+        # sent to a sink bucket `e` that consumes no real-expert capacity and is never gemm'd, keeping R
+        # fixed. valid=None => all valid (identical to the single-rank path).
         r = assign.shape[0]
-        order = torch.argsort(assign, stable=True)
-        sa = assign[order]
+        if valid is None:
+            a = assign
+            nb = e
+        else:
+            # off-rank -> sink bucket `e`; where(valid) uses assign (which may hold junk under invalid,
+            # so clamp into range first) else the sink id. counts/offs run over e+1 buckets.
+            a = torch.where(valid, assign.clamp(0, e - 1), torch.full_like(assign, e))
+            nb = e + 1
+        order = torch.argsort(a, stable=True)
+        sa = a[order]
         # counts via scatter_add, NOT torch.bincount: bincount reads the max element to the host to
-        # size its output, which is a CPU<->CUDA copy illegal inside a captured region. E is constant
-        # and assign is in [0,e), so a fixed-size scatter_add is graph-safe.
-        counts = torch.zeros(e, dtype=torch.long, device=dev).scatter_add_(
-            0, assign, torch.ones_like(assign))
+        # size its output, which is a CPU<->CUDA copy illegal inside a captured region. nb is constant
+        # and `a` is in [0,nb), so a fixed-size scatter_add is graph-safe.
+        counts = torch.zeros(nb, dtype=torch.long, device=dev).scatter_add_(
+            0, a, torch.ones_like(a))
         offs = torch.cumsum(counts, 0) - counts
         within = torch.arange(r, device=dev) - offs[sa]
-        keep = within < cap
+        keep = (within < cap) & (sa < e)   # sink rows (sa==e) never kept; real overflow dropped
         # boolean-index scatter (`src[dest[keep]] = order[keep]`) calls .nonzero() -> data-dependent
         # size -> invalidates capture. Instead send overflow rows to a single trash slot via
         # torch.where and scatter unconditionally; the trash slot is sliced off. Real slots each get a
@@ -852,9 +865,11 @@ def _load_sparse_moe():
         src.scatter_(0, dest, order)
         src = src[:e * cap]
         eblk = (torch.arange(e * cap // _BN, device=dev) // (cap // _BN)).to(torch.int32)
-        # dropped stays on-device (a DEVICE scalar): reading it with .item() would host-sync, so
-        # callers that need the Python int must do so OUTSIDE any captured region.
-        dropped = r - keep.sum()
+        # dropped = REAL (on-rank) rows that overflowed, not sink rows. Stays on-device (a DEVICE
+        # scalar): reading it with .item() would host-sync, so callers needing the int do so OUTSIDE
+        # any captured region.
+        real = r if valid is None else valid.sum()
+        dropped = real - keep.sum()
         return src, eblk, dropped
 
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
