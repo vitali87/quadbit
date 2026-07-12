@@ -309,13 +309,7 @@ def unblock(
     )
 
 
-@app.function(
-    gpu="RTX-PRO-6000:2",
-    timeout=75 * MIN,
-    volumes={"/cache": vol},
-    secrets=[modal.Secret.from_name("huggingface")],
-)
-def graph_gate(
+def _graph_gate_body(
     tp: int = 2,
     eager: bool = False,
     force_graph_path: bool = False,
@@ -392,6 +386,53 @@ def graph_gate(
     ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
     print(f"# PPL over {len(nlls)}-token passage: {ppl:.4f}", flush=True)
     print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f})", flush=True)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=75 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate(
+    tp: int = 2,
+    eager: bool = False,
+    force_graph_path: bool = False,
+    proj: str = "both",
+    route_slot: int = 0,
+    dense_layers: str = "",
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+) -> None:
+    """2-GPU P4 M4 graph-capture gate (down49 / gateup49). See _graph_gate_body for config A/B/C."""
+    _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
+                     cap, max_seqs, max_len, gpu_mem)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate4(
+    tp: int = 4,
+    eager: bool = False,
+    force_graph_path: bool = False,
+    proj: str = "both",
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+) -> None:
+    """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
+    packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C."""
+    _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
+                     cap, max_seqs, max_len, gpu_mem)
 
 
 @app.function(
