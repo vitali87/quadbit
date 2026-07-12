@@ -967,7 +967,7 @@ def _load_sparse_moe():
         # size its output, which is a CPU<->CUDA copy illegal inside a captured region. nb is constant
         # and `a` is in [0,nb), so a fixed-size scatter_add is graph-safe.
         counts = torch.zeros(nb, dtype=torch.long, device=assign.device).scatter_add_(
-            0, a, torch.ones(1, dtype=torch.long, device=assign.device).expand_as(a))
+            0, a, torch.ones_like(a))
         offs = torch.cumsum(counts, 0) - counts
         within = torch.arange(r, device=assign.device) - offs[sa]
         keep = (within < cap) & (sa < e)   # sink rows (sa==e) never kept; real overflow dropped
