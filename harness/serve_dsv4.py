@@ -399,7 +399,23 @@ def _graph_gate_body(
             if d and tid in d and math.isfinite(d[tid].logprob)]
     ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
     print(f"# PPL over {len(nlls)}-token passage: {ppl:.4f}", flush=True)
-    print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f})", flush=True)
+
+    # Decode tok/s (C1 speed metric): two-run TTFT-subtracted -- time a 64-token and a 1-token
+    # generation from the same prompt; decode_tps = 63 / (wall64 - wall1) removes the shared prefill.
+    tp = "The history of the Roman empire spans many centuries and"
+    tids = llm.get_tokenizer().encode(tp)
+    def _wall(n):
+        torch.cuda.synchronize()
+        t = time.time()
+        llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=n))
+        torch.cuda.synchronize()
+        return time.time() - t
+    _wall(4)  # warm
+    w1, w64 = _wall(1), _wall(64)
+    dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
+    print(f"# decode tok/s: {dtps:.3f} (wall1={w1:.3f}s wall64={w64:.3f}s)", flush=True)
+    print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f}, "
+          f"decode_tps={dtps:.3f})", flush=True)
 
 
 @app.function(

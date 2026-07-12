@@ -191,6 +191,66 @@ def _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap):
     return out
 
 
+def _prep_native_weight(w_u8, w_scale, w_scale_2, e):
+    # C1 load-time prep: dequant each checkpoint NVFP4 expert -> bf16 -> re-quantize into the flashinfer
+    # 128x4 NVFP4 layout that group_gemm_nvfp4_nt_groupwise consumes. Returns (b_w [e,N,K//2] uint8,
+    # b_sf [e,...] uint8, wgsf [e] fp32 per-expert global scale). Runs once at load; the fp4->bf16->fp4
+    # round-trip is near-lossless (values already on the fp4 grid, same 16-elem block granularity).
+    import torch
+    from flashinfer import SfLayout, nvfp4_quantize
+
+    sfv = 448.0 * 6.0
+    bws, bss, gsfs = [], [], []
+    for le in range(e):
+        s2 = w_scale_2[le, 0] if w_scale_2.ndim > 1 else w_scale_2[le]
+        w_bf = _dequant_nvfp4_expert(w_u8[le], w_scale[le], s2)          # [N, K] bf16
+        gsf = sfv / w_bf.float().abs().nan_to_num().max().clamp_min(1e-6)
+        bq, bs = nvfp4_quantize(w_bf, gsf, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+        bws.append(bq); bss.append(bs); gsfs.append(gsf)
+    return torch.stack(bws), torch.stack(bss), torch.stack(gsfs).float()
+
+
+def _dense_seg_native(xs, b_w, b_sf, wgsf, out_dim, e, cap):
+    # C1 native dense-anchor: flashinfer group_gemm_nvfp4_nt_groupwise as a drop-in for _dense_seg_gs
+    # (~20x faster, graph-captures on SM120; standalone gate docs/c1/standalone_ab.md). b_w/b_sf/wgsf are
+    # the per-expert NVFP4 weights pre-built into the flashinfer 128x4 layout at load. Per-group activation
+    # quant + 128-aligned padded a_scale mirror the validated recipe. cap is a compile-time constant, so
+    # the scale offsets are static ints (no .cpu() host sync) and the range(e) loop unrolls -> the whole
+    # body is CUDA-graph-capturable, same as _dense_seg_gs.
+    import torch
+    from flashinfer import SfLayout, nvfp4_quantize
+    from flashinfer.gemm import group_gemm_nvfp4_nt_groupwise
+
+    sfv = 448.0 * 6.0
+    xg = xs.view(e, cap, xs.shape[1])
+    a_fp4_c, a_sf_c, alpha_c = [], [], []
+    for le in range(e):
+        a_g = xg[le]
+        a_gsf = sfv / a_g.float().abs().nan_to_num().max().clamp_min(1e-6)
+        a_q, a_s = nvfp4_quantize(a_g, a_gsf, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+        a_fp4_c.append(a_q); a_sf_c.append(a_s)
+        alpha_c.append(1.0 / (a_gsf * wgsf[le]))
+    sf_k, sf_rows = a_sf_c[0].shape[1], a_sf_c[0].shape[0]   # swizzled rows/cols per cap-group (static)
+    offs = [(le * cap + le * (_BN - 1)) // _BN * _BN for le in range(e)]
+    a_sf_pad = torch.zeros((offs[-1] + sf_rows, sf_k), dtype=a_sf_c[0].dtype, device=xs.device)
+    for le in range(e):
+        a_sf_pad[offs[le]:offs[le] + sf_rows] = a_sf_c[le]
+    a_fp4 = torch.cat(a_fp4_c, 0)
+    alpha = torch.stack(alpha_c).float()
+    m_indptr = torch.arange(e + 1, device=xs.device, dtype=torch.int32) * cap
+    return group_gemm_nvfp4_nt_groupwise(a_fp4, b_w, a_sf_pad, b_sf, m_indptr, alpha=alpha,
+                                         out_dtype=torch.bfloat16)
+
+
+def _anchor_gemm(layer, which, xs, w, ws, ws2, out_dim, e, cap):
+    # C1 dispatch for an anchored dense projection: the native group_gemm_nvfp4 backend when its weights
+    # were prepped at load (_qb_ng_gu / _qb_ng_dn present), else the frozen _dense_seg_gs dequant loop.
+    ng = getattr(layer, which, None) if layer is not None else None
+    if ng is not None:
+        return _dense_seg_native(xs, ng[0], ng[1], ng[2], out_dim, e, cap)
+    return _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap)
+
+
 def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y, valid=None,
                   proj="both", layer=None):
     # Graph-safe sparse-FP4 MoE seg apply for proj in {both, down, gateup}. Fixed-capacity DEVICE
@@ -224,8 +284,8 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
         sp.quant_into(xs, bb, sb, gb)
         sp.seg_into(gu_W, bb, sb, gb, gu, 2 * ii, h, eblk)
     else:  # down-only (down49): gate_up anchored dense
-        gu = _dense_seg_gs(xs, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
-                           2 * ii, e, cap)
+        gu = _anchor_gemm(layer, "_qb_ng_gu", xs, layer.w13_weight, layer.w13_weight_scale,
+                          layer.w13_weight_scale_2, 2 * ii, e, cap)
     gu = _sanitize(gu, li, "gate_up")
     hh = _sanitize((F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
     if proj in ("both", "down"):
@@ -236,8 +296,8 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
         sp.quant_into(hh, bb2, sb2, gb2)
         sp.seg_into(dn_W, bb2, sb2, gb2, dseg, h, ii, eblk)
     else:  # gateup-only (gateup49): down anchored dense
-        dseg = _dense_seg_gs(hh, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2,
-                             h, e, cap)
+        dseg = _anchor_gemm(layer, "_qb_ng_dn", hh, layer.w2_weight, layer.w2_weight_scale,
+                            layer.w2_weight_scale_2, h, e, cap)
     dseg = _sanitize(dseg, li, "down")
     rw = valid.float() if on_input else (w_of[srcc] * valid.float())
     y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(y.dtype))
@@ -264,10 +324,11 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
     if on_input:
         xd = xd * w_of[scd][:, None].to(torch.bfloat16)
     xd = _sanitize(xd.contiguous(), li, "x_in")
-    gud = _dense_seg_gs(xd, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
-                        2 * ii, e, cap)
+    gud = _anchor_gemm(layer, "_qb_ng_gu", xd, layer.w13_weight, layer.w13_weight_scale,
+                       layer.w13_weight_scale_2, 2 * ii, e, cap)
     hhd = _sanitize((F.silu(gud[:, :ii].float()) * gud[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
-    dd = _dense_seg_gs(hhd, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2, h, e, cap)
+    dd = _anchor_gemm(layer, "_qb_ng_dn", hhd, layer.w2_weight, layer.w2_weight_scale,
+                      layer.w2_weight_scale_2, h, e, cap)
     rwd = validd.float() if on_input else (w_of[scd] * validd.float())
     y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
     # SPARSE group: low-weight tail through the 2:4 seg path (both projections).
@@ -426,6 +487,12 @@ _GRAPH_CAP = int(os.environ.get("QB_GRAPH_CAP", "0"))  # 0 -> sized per-forward 
 # cap<_BN makes cap//_BN==0 (div-by-zero / zero blocks, all work silently dropped). Fail fast at import.
 if _GRAPH_CAP and _GRAPH_CAP % _BN:
     raise ValueError(f"QB_GRAPH_CAP={_GRAPH_CAP} must be a positive multiple of _BN={_BN}")
+# C1: dense-anchor projection backend. "dequant" (default) = the frozen range(E) dequant-to-bf16 loop
+# (_dense_seg_gs). "native_nvfp4" = flashinfer group_gemm_nvfp4_nt_groupwise (fused NVFP4 grouped GEMM,
+# ~20x faster, graph-captures on SM120; standalone gate docs/c1/standalone_ab.md). Only meaningful with
+# QB_GRAPH=1 (the graph-safe path); the load-time prep re-quantizes each anchored expert into the
+# flashinfer 128x4 layout so the grouped GEMM reads it directly.
+_DENSE_BACKEND = os.environ.get("QB_DENSE_BACKEND", "dequant").lower()
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
@@ -1390,6 +1457,29 @@ def _install_moe() -> None:
             print(f"[qb_sm120] WS-C proj={_SPARSE_PROJ} layer {layer_idx}: "
                   f"{'gate_up' if pack_gu else 'down'} sparse, other kept dense", flush=True)
         del gu_packs, dn_packs
+        # C1 native dense-anchor: prep the anchored (dense) projection(s) into the flashinfer NVFP4
+        # layout for group_gemm_nvfp4 and free their raw checkpoint NVFP4 (native layout replaces it,
+        # memory-neutral). gate_up is anchored for down49 (not pack_gu) and the route-slot dense group;
+        # down is anchored for gateup49 (not pack_dn) and the route-slot dense group.
+        if _DENSE_BACKEND == "native_nvfp4" and _GRAPH:
+            native_gu = (not pack_gu) or _ROUTE_SLOT > 0
+            native_dn = (not pack_dn) or _ROUTE_SLOT > 0
+            freed = []
+            if native_gu and getattr(layer, "w13_weight", None) is not None and layer.w13_weight.numel():
+                layer._qb_ng_gu = _prep_native_weight(w13, w13s, w13s2, e)
+                freed += ["w13_weight", "w13_weight_scale", "w13_weight_scale_2"]
+            if native_dn and getattr(layer, "w2_weight", None) is not None and layer.w2_weight.numel():
+                layer._qb_ng_dn = _prep_native_weight(w2, w2s, w2s2, e)
+                freed += ["w2_weight", "w2_weight_scale", "w2_weight_scale_2"]
+            for attr in freed:
+                p = getattr(layer, attr, None)
+                if p is not None:
+                    p.data = torch.empty(0, dtype=p.dtype, device=p.device)
+            if freed:
+                torch.cuda.empty_cache()
+            if first:
+                print(f"[qb_sm120] C1 native_nvfp4 anchor prep layer {layer_idx}: "
+                      f"gu={'y' if native_gu else 'n'} dn={'y' if native_dn else 'n'}", flush=True)
         if _TAX and (layer_idx % _TAX_LAYERS == 0):
             _run_tax_probe(layer, sp, i, e, layer_idx)
             _flush_metrics()
