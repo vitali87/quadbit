@@ -1,0 +1,541 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-UTIWTfJ6oFrWFCUvzqgUWb
+Building image im-eXgk7UFoWq58WqM8HBJHkn
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.8.1-py3-none-any.whl size=32390 sha256=1df59c6f76bf053c53c02c4ddf9ca8f069a88e353d879073d56a1331111d9b48
+  Stored in directory: /tmp/pip-ephem-wheel-cache-2obachyb/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.8.1
+Saving image...
+Image saved, took 2.03s
+
+Built image im-eXgk7UFoWq58WqM8HBJHkn in 6.68s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+flashinfer 0.6.14
+
+
+===== flashinfer.gemm.group_gemm_nvfp4_nt_groupwise SOURCE =====
+@backend_requirement(
+    {},
+    common_check=_check_group_gemm_nvfp4_nt_groupwise_problem_size,
+)
+@flashinfer_api
+def group_gemm_nvfp4_nt_groupwise(
+    a: torch.Tensor,  # (cum_m, k)
+    b: torch.Tensor,  # (batch_size, n, k // 2)
+    a_scale: torch.Tensor,  # (cum_m_padded, k // 16)
+    b_scale: torch.Tensor,  # (batch_size, n_padded, k // 16)
+    m_indptr: torch.Tensor,  # (batch_size + 1, )
+    alpha: Optional[torch.Tensor] = None,  # (batch_size, )
+    tile_m: int = 128,
+    tile_n: int = 128,
+    tile_k: int = 128,
+    swap_ab: bool = True,
+    out: Optional[torch.Tensor] = None,  # (cum_m, n)
+    out_dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    r"""Perform group GEMM with NVFP4 data types using groupwise scaling. Currently only implemented on NVIDIA
+    Blackwell Geforce, and DGX Spark architectures.
+
+    Parameters
+    ----------
+    a: torch.Tensor
+        Row-major input tensor, shape ``(cum_m, k // 2)``, data type is ``torch.uint8`` (packed NVFP4).
+        ``cum_m`` is the cumulative sum of the segment lengths.
+
+    b: torch.Tensor
+        Column-major input tensor, shape ``(batch_size, n, k // 2)``, data type is ``torch.uint8``.
+
+    a_scale: torch.Tensor
+        Column-major scale tensor for a, shape ``(cum_m_padded, k // 16)``, data type is ``torch.uint8``.
+
+    b_scale: torch.Tensor
+        Row-major scale tensor for b, shape ``(batch_size, n_padded, k // 16)``, data type is ``torch.uint8``.
+
+    m_indptr: torch.Tensor
+        The indptr of the segment lengths, shape ``(batch_size + 1,)``, data type is ``torch.int32``.
+        Element element in ``m_indptr`` must be a multiple of 4.
+
+    alpha: Optional[torch.Tensor] = None, # (batch_size, )
+        The alpha tensor, shape ``(batch_size, )``, data type is ``torch.float32``.
+
+    tile_m: int
+        The tile size for the M dimension, must be 128.
+
+    tile_n: int
+        The tile size for the N dimension, must be 32, 64, or 128.
+
+    tile_k: int
+        The tile size for the K dimension, must be 128 or 256.
+
+    swap_ab : bool
+        Whether to compute ``Output^T = Weight^T Activation^T`` instead of
+        ``Output = Activation Weight``.  Defaults to ``True``.
+
+    out: Optional[torch.Tensor]
+        The output tensor, shape ``(cum_m, n)``. If not specified, we will create an output tensor explicitly.
+
+    out_dtype: Optional[torch.dtype]
+        The data type of the output tensor, must be ``torch.bfloat16`` or ``torch.float16``.
+
+    Returns
+    -------
+    out: torch.Tensor
+        The output tensor, shape ``(cum_m, n)``.
+
+    Notes
+    -----
+    Each value in ``m_indptr`` should be padded to a multiple of 4 before calling this function,
+    to accommodate the kernel's requirement.
+    """
+    int_workspace_buffer = _get_cache_buf(
+        "group_gemm_nvfp4_nt_groupwise_int_workspace", DEFAULT_WORKSPACE_SIZE, a.device
+    )
+    float_workspace_buffer = _get_cache_buf(
+        "group_gemm_nvfp4_nt_groupwise_float_workspace",
+        DEFAULT_WORKSPACE_SIZE,
+        a.device,
+    )
+    # Determine out_dtype if not specified
+    if out is None:
+        if out_dtype is None:
+            out_dtype = torch.bfloat16
+    else:
+        if out_dtype is None:
+            out_dtype = out.dtype
+
+    n = b.shape[1]
+    k = b.shape[2] * 2  # Multiply by 2 because b is e2m1 packed as uint8
+
+    out_shape = (a.shape[0], n)
+    if out is None:
+        out = torch.empty(out_shape, dtype=out_dtype, device=a.device)
+
+    if alpha is None:
+        # empty torch tensor
+        alpha = torch.tensor([], dtype=torch.float32, device=a.device)
+
+    get_gemm_sm120_module().group_gemm_nvfp4_nt_groupwise(
+        int_workspace_buffer,
+        float_workspace_buffer,
+        a,
+        b,
+        a_scale,
+        b_scale,
+        out,
+        alpha,
+        m_indptr,
+        n,
+        k,
+        tile_m,
+        tile_n,
+        tile_k,
+        swap_ab,
+    )
+
+    return out
+
+
+===== flashinfer.gemm.mm_fp4 SOURCE =====
+@backend_requirement(
+    {
+        "cudnn": _cudnn_gemm_fp4_requirement,
+        "trtllm": _trtllm_gemm_fp4_requirement,
+        "cutlass": _cutlass_gemm_fp4_requirement,
+        "cute-dsl": _cute_dsl_gemm_fp4_requirement,
+        "b12x": _b12x_gemm_fp4_requirement,
+    },
+    common_check=_check_mm_fp4_problem_size,
+    heuristic_func=_heuristic_func_mm_fp4,  # result stored in mm_fp4.suitable_auto_backends
+)
+@flashinfer_api(trace=mm_fp4_trace)
+def mm_fp4(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    a_descale: torch.Tensor,
+    b_descale: torch.Tensor,
+    alpha: Optional[torch.Tensor] = None,
+    out_dtype: torch.dtype = torch.bfloat16,
+    out: Optional[torch.Tensor] = None,
+    block_size: int = 16,
+    use_8x4_sf_layout: bool = False,
+    backend: Literal["cudnn", "trtllm", "cutlass", "cute-dsl", "b12x", "auto"] = "auto",
+    use_nvfp4: bool = True,
+    enable_pdl: bool = True,
+) -> torch.Tensor:
+    r"""MM FP4
+
+    Parameters
+    ----------
+    a: torch.Tensor
+        Input tensor, shape (m, k), fp4 e2m1fn_x2 or uint8.
+
+    b: torch.Tensor
+        Mat2 tensor, shape (k, n), should be column major, fp4 e2m1fn_x2 or uint8.
+
+    a_descale: torch.Tensor
+        Block scale tensor for A, shape (m, k // block_size), float8_e4m3fn or uint8.
+
+    b_descale: torch.Tensor
+        Block scale tensor for B, shape (k, n // block_size), float8_e4m3fn or uint8.
+
+    alpha: Optional[torch.Tensor]
+        Global scale tensor, float scalar.
+
+    out_dtype: torch.dtype
+        Output dtype, bf16 or fp16. When ``backend="trtllm"``, only ``bf16`` is supported.
+
+    out: Optional[torch.Tensor]
+        Out tensor, shape (m, n), bf16 or fp16, defaults to ``None``.
+
+    block_size: int
+        Block size for FP4 quantization, only 16 and 32 are supported. 16 in case of nvfp4 quantization. 32 in case of mxfp4 quantization.
+
+    use_8x4_sf_layout: bool
+        Whether to use 8x4 scale factor layout or 128x4 scale factor layout, defaults to False.
+
+    backend: Literal["cudnn", "trtllm", "cutlass", "cute-dsl", "b12x", "auto"]
+        Backend to use, defaults to ``"auto"``. On SM120, ``"auto"`` prefers
+        ``"b12x"`` (NVFP4 only), then ``"cutlass"``, then ``"cudnn"``. On other
+        architectures, ``"auto"`` selects between ``"cudnn"`` and ``"cutlass"``
+        based on the current CUDA and cuDNN versions. The ``"trtllm"`` and
+        ``"cute-dsl"`` backends are never auto-selected because they require
+        different weight preparation.
+
+    use_nvfp4: bool
+        Whether to use nvfp4 quantization or mxfp4 quantization, defaults to ``True``.
+        See the ``block_size`` parameter for related constraints.
+
+    enable_pdl: bool
+        Whether to enable Programmatic Dependent Launch (PDL) for the ``cute_dsl``
+        backend, defaults to ``True``. PDL allows overlapping the tail of one kernel
+        with the start of the next for reduced launch latency. This parameter is
+        only used by the ``cute_dsl`` backend and is ignored by other backends.
+
+    Notes
+    -----
+    When cudnn/cutlass backend is used, both a and b should quantized with nvfp4_quantize using the 128x4 scale factor layout and do_shuffle=False.
+    When trtllm backend is used, b must be quantized with 128x4 layout and `do_shuffle=True`. a can be quantized with either 128x4 or 8x4 layout (controlled by `use_8x4_sf_layout`) and `do_shuffle=False`.
+    When cute_dsl backend is used, both a and b should be quantized with 128x4 scale factor layout:
+    nvfp4_quantize(..., do_shuffle=False) for NVFP4, or mxfp4_quantize(...) for MXFP4.
+
+    Returns
+    -------
+    out: torch.Tensor
+        Out tensor, shape (m, n), bf16 or fp16.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from flashinfer import nvfp4_quantize, mm_fp4, SfLayout
+    >>> a = torch.randn([48, 128], device="cuda", dtype=torch.bfloat16)
+    >>> b = torch.randn([256, 128], device="cuda", dtype=torch.bfloat16)
+    >>> a_global_sf = (448 * 6) / a.float().abs().nan_to_num().max()
+    >>> b_global_sf = (448 * 6) / b.float().abs().nan_to_num().max()
+    >>> a_fp4, a_sf = nvfp4_quantize(a, a_global_sf, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+    >>> b_fp4, b_sf = nvfp4_quantize(b, b_global_sf, sfLayout=SfLayout.layout_128x4, do_shuffle=True)
+    >>> out = mm_fp4(a_fp4, b_fp4.T, a_sf, b_sf.T, 1.0/(a_global_sf * b_global_sf), torch.bfloat16, None, backend="trtllm")
+    >>> out.shape
+    torch.Size([48, 256])
+    """
+
+    # allocate the output tensor if not provided
+    if out is None:
+        out = torch.empty(
+            (a.shape[0], b.shape[1]),
+            device=a.device,
+            dtype=out_dtype,
+        )
+
+    workspace_buffer = _get_cache_buf(
+        "mm_fp4_workspace", DEFAULT_WORKSPACE_SIZE, a.device
+    )
+
+    # Auto-select the best backend
+    if backend == "auto":
+        backends = mm_fp4.suitable_auto_backends
+    else:
+        backends = [backend]
+
+    # At this point, backends contains a supported backend if specified, or all supported backends if backend='auto'.
+    # Lazy initialization of runners to avoid overhead of creating a new runner that will not be used
+    major, minor = get_compute_capability(a.device)
+
+    tuner = AutoTuner.get()
+    tuning_config = (
+        _MM_FP4_TUNING_CONFIG_8x4 if use_8x4_sf_layout else _MM_FP4_TUNING_CONFIG_128x4
+    )
+
+    backend_to_runner_factory = {
+        "cudnn": lambda: _cudnn_gemm_fp4_runner(tuning_config),
+        "trtllm": lambda: get_trtllm_gemm_module().trtllm_fp4_gemm_runner(
+            use_8x4_sf_layout
+        ),
+        "cutlass": lambda: get_cutlass_fp4_gemm_module(
+            major, minor
+        ).cutlass_fp4_gemm_runner(),
+        "cute-dsl": lambda: _cute_dsl_gemm_fp4_runner(
+            major, minor, enable_pdl, out_dtype, use_nvfp4
+        ),
+        "b12x": lambda: _b12x_gemm_fp4_runner(
+            major, minor, enable_pdl, out_dtype, use_nvfp4
+        ),
+    }
+    runners = [backend_to_runner_factory[cur_backend]() for cur_backend in backends]
+
+    inputs = [
+        a,
+        b,
+        a_descale,
+        b_descale,
+        alpha,
+        out_dtype,
+        out,
+        block_size,
+        use_nvfp4,
+        workspace_buffer,
+    ]
+    runner, tactic = tuner.choose_one(
+        "fp4_gemm",
+        runners,
+        tuning_config,
+        inputs,
+    )
+
+    runner(inputs=inputs, tactic=tactic)
+    return out
+
+
+===== flashinfer nvfp4 quant helpers =====
+  top-level: ['add_rmsnorm_fp4quant', 'cute_dsl_fused_moe_nvfp4', 'fp4_quantize', 'get_fp4_quantization_module', 'grouped_mm_fp4', 'mm_bf16_fp4', 'mm_fp4', 'mxfp4_dequantize', 'mxfp4_dequantize_host', 'mxfp4_quantize', 'mxfp8_dequantize_host', 'mxfp8_grouped_quantize', 'mxfp8_quantize', 'nvfp4_attention_sm120', 'nvfp4_attention_sm120_fwd', 'nvfp4_attention_sm120_quantize_qkv', 'nvfp4_batched_quantize', 'nvfp4_block_scale_interleave', 'nvfp4_kv_dequantize', 'nvfp4_kv_quantize', 'nvfp4_quantize', 'nvfp4_quantize_paged_kv_cache', 'prepare_bf16_fp4_weights', 'rmsnorm_fp4quant', 'scaled_fp4_grouped_quantize', 'silu_and_mul_scaled_nvfp4_experts_quantize', 'trtllm_fp4_block_scale_moe', 'trtllm_fp4_block_scale_routed_moe']
+    add_rmsnorm_fp4quant(input: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, y_fp4: torch.Tensor | None = None, block_scale: torch.Tensor | None = None, global_scale: torch.Tensor | None = None, eps: float = 1e-06, block_size: int = 16, scale_format: str | None = None, is_sf_swizzled_layout: bool = False, output_both_sf_layouts: bool = False, block_scale_unswizzled: torch.Tensor | None = None, enable_pdl: bool | None = None) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+    cute_dsl_fused_moe_nvfp4(x: torch.Tensor, x_sf: torch.Tensor, token_selected_experts: torch.Tensor, token_final_scales: torch.Tensor, w1_weight: torch.Tensor, w1_weight_sf: torch.Tensor, w1_alpha: torch.Tensor, fc2_input_scale: torch.Tensor, w2_weight: torch.Tensor, w2_weight_sf: torch.Tensor, w2_alpha: torch.Tensor, num_experts: int, top_k: int, num_local_experts: Optional[int] = None, local_expert_offset: int = 0, output_dtype: torch.dtype = torch.bfloat16, use_fused_finalize: bool = True, moe_output: Optional[torch.Tensor] = None, aux_stream: Optional[torch.cuda.streams.Stream] = None, enable_pdl: bool = True, activation: str = 'silu') -> torch.Tensor
+    fp4_quantize(input: torch.Tensor, global_scale: Optional[torch.Tensor] = None, sf_vec_size: int = 16, sf_use_ue8m0: bool = False, is_sf_swizzled_layout: bool = True, is_sf_8x4_layout: bool = False, is_global_scale_inversed: bool = False, enable_pdl: Optional[bool] = None, backend: str = 'cuda') -> Tuple[torch.Tensor, torch.Tensor]
+    get_fp4_quantization_module(backend: str = '100')
+    grouped_mm_fp4(a: torch.Tensor, b: torch.Tensor, a_descale: torch.Tensor, b_descale: torch.Tensor, m_indptr: torch.Tensor, alpha: Optional[torch.Tensor] = None, out: Optional[torch.Tensor] = None, out_dtype: torch.dtype = torch.bfloat16, block_size: int = 16, *, backend: str = 'cudnn', tactic: int = -1) -> torch.Tensor
+    mm_bf16_fp4(a: torch.Tensor, b: torch.Tensor, b_descale: torch.Tensor, alpha: Optional[torch.Tensor] = None, *, backend: Literal['cudnn', 'cute-dsl'], out_dtype: Optional[torch.dtype] = None, out: Optional[torch.Tensor] = None, block_size: int = 16, enable_pdl: bool = True) -> torch.Tensor
+    mm_fp4(a: torch.Tensor, b: torch.Tensor, a_descale: torch.Tensor, b_descale: torch.Tensor, alpha: Optional[torch.Tensor] = None, out_dtype: torch.dtype = torch.bfloat16, out: Optional[torch.Tensor] = None, block_size: int = 16, use_8x4_sf_layout: bool = False, backend: Literal['cudnn', 'trtllm', 'cutlass', 'cute-dsl', 'b12x', 'auto'] = 'auto', use_nvfp4: bool = True, enable_pdl: bool = True) -> torch.Tensor
+    mxfp4_dequantize(a_fp4, a_sf)
+    mxfp4_dequantize_host(weight: torch.Tensor, scale: torch.Tensor, group_size: int = 32) -> torch.Tensor
+    mxfp4_quantize(a: torch.Tensor, backend: str = 'cuda', enable_pdl: Optional[bool] = None) -> Tuple[torch.Tensor, torch.Tensor]
+    mxfp8_dequantize_host(input: torch.Tensor, scale_tensor: torch.Tensor, is_sf_swizzled_layout: bool = True, sf_swizzle_layout: Optional[flashinfer.tllm_enums.SfLayout] = None) -> torch.Tensor
+    mxfp8_grouped_quantize(a: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
+    mxfp8_quantize(input: torch.Tensor, is_sf_swizzled_layout: bool = True, alignment: int = 32, enable_pdl: Optional[bool] = None, backend: Literal['cuda', 'cute-dsl'] = 'cuda', sf_swizzle_layout: Optional[flashinfer.tllm_enums.SfLayout] = None) -> Tuple[torch.Tensor, torch.Tensor]
+    nvfp4_attention_sm120_fwd(q_fp4: torch.Tensor, k_fp4: torch.Tensor, v_fp4_t: torch.Tensor, q_scale: torch.Tensor, k_scale: torch.Tensor, v_scale_t: torch.Tensor, qk_correction: torch.Tensor, sm_scale: Optional[float] = None, causal: bool = False, per_block_mean: bool = True, out: Optional[torch.Tensor] = None, lse: Optional[torch.Tensor] = None, out_dtype: torch.dtype = torch.bfloat16, softmax_scale: Optional[float] = None) -> Tuple[torch.Tensor, torch.Tensor]
+    nvfp4_attention_sm120_quantize_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_mean: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    nvfp4_batched_quantize(a, a_global_sf, sf_vec_size=16)
+    nvfp4_block_scale_interleave(unswizzled_sf: torch.Tensor) -> torch.Tensor
+    nvfp4_kv_dequantize(fp4_data: torch.Tensor, block_scales: torch.Tensor, global_scale: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor
+    nvfp4_kv_quantize(input: torch.Tensor, global_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
+    nvfp4_quantize(a, a_global_sf, sfLayout=<SfLayout.layout_128x4: 0>, do_shuffle=False, sf_vec_size=16, enable_pdl=None, backend: str = 'cuda', per_token_activation: bool = False, expanded_idx_to_permuted_idx: Optional[torch.Tensor] = None)
+    nvfp4_quantize_paged_kv_cache(k_cache: torch.Tensor, v_cache: torch.Tensor, kv_layout: str = 'HND', k_global_sf: Optional[torch.Tensor] = None, v_global_sf: Optional[torch.Tensor] = None) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor], float, float]
+    prepare_bf16_fp4_weights(b: torch.Tensor, b_descale: torch.Tensor, alpha: Optional[torch.Tensor] = None, *, backend: Literal['cudnn', 'cute-dsl'], block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]
+    rmsnorm_fp4quant(input: torch.Tensor, weight: torch.Tensor, y_fp4: torch.Tensor | None = None, block_scale: torch.Tensor | None = None, global_scale: torch.Tensor | None = None, eps: float = 1e-06, block_size: int = 16, scale_format: str | None = None, is_sf_swizzled_layout: bool = False, enable_pdl: bool | None = None) -> Tuple[torch.Tensor, torch.Tensor]
+    scaled_fp4_grouped_quantize(a, mask, a_global_sf)
+    silu_and_mul_scaled_nvfp4_experts_quantize(a, mask, a_global_sf)
+    trtllm_fp4_block_scale_moe(routing_logits: torch.Tensor, routing_bias: Optional[torch.Tensor], hidden_states: torch.Tensor, hidden_states_scale: Optional[torch.Tensor], gemm1_weights: torch.Tensor, gemm1_weights_scale: torch.Tensor, gemm1_bias: Optional[torch.Tensor], gemm1_alpha: Optional[torch.Tensor], gemm1_beta: Optional[torch.Tensor], gemm1_clamp_limit: Optional[torch.Tensor], gemm2_weights: torch.Tensor, gemm2_weights_scale: torch.Tensor, gemm2_bias: Optional[torch.Tensor], output1_scale_scalar: Optional[torch.Tensor], output1_scale_gate_scalar: Optional[torch.Tensor], output2_scale_scalar: Optional[torch.Tensor], num_experts: int, top_k: int, n_group: Optional[int], topk_group: Optional[int], intermediate_size: int, local_expert_offset: int, local_num_experts: int, routed_scaling_factor: Optional[float], routing_method_type: int = 0, do_finalize: bool = True, enable_pdl: Optional[bool] = None, activation_type: int = 3, per_token_scale: Optional[torch.Tensor] = None, output: Optional[torch.Tensor] = None, tune_max_num_tokens: int = 8192, norm_topk_prob: bool = True, routing_replay_out: Optional[torch.Tensor] = None) -> List[torch.Tensor]
+    trtllm_fp4_block_scale_routed_moe(topk_ids: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], routing_bias: Optional[torch.Tensor], hidden_states: torch.Tensor, hidden_states_scale: Optional[torch.Tensor], gemm1_weights: torch.Tensor, gemm1_weights_scale: torch.Tensor, gemm1_bias: Optional[torch.Tensor], gemm1_alpha: Optional[torch.Tensor], gemm1_beta: Optional[torch.Tensor], gemm1_clamp_limit: Optional[torch.Tensor], gemm2_weights: torch.Tensor, gemm2_weights_scale: torch.Tensor, gemm2_bias: Optional[torch.Tensor], output1_scale_scalar: Optional[torch.Tensor], output1_scale_gate_scalar: Optional[torch.Tensor], output2_scale_scalar: Optional[torch.Tensor], num_experts: int, top_k: int, n_group: Optional[int], topk_group: Optional[int], intermediate_size: int, local_expert_offset: int, local_num_experts: int, routed_scaling_factor: Optional[float], routing_method_type: int = 0, do_finalize: bool = True, enable_pdl: Optional[bool] = None, activation_type: int = 3, per_token_scale: Optional[torch.Tensor] = None, output: Optional[torch.Tensor] = None, tune_max_num_tokens: int = 8192) -> List[torch.Tensor]
+  flashinfer.fp4_quantization: ['_compute_swizzled_layout_sf_size', '_pad_scale_factors', 'block_scale_interleave', 'e2m1_and_ufp8sf_scale_to_float', 'fp4_quantize', 'gen_fp4_quantization_module', 'gen_fp4_quantization_sm100_module', 'gen_fp4_quantization_sm103_module', 'gen_fp4_quantization_sm110_module', 'gen_fp4_quantization_sm120_module', 'gen_fp4_quantization_sm120f_module', 'gen_fp4_quantization_sm121_module', 'gen_fp4_quantization_sm90_module', 'get_fp4_quantization_module', 'mxfp4_dequantize', 'mxfp4_dequantize_host', 'mxfp4_quantize', 'nvfp4_batched_quantize', 'nvfp4_block_scale_interleave', 'nvfp4_kv_dequantize', 'nvfp4_kv_quantize', 'nvfp4_quantize', 'nvfp4_quantize_paged_kv_cache', 'scaled_fp4_grouped_quantize']
+    _compute_swizzled_layout_sf_size(total_row, total_column, row_size=128)
+    _pad_scale_factors(unswizzled_sf: torch.Tensor, m: int, n: int, sf_vec_size: int = 16) -> torch.Tensor
+    block_scale_interleave(unswizzled_sf: torch.Tensor) -> torch.Tensor
+    e2m1_and_ufp8sf_scale_to_float(e2m1_tensor: torch.Tensor, ufp8_scale_tensor: torch.Tensor, global_scale_tensor: Optional[torch.Tensor] = None, sf_vec_size: int = 16, ufp8_type: int = 1, is_sf_swizzled_layout: bool = True) -> torch.Tensor
+    fp4_quantize(input: torch.Tensor, global_scale: Optional[torch.Tensor] = None, sf_vec_size: int = 16, sf_use_ue8m0: bool = False, is_sf_swizzled_layout: bool = True, is_sf_8x4_layout: bool = False, is_global_scale_inversed: bool = False, enable_pdl: Optional[bool] = None, backend: str = 'cuda') -> Tuple[torch.Tensor, torch.Tensor]
+    gen_fp4_quantization_module(nvcc_flags: List[str], device_arch: str) -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm100_module() -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm103_module() -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm110_module() -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm120_module() -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm120f_module() -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm121_module() -> flashinfer.jit.core.JitSpec
+    gen_fp4_quantization_sm90_module() -> flashinfer.jit.core.JitSpec
+    get_fp4_quantization_module(backend: str = '100')
+    mxfp4_dequantize(a_fp4, a_sf)
+    mxfp4_dequantize_host(weight: torch.Tensor, scale: torch.Tensor, group_size: int = 32) -> torch.Tensor
+    mxfp4_quantize(a: torch.Tensor, backend: str = 'cuda', enable_pdl: Optional[bool] = None) -> Tuple[torch.Tensor, torch.Tensor]
+    nvfp4_batched_quantize(a, a_global_sf, sf_vec_size=16)
+    nvfp4_block_scale_interleave(unswizzled_sf: torch.Tensor) -> torch.Tensor
+    nvfp4_kv_dequantize(fp4_data: torch.Tensor, block_scales: torch.Tensor, global_scale: torch.Tensor, output_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor
+    nvfp4_kv_quantize(input: torch.Tensor, global_scale: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
+    nvfp4_quantize(a, a_global_sf, sfLayout=<SfLayout.layout_128x4: 0>, do_shuffle=False, sf_vec_size=16, enable_pdl=None, backend: str = 'cuda', per_token_activation: bool = False, expanded_idx_to_permuted_idx: Optional[torch.Tensor] = None)
+    nvfp4_quantize_paged_kv_cache(k_cache: torch.Tensor, v_cache: torch.Tensor, kv_layout: str = 'HND', k_global_sf: Optional[torch.Tensor] = None, v_global_sf: Optional[torch.Tensor] = None) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor], float, float]
+    scaled_fp4_grouped_quantize(a, mask, a_global_sf)
+  flashinfer.utils: ['FP4Tensor', 'get_native_fp4_dtype']
+    FP4Tensor(data: torch.Tensor, scale: torch.Tensor, scale_start_index: int = 0, original_shape: Optional[Tuple[int, ...]] = None)
+    get_native_fp4_dtype()
+
+### files using group_gemm_nvfp4 under /usr/local/lib/python3.12/site-packages/flashinfer:
+/usr/local/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py
+/usr/local/lib/python3.12/site-packages/flashinfer/gemm/__init__.py
+/usr/local/lib/python3.12/site-packages/flashinfer/gemm/__pycache__/gemm_base.cpython-312.pyc
+/usr/local/lib/python3.12/site-packages/flashinfer/gemm/__pycache__/__init__.cpython-312.pyc
+/usr/local/lib/python3.12/site-packages/flashinfer/data/csrc/group_gemm_sm120_binding.cu
+/usr/local/lib/python3.12/site-packages/flashinfer/data/csrc/group_gemm_nvfp4_groupwise_sm120_kernel_inst.jinja
+/usr/local/lib/python3.12/site-packages/flashinfer/jit/gemm/core.py
+/usr/local/lib/python3.12/site-packages/flashinfer/jit/gemm/__pycache__/core.cpython-312.pyc
+
+
+===== cutlass_fused_moe doc (quant_scales contract) =====
+Compute a Mixture of Experts (MoE) layer using CUTLASS backend.
+
+    This function implements a fused MoE layer that combines expert selection, expert computation,
+    and output combination into a single operation. It uses CUTLASS for efficient matrix multiplication
+    and supports various data types and parallelism strategies.
+
+    Parameters
+    ----------
+    input : torch.Tensor
+        Input tensor of shape [num_tokens, hidden_size].
+        Support float, float16, bfloat16, float8_e4m3fn and nvfp4.
+        For FP8, the input must be quantized.
+        For NVFP4, both quantized and non-quantized inputs are supported.
+
+    token_selected_experts : torch.Tensor
+        Indices of selected experts for each token.
+
+    token_final_scales : torch.Tensor
+        Scaling factors for each token's expert outputs.
+
+    fc1_expert_weights : torch.Tensor
+        GEMM1 weights for each expert.
+
+    fc2_expert_weights : torch.Tensor
+        GEMM2 weights for each expert.
+
+    output_dtype : torch.dtype
+        Desired output data type.
+
+    quant_scales : List[torch.Tensor]
+        Quantization scales for the operation.
+
+        NVFP4:
+            - gemm1 activation global scale
+            - gemm1 weights block scales
+            - gemm1 dequant scale
+            - gemm2 activation global scale
+            - gemm2 weights block scales
+            - gemm2 dequant scale
+
+        FP8:
+            - gemm1 dequant scale
+            - gemm2 activation quant scale
+            - gemm2 dequant scale
+            - gemm1 input dequant scale
+
+    fc1_expert_biases : Optional[torch.Tensor]
+        GEMM1 biases for each expert.
+
+    fc2_expert_biases : Optional[torch.Tensor]
+        GEMM1 biases for each expert.
+
+    input_sf : Optional[torch.Tensor]
+        Input scaling factor for quantization.
+
+    swiglu_alpha : Optional[torch.Tensor]
+        Swiglu alpha for swiglu activation.
+
+    swiglu_beta : Optional[torch.Tensor]
+        Swiglu beta for swiglu activation.
+
+    swiglu_limit : Optional[torch.Tensor]
+        Swiglu limit for swiglu activation.
+
+    tp_size : int = 1
+        Tensor parallelism size. Defaults to 1.
+
+    tp_rank : int = 0
+        Tensor parallelism rank. Defaults to 0.
+
+    ep_size : int = 1
+        Expert parallelism size. Defaults to 1.
+
+    ep_rank : int = 0
+        Expert parallelism rank. Defaults to 0.
+
+    cluster_size : int = 1
+        Cluster size. Defaults to 1.
+
+    cluster_rank : int = 0
+        Cluster rank. Defaults to 0.
+
+    output : Optional[torch.Tensor] = None
+        The output tensor, if not provided, will be allocated internally.
+
+    enable_alltoall : bool = False
+        Whether to enable all-to-all communication for expert outputs. Defaults to False.
+
+    use_deepseek_fp8_block_scale : bool = False
+        Whether to use FP8 block scaling. Defaults to False.
+
+    use_w4_group_scaling : bool = False
+        Whether to use W4A8 group scaling. Defaults to False.
+
+    use_mxfp8_act_scaling : bool = False
+        Whether to u
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-UTIWTfJ6oFrWFCUvzqgUWb
