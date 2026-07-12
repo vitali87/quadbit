@@ -484,12 +484,15 @@ def glm_graph_gate(
     max_seqs: int = 8,
     max_len: int = 2048,
     gpu_mem: float = 0.92,
+    dense_anchor_backend: str = "dequant",
 ) -> None:
     """8-GPU P4 M4 graph-capture gate on GLM-5.2 route-slot D2 (directive #4). GLM's EP MoE capture was
     previously blocked by the plugin's torch.unique().tolist() host-sync; the QB_GRAPH graph-safe path
-    (route_fixed_cap) removes it. Config A/B/C as in _graph_gate_body; defaults tp=8, route_slot=2 (D2)."""
+    (route_fixed_cap) removes it. Config A/B/C as in _graph_gate_body; defaults tp=8, route_slot=2 (D2).
+    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4."""
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
-                     cap, max_seqs, max_len, gpu_mem, glm=True)
+                     cap, max_seqs, max_len, gpu_mem, glm=True,
+                     dense_anchor_backend=dense_anchor_backend)
 
 
 @app.function(
