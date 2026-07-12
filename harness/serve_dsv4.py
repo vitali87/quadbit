@@ -322,6 +322,7 @@ def _graph_gate_body(
     gpu_mem: float = 0.9,
     glm: bool = False,
     dense_anchor_backend: str = "dequant",
+    baseline: str = "",
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -339,7 +340,11 @@ def _graph_gate_body(
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     gp = force_graph_path or (not eager)
     os.environ["QB_DENSE"] = "nvfp4"
-    os.environ["QB_MOE"] = "sparse"
+    # C2 SOTA board: baseline="dense_nvfp4" -> QB_MOE=off, which makes patched_moe_pw return early so
+    # vLLM's native FlashInfer-CUTLASS NVFP4 fused MoE runs unchanged (the production dense NVFP4 path),
+    # with attention/DSA still SM120-unblocked. Same passage/decode-formula/graph mode as the sparse
+    # rows -> an apples-to-apples same-harness dense baseline for the SOTA table. "" keeps the sparse path.
+    os.environ["QB_MOE"] = "off" if baseline == "dense_nvfp4" else "sparse"
     os.environ["QB_SPARSE_PROJ"] = proj
     os.environ["QB_ROUTE_SLOT"] = str(route_slot)
     os.environ["QB_DENSE_LAYERS"] = dense_layers
@@ -349,7 +354,9 @@ def _graph_gate_body(
     # (_dense_seg_gs); "native_nvfp4" = flashinfer group_gemm_nvfp4_nt_groupwise (fused NVFP4 grouped).
     os.environ["QB_DENSE_BACKEND"] = dense_anchor_backend
     cfg = "C-captured" if (gp and not eager) else ("B-graphpath-eager" if gp else "A-frozen-eager")
-    pol = f"proj={proj} route_slot={route_slot} dense_layers=[{dense_layers}]"
+    pol = (f"BASELINE-dense-nvfp4 (QB_MOE=off, native FlashInfer-CUTLASS fused MoE)"
+           if baseline == "dense_nvfp4"
+           else f"proj={proj} route_slot={route_slot} dense_layers=[{dense_layers}]")
     print(f"# M4 graph_gate cfg={cfg} {pol} cap={cap} max_seqs={max_seqs} "
           f"QB_GRAPH={os.environ['QB_GRAPH']} enforce_eager={eager} tp={tp} "
           f"model={'GLM' if glm else 'DeepSeek'} dense_backend={dense_anchor_backend}", flush=True)
@@ -459,12 +466,15 @@ def graph_gate4(
     max_len: int = 2048,
     gpu_mem: float = 0.9,
     dense_anchor_backend: str = "dequant",
+    baseline: str = "",
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
-    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4."""
+    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4.
+    C2: baseline=dense_nvfp4 runs vLLM's native NVFP4 fused MoE (QB_MOE=off) through the same board."""
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
-                     cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend)
+                     cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
+                     baseline=baseline)
 
 
 @app.function(
@@ -485,14 +495,16 @@ def glm_graph_gate(
     max_len: int = 2048,
     gpu_mem: float = 0.92,
     dense_anchor_backend: str = "dequant",
+    baseline: str = "",
 ) -> None:
     """8-GPU P4 M4 graph-capture gate on GLM-5.2 route-slot D2 (directive #4). GLM's EP MoE capture was
     previously blocked by the plugin's torch.unique().tolist() host-sync; the QB_GRAPH graph-safe path
     (route_fixed_cap) removes it. Config A/B/C as in _graph_gate_body; defaults tp=8, route_slot=2 (D2).
-    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4."""
+    C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4.
+    C2: baseline=dense_nvfp4 runs vLLM's native NVFP4 fused MoE (QB_MOE=off) through the same board."""
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, glm=True,
-                     dense_anchor_backend=dense_anchor_backend)
+                     dense_anchor_backend=dense_anchor_backend, baseline=baseline)
 
 
 @app.function(
