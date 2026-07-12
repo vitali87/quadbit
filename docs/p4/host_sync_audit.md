@@ -1,0 +1,132 @@
+# P4 Milestone 1 — host-sync / graph-safety audit
+
+Scope: `harness/qb_vllm_plugin/qb_sm120_plugin.py` (1301 lines) and `moe_recon.py`, on the frozen
+baseline `campaign-b-freeze-a91c5d9`. Goal: classify every graph-breaking operation in the plugin's
+**forward** path, separate correctness-critical from debug-only, and produce a replacement plan. This
+audit does not change behavior; it scopes M2-M5.
+
+## Method
+
+Grepped for: `.item()`, `.tolist()`, `.cpu()`, `.numpy()`, `torch.unique`, `.synchronize`,
+`cudaMemcpy`, `bincount`/`nonzero`, ctypes calls, in-forward `torch.empty`/`zeros`, Python branching on
+device values, and STATS/counter reads. Then read each hit to decide whether it runs in the steady-state
+serving forward (capture-relevant) or only at load / behind a debug flag (capture-irrelevant).
+
+## The capture-critical forward paths (per policy)
+
+`ModelOptNvFp4FusedMoE.apply` is patched to `patched_moe_apply` (line 1163). It branches by policy, and
+**every branch currently contains at least one device->host sync or data-dependent allocation**:
+
+| policy (env) | forward branch | primary graph-breaker |
+|---|---|---|
+| `QB_MOE=dense` | dense NVFP4 dequant-per-expert loop (1255) | `torch.unique(local).tolist()` (1255) — **the documented blocker** (`glm_graphfail.log`) |
+| `QB_MOE=sparse` `proj=both` (c_both) | `build_routing` + `seg_gemm` (1197-1217) | `build_routing`: `int(padc.sum().item())` + per-expert `.item()` loop + data-dependent alloc (750-757) |
+| `QB_MOE=sparse` `proj=down`/`gateup` (c_down49/gateup) | sparse seg for one proj + `_dense_route` for the anchored proj (1211/1219) | `_dense_route`: `torch.unique(eblk).tolist()` (99) **and** `build_routing` |
+| `QB_MOE=sparse` `route_slot=N` (D2, headline) | `_route_slot_apply` (1179) | dense-slot loop `torch.unique(d_ids).tolist()` (135) + `build_routing` for the tail |
+| DSA attention (all policies) | indexer mqa-logits bf16 replacement | `seq_lens.reshape(-1).cpu().tolist()` (995) |
+
+So fixing only line 1255 unblocks the **dense** control, not the sparse deployment policies. The headline
+route-slot D2 path needs the routing/`_dense_route`/`_route_slot_apply` syncs fixed too.
+
+## Full sync inventory
+
+### A. Forward-path, correctness-critical (must fix or pad for capture)
+
+| # | line | operation | why it exists | replacement plan | capture effect |
+|---|------|-----------|---------------|------------------|----------------|
+| A1 | 1255 | `torch.unique(local).tolist()` | dense fallback iterates the local experts present this microbatch | precompute a fixed local-expert list (EP shard is static) or a padded fixed-capacity expert loop; iterate a Python-constant range, mask empty | removes the documented `cudaErrorStreamCaptureUnsupported` for the dense control |
+| A2 | 750 | `r_pad = int(padc.sum().item())` sizes `src`/`eblk` | routed rows padded to `_BN` blocks; total pad count sizes the segment buffers | **pad to fixed capacity**: allocate `src`/`eblk` at a capture-time max (`E*ceil(cap/_BN)*_BN`), fill by scatter, no host read | removes host sync **and** the data-dependent allocation (two blockers in one) |
+| A3 | 755-757 | per-expert `int(counts[ex].item())`/`int(padc[ex].item())` in a `range(E)` Python loop | builds `src`/`eblk` segment offsets one expert at a time | vectorize: `cumsum` of padded counts on device -> scatter `order` into `src`, `repeat_interleave` expert ids into `eblk`; no Python-visible values | eliminates up to 2*E=512 syncs/layer/forward |
+| A4 | 99 | `_dense_route`: `torch.unique(eblk).tolist()` loop | dense (anchored) projection over routed rows, per resident expert | same fix as A1 (fixed/padded local-expert range) | unblocks down-only/gateup-only sparse policies |
+| A5 | 135 | route-slot dense-slot `torch.unique(d_ids).tolist()` loop | top-N dense slots iterated per expert | same fix as A1 | unblocks the D2 headline path |
+| A6 | 995 | indexer `seq_lens.reshape(-1).cpu().tolist()` | bf16 mqa-logits replacement iterates per-request seq lens | precompute request layout on device (cumulative seq lens), index without host copy; or capture with fixed seq-len layout | unblocks DSA attention capture (plugin-owned, not the native FlashInfer core) |
+
+### B. Forward-path, debug/telemetry only (move behind a debug flag — the M1 "first target")
+
+| # | line | operation | class | replacement plan |
+|---|------|-----------|-------|------------------|
+| B1 | 1234 | `STATS["sparse_expert_calls"] += int(valid.sum().item())` | counter, runs **every** apply (ungated) | gate behind `if _INSTR:`; capture path must not read it. Counters are proof-of-execution for eager, not needed under graph |
+| B2 | 1226-1231 | imbalance `.item()` + `_flush_metrics()` | already `_INSTR`-gated + `%100` | leave gated; ensure `_INSTR=0` under capture (it is off by default) |
+| B3 | 826-1141 | many `print(...)` first-call/anchor logs | string ops, mostly first-call-gated | harmless (no device read) but ensure none are in the hot replay path; first-call gates already handle this |
+| B4 | 1205,1222-1223 | `_ev_start`/`_ev_end` CUDA-event instrumentation | `_INSTR`-gated | leave gated (events are capture-legal anyway, but off by default) |
+
+### C. Load-time / debug-flag paths (NOT in the steady-state forward — no capture action)
+
+These run at weight load (`process_weights_after_loading`) or only under `QB_DUMP`/`QB_CALIB`/`QB_QMAP`/
+`QB_RECON`, which are off during normal serving and complete before graph capture:
+
+- `process_weights` packing / `_dense`/`empty_cache` (1159-1160): load-time, one-shot.
+- recon `torch.cuda.synchronize()` (451), nonfinite `.item()` (483-485): `QB_RECON` only.
+- calib `.cpu()` (531-533): `QB_CALIB` only.
+- qmap `.item()`/cosine/`torch.unique` (577,612,638-647): `QB_QMAP` only.
+- dump `.cpu()` (318-321): `QB_DUMP` only.
+
+### D. Not host syncs, but capture-hostile (structural — M2/M3)
+
+| # | lines | issue | plan |
+|---|-------|-------|------|
+| D1 | 733,741-743 | ctypes `lib.quantize_act_nvfp4_2lvl` / `lib.sparse_moe_mm_2lvl` launch kernels | **RESOLVED to a narrow stream-plumbing fix** (verified in `cuda/sparse_fp4_lib.cu`), not a custom-op rewrite. See finding below. |
+
+### D1 finding — the `.so` is mostly already capture-ready
+
+Read of `cuda/sparse_fp4_lib.cu` (frozen) shows the fix is narrow, and explains why Llama Table C already
+captures while the MoE path does not:
+
+- **Fused entries are stream-safe.** `fused_mlp_2lvl` (601) and `fused_mlp_2lvl_skdown` (1033) take a
+  `void *stream` and launch **every** kernel (`quant_act_2lvl_k`, `swiglu_*`, `matmul_sp`) with
+  `<<<..., 0, s>>>` on that stream (609-615, 1041-1047, 567). This is the Llama `quadbit::fused_mlp`
+  path — already graph-captured (Table C). No change needed.
+- **`sparse_moe_mm_2lvl` (1026) also takes a stream** and launches `matmul_sp_moe<<<..., stream>>>`
+  (1022). **But its wrapper does `return stream ? 0 : cudaDeviceSynchronize()` (1030)** — so passing the
+  plugin's literal `0` (line 743) both runs on the legacy default stream **and forces a device sync every
+  call**. Fix: pass `torch.cuda.current_stream().cuda_stream` instead of `0`.
+- **`quantize_act_nvfp4_2lvl` (312) is the one un-stream-safe entry the MoE path uses** — it launches
+  `quant_act_2lvl_k<<<batch, 256>>>` (313) with **no stream** (legacy default stream 0; the build is not
+  `--default-stream per-thread`, see `harness/build_so.py`). This needs a `void *stream` param added and
+  `<<<batch, 256, 0, s>>>`, then a `.so` rebuild under CUDA 12.8. The identical launcher already exists
+  stream-parameterized *inside* `fused_mlp_2lvl` at 609, so the change is mechanical.
+
+**Net M2 code (caller-safe):**
+
+1. **Additive `.cu` symbol, NOT a signature change.** `quantize_act_nvfp4_2lvl` is called from ~40 sites
+   across the harnesses (`repair.py`, `leaderboard_fp4.py`, `moe_seg.py`, `moe_layer.py`, `serve_dsv4.py`,
+   `quadbit_serve.py`, ... and the plugin) all with `argtypes=[c_void_p]*4+[c_int]*2`, and it is also
+   defined in `dense_nvfp4_fast_lib.cu`. Changing its signature breaks every caller. Instead add a new
+   `quantize_act_nvfp4_2lvl_s(const void*, void*, void*, void*, int, int, void *stream)` that launches
+   `quant_act_2lvl_k<<<batch, 256, 0, (cudaStream_t)stream>>>` (the identical stream-parameterized launch
+   already lives inside `fused_mlp_2lvl` at line 609). Old symbol unchanged; rebuild `.so` via
+   `build_so.py`.
+2. In the capture path (`seg_gemm`/`quant_act`), call `quantize_act_nvfp4_2lvl_s` and pass
+   `torch.cuda.current_stream().cuda_stream`, and pass the same stream to `sparse_moe_mm_2lvl` instead of
+   the literal `0` (kills D1 **and** the hidden per-call `cudaDeviceSynchronize` at line 1030).
+3. Vectorize `build_routing` to fixed capacity (A2/A3) so shapes are static and no host reads remain.
+
+All three validated on the standalone harness before any vLLM integration. The frozen `.cu`/`.so` on
+`main` are untouched; changes live on `p4-graph-capture`.
+| D2 | 730-732,740,751-752,1167 | in-forward `torch.empty`/`zeros` sized by data-dependent `r`/`r_pad`/`t` | with A2/A3 padded to fixed capacity and a persistent workspace, allocations become fixed-shape; PyTorch's capture memory pool then handles them |
+
+## M2 for the fused path already exists (reuse it)
+
+`quadbit_serve.py:1554` ("Milestone 2: capture ONE `fused_mlp_2lvl` block per fixed shape as a CUDA
+graph; verify replay == eager") is a complete, proven standalone capture harness for the **fused Llama
+sparse MLP**: persistent buffers, `stream = current_stream().cuda_stream` passed through, eager-vs-graph
+p50/p95/min timing, cos/relL2/nonfinite correctness, across decode tp=128 and prefill 2048/8192/16384/
+65536. This is why Table C captures. **So M2 is done for the fused path.** P4's novel graph work is the
+**MoE seg path only** (`quantize_act_nvfp4_2lvl` + `sparse_moe_mm_2lvl` + `build_routing`), which reuses
+this same capture pattern once the three M2 code items above land.
+
+## Prioritized plan
+
+1. **M1 code (low-risk, this milestone):** gate B1 behind `_INSTR` so the counter sync leaves the steady
+   path; confirm B2-B4 are off by default under capture. No correctness change; validate with one eager
+   serving run that numbers are byte-identical to the frozen baseline.
+2. **M2 (standalone):** build the fixed-capacity, host-sync-free routing (A2/A3 vectorized) + persistent
+   workspace + Route-B custom-op wrapper (D1), and capture a single sparse MLP standalone (no vLLM).
+3. **M3:** replay the captured sparse-MLP subgraph inside the vLLM Llama forward (Route A/B).
+4. **M4:** extend to the MoE apply — fixed local-expert range (A1/A4/A5) + padded routing — on 1 rank, then
+   fixed route, padded capacity, DSA, 8-GPU GLM. Fix A6 for indexer capture.
+5. **M5:** final graph-vs-graph comparison rows.
+
+**Note on DSA:** A6 is the plugin's own bf16 indexer-logits replacement, not the native FlashInfer
+sparse-MLA core (which the frozen result shows runs natively on SM120). P4 does not touch the native DSA
+path; it removes the plugin's host sync around it.

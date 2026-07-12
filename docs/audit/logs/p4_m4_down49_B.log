@@ -1,0 +1,109 @@
+
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 14.87profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.01profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 14.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 14.52profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.84profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.04profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.71profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 15.49profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 15.83profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.39profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.03profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.97profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.84profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 15.48profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.83profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.40profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.69profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  5.67profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 13.49profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 10.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 14.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 12.68profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 13.59profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.93profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.23profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 12.70profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.18profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.37profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.41profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.34profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.34profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.54profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.45profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.84profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.34profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.40profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.05profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.10profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 16.33profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 16.22profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.21profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.12profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 14.46profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 14.21profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.43profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.90profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 17.49profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.57profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.26profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.64profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.12profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.67profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.22profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.54profile/s]
+(Worker_TP1_EP1 pid=71) 2026-07-12 10:16:03,012 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=70) 2026-07-12 10:16:03,013 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=70) 2026-07-12 10:16:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 10:16:05  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0_EP0 pid=70) 2026-07-12 10:16:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 10:16:14  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=70) INFO 07-12 10:16:22 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP1_EP1 pid=71) 2026-07-12 10:16:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 10:16:05  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1_EP1 pid=71) 2026-07-12 10:16:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 10:16:14  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=71) INFO 07-12 10:16:22 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=53) INFO 07-12 10:16:23 [core.py:344] init engine (profile, create kv cache, warmup model) took 290.85 s
+(EngineCore pid=53) INFO 07-12 10:16:24 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=53) WARNING 07-12 10:16:24 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=53) WARNING 07-12 10:16:24 [vllm.py:1100] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+(EngineCore pid=53) WARNING 07-12 10:16:24 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=53) INFO 07-12 10:16:24 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(EngineCore pid=53) INFO 07-12 10:16:24 [vllm.py:1288] Cudagraph is disabled under eager mode
+(EngineCore pid=53) INFO 07-12 10:16:24 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+  load+capture ok in 508s (captured => graph capture SUCCEEDED)
+
+[1ARendering prompts:   0%|          | 0/4 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 4/4 [00:00<00:00, 98.90it/s]
+
+(Worker_TP0_EP0 pid=70) WARNING 07-12 10:16:24 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 10:16:25 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_prefill_chunk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 10:16:25 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_c128a_topk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 10:16:25 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_prefill_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+[1AProcessed prompts:   0%|          | 0/4 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](Worker_TP1_EP1 pid=71) 2026-07-12 10:16:26,016 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP0_EP0 pid=70) WARNING 07-12 10:16:26 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_global_topk_indices_and_lens_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+
+[1AProcessed prompts:  25%|██▌       | 1/4 [02:47<08:21, 167.23s/it, est. speed input: 0.03 toks/s, output: 0.14 toks/s]
+[1AProcessed prompts:  50%|█████     | 2/4 [02:54<02:26, 73.12s/it, est. speed input: 0.05 toks/s, output: 0.28 toks/s] 

@@ -87,7 +87,11 @@ def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
     codes[:, 1::2] = (bb >> 4) & 0xF
     vals = lut[codes]
     bs = w_scale_e4m3.float().repeat_interleave(group, dim=1)[:, :k]
-    return (vals * bs * float(w_scale_2)).to(torch.bfloat16)
+    # keep w_scale_2 on-device (broadcast multiply): float(w_scale_2) would host-sync, illegal under
+    # CUDA-graph capture (the dense-anchor route runs this INSIDE the captured region). A 0-dim tensor
+    # multiply is bit-identical to the scalar multiply, so the frozen eager path is unaffected.
+    s2 = w_scale_2.to(device=w_scale_e4m3.device) if isinstance(w_scale_2, torch.Tensor) else torch.as_tensor(w_scale_2, device=w_scale_e4m3.device)
+    return (vals * bs * s2.to(torch.float32)).to(torch.bfloat16)
 
 
 def _dense_route(inp, w, ws, ws2, out_dim, eblk):
@@ -169,6 +173,133 @@ def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
     return y
 
 
+def _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap):
+    # Graph-safe dense NVFP4 grouped matmul over a fixed-capacity seg-layout buffer xs:[e*cap, in]
+    # (expert le owns rows [le*cap,(le+1)*cap)). The anchored-projection analogue of seg_into for the
+    # DEPLOYED policies (down49 gate_up-anchored, gateup49 down-anchored, route-slot dense slots).
+    # range(e) is a compile-time constant so the loop UNROLLS into the graph; each iteration's dequant
+    # temp `we` is freed before the next, so the capture memory pool REUSES one we-buffer -- no E-fold
+    # blowup. This is the graph-safe replacement for _dense_route's torch.unique(eblk).tolist() host loop.
+    import torch
+
+    out = torch.empty(e * cap, out_dim, dtype=torch.bfloat16, device=xs.device)
+    for le in range(e):
+        s2 = ws2 if (not isinstance(ws2, torch.Tensor) or ws2.ndim == 0) else (ws2[le, 0] if ws2.ndim > 1 else ws2[le])
+        we = _dequant_nvfp4_expert(w[le], ws[le], s2)  # [out_dim, in] bf16
+        out[le * cap:(le + 1) * cap] = (
+            xs[le * cap:(le + 1) * cap].float() @ we.float().t()).to(torch.bfloat16)
+    return out
+
+
+def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y, valid=None,
+                  proj="both", layer=None):
+    # Graph-safe sparse-FP4 MoE seg apply for proj in {both, down, gateup}. Fixed-capacity DEVICE
+    # routing + current-stream launches into compile-time-constant (E*cap) buffers, so the whole body
+    # is CUDA-graph-capturable: no .item(), no host loop, no data-dependent shape. Mirrors the frozen
+    # branch math (route -> gate_up -> swiglu -> down -> weighted scatter) but replaces build_routing
+    # with sp.route_fixed_cap and quant_act/seg_gemm with quant_into/seg_into; the ANCHORED projection
+    # (the one NOT named by proj) runs the dense _dense_seg_gs. proj names the SPARSE projection(s):
+    # both=both sparse, down=down sparse/gate_up anchored (down49), gateup=gate_up sparse/down anchored.
+    # valid:[R] optional EP on-rank mask (off-rank slots sink-routed so R stays static). _sanitize is
+    # restored (capture-safe: its .item() diag is _INSTR-gated). Returns the dropped-row count.
+    import torch
+    import torch.nn.functional as F
+
+    dev = x.device
+    li = getattr(layer, "_qb_layer_idx", -1) if layer is not None else -1
+    src, eblk, dropped = sp.route_fixed_cap(assign, e, cap, valid)
+    rp = e * cap
+    valid = src >= 0
+    srcc = src.clamp_min(0)
+    xs = (x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None])
+    if on_input:
+        xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+    xs = _sanitize(xs.contiguous(), li, "x_in")
+    ksh, ksi = h // 128, ii // 128
+    if proj in ("both", "gateup"):
+        bb = torch.empty((rp, h // 2), dtype=torch.uint8, device=dev)
+        sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=dev)
+        gb = torch.empty((rp,), dtype=torch.float32, device=dev)
+        gu = torch.empty((rp, 2 * ii), dtype=torch.bfloat16, device=dev)
+        sp.quant_into(xs, bb, sb, gb)
+        sp.seg_into(gu_W, bb, sb, gb, gu, 2 * ii, h, eblk)
+    else:  # down-only (down49): gate_up anchored dense
+        gu = _dense_seg_gs(xs, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
+                           2 * ii, e, cap)
+    gu = _sanitize(gu, li, "gate_up")
+    hh = _sanitize((F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
+    if proj in ("both", "down"):
+        bb2 = torch.empty((rp, ii // 2), dtype=torch.uint8, device=dev)
+        sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=dev)
+        gb2 = torch.empty((rp,), dtype=torch.float32, device=dev)
+        dseg = torch.empty((rp, h), dtype=torch.bfloat16, device=dev)
+        sp.quant_into(hh, bb2, sb2, gb2)
+        sp.seg_into(dn_W, bb2, sb2, gb2, dseg, h, ii, eblk)
+    else:  # gateup-only (gateup49): down anchored dense
+        dseg = _dense_seg_gs(hh, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2,
+                             h, e, cap)
+    dseg = _sanitize(dseg, li, "down")
+    rw = valid.float() if on_input else (w_of[srcc] * valid.float())
+    y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(y.dtype))
+    return dropped
+
+
+def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W, dn_W, layer,
+                         ii, h, e, cap, on_input, y):
+    # Graph-safe route-slot (D2): the top-N highest-weight slots per token run DENSE (both projections
+    # raw NVFP4), the low-weight tail runs the 2:4 seg kernel (both projections). Both groups use
+    # fixed-capacity routing with a validity mask (dense = dense_slot & on-rank; sparse = tail & on-rank)
+    # so shapes stay static. dense_slot/valid are per-slot [R] bool aligned with ids_local. Disjoint
+    # groups -> each (token,expert) slot contributes once; off-rank contributes nowhere.
+    import torch
+    import torch.nn.functional as F
+
+    li = getattr(layer, "_qb_layer_idx", -1)
+    v_dense = valid & dense_slot
+    # DENSE group: both projections dense NVFP4 over the dense-slot rows.
+    srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
+    validd = srcd >= 0
+    scd = srcd.clamp_min(0)
+    xd = (x[tok_of[scd]].to(torch.bfloat16) * validd[:, None])
+    if on_input:
+        xd = xd * w_of[scd][:, None].to(torch.bfloat16)
+    xd = _sanitize(xd.contiguous(), li, "x_in")
+    gud = _dense_seg_gs(xd, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
+                        2 * ii, e, cap)
+    hhd = _sanitize((F.silu(gud[:, :ii].float()) * gud[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
+    dd = _dense_seg_gs(hhd, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2, h, e, cap)
+    rwd = validd.float() if on_input else (w_of[scd] * validd.float())
+    y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
+    # SPARSE group: low-weight tail through the 2:4 seg path (both projections).
+    _seg_apply_gs(sp, x, tok_of, ids_local, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y,
+                  valid & (~dense_slot), "both", layer)
+    return drop_d
+
+
+def _dense_apply_gs(sp, x, tok_of, assign, w_of, valid, layer, i, h, e, cap, on_input, y):
+    # Graph-safe FULLY-DENSE NVFP4 MoE apply (both projections dense), for the dense-anchor LAYERS of
+    # down49/D2 (first-N kept dense) and for QB_MOE=dense. Fixed-capacity routing + _dense_seg_gs; the
+    # graph-safe replacement for the frozen dense `else` branch's torch.unique(local).tolist() loop.
+    import torch
+    import torch.nn.functional as F
+
+    li = getattr(layer, "_qb_layer_idx", -1)
+    src, _eb, dropped = sp.route_fixed_cap(assign, e, cap, valid)
+    vv = src >= 0
+    sc = src.clamp_min(0)
+    xs = (x[tok_of[sc]].to(torch.bfloat16) * vv[:, None])
+    if on_input:
+        xs = xs * w_of[sc][:, None].to(torch.bfloat16)
+    xs = _sanitize(xs.contiguous(), li, "x_in")
+    gu = _dense_seg_gs(xs, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
+                       2 * i, e, cap)
+    hh = _sanitize((F.silu(gu[:, :i].float()) * gu[:, i:].float()).to(torch.bfloat16), li, "swiglu")
+    dd = _dense_seg_gs(hh, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2, h, e, cap)
+    rw = vv.float() if on_input else (w_of[sc] * vv.float())
+    y.index_add_(0, tok_of[sc], (dd.float() * rw[:, None]).to(y.dtype))
+    return dropped
+
+
 def _mqa_logits_bf16(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=False):
     # SM120-safe replacement for DeepGEMM fp8_fp4_mqa_logits (prefill). FP8 path only.
     # logits[m,n] = sum_h w[m,h] * sum_d q[m,h,d]*k[n,d]  == (sum_h w[m,h]*q[m,h,d]) . k[n,:]
@@ -205,6 +336,25 @@ def _paged_mqa_logits_bf16(q, kv_cache, weights, context_lens, block_tables, sch
     ctx = context_lens
     out = torch.full((b * next_n, max_model_len), float("-inf"),
                      device=q_values.device, dtype=torch.float32)
+    if _GRAPH:
+        # graph-safe DSA decode logits: FIXED gather length (max_model_len) + device masking beyond
+        # each request's context, so no .item() and no data-dependent shape (b/next_n are static at
+        # capture, so the Python loops unroll into the graph). Trades extra gather work (max_model_len
+        # rows every step) for capture-legality; the eager path below keeps the variable-length gather.
+        pos = torch.arange(max_model_len, device=q_values.device)
+        blk_idx = (pos // block_size).long().clamp(0, block_tables.shape[1] - 1)
+        wpos = (pos % block_size).long()
+        for bi in range(b):
+            blk = block_tables[bi, blk_idx].long().clamp(0, num_blocks - 1)
+            rows = kv_u8[blk, wpos]  # [max_model_len, width] uint8
+            kf = rows[:, :d].contiguous().view(torch.float8_e4m3fn).to(torch.float32)
+            ksc = rows[:, d:d + 4].contiguous().view(torch.float32).reshape(-1)
+            kf = kf * ksc.reshape(-1, 1)
+            logits_bn = qw[bi] @ kf.t()  # [next_n, max_model_len]
+            for ni in range(next_n):
+                ln = ctx[bi, ni] if ctx.ndim == 2 else ctx[bi]     # DEVICE scalar, no host read
+                out[bi * next_n + ni] = torch.where(pos < ln, logits_bn[ni], out[bi * next_n + ni])
+        return out
     for bi in range(b):
         lens_bn = ctx[bi] if ctx.ndim == 2 else ctx[bi].reshape(1).expand(next_n)
         length = int(lens_bn.max().item())
@@ -265,6 +415,17 @@ if _SPARSE_PROJ not in ("both", "down", "gateup"):
 # 0 = off. Raises active sparse expert-FLOP vs projection anchoring by leaving the low-weight tail
 # sparse while the dominant experts stay dense. Needs raw NVFP4 kept resident (see pack path).
 _ROUTE_SLOT = int(os.environ.get("QB_ROUTE_SLOT", "0"))
+# P4 graph-safe MoE path (opt-in). When set, the sparse `both` apply routes through the graph-capturable
+# _seg_apply_gs (fixed-capacity device routing + current-stream launches) instead of the frozen eager
+# build_routing path, so vLLM can CUDA-graph the MoE forward. QB_GRAPH_CAP is the fixed per-local-expert
+# row capacity (compile-time constant for capture); off-rank / overflow rows are dropped deterministically.
+_GRAPH = os.environ.get("QB_GRAPH") == "1"
+_GRAPH_CAP = int(os.environ.get("QB_GRAPH_CAP", "0"))  # 0 -> sized per-forward from token count (eager only)
+# cap must be a positive multiple of _BN: route_fixed_cap tiles per-expert rows into _BN-row blocks and
+# builds eblk as arange(e*cap//_BN)//(cap//_BN). A non-multiple misaligns the block->expert map, and
+# cap<_BN makes cap//_BN==0 (div-by-zero / zero blocks, all work silently dropped). Fail fast at import.
+if _GRAPH_CAP and _GRAPH_CAP % _BN:
+    raise ValueError(f"QB_GRAPH_CAP={_GRAPH_CAP} must be a positive multiple of _BN={_BN}")
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the
@@ -664,6 +825,8 @@ def _load_sparse_moe():
 
     lib = ctypes.CDLL(_SPARSE_SO)
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    # graph-safe additive variant: same kernel, launched on a caller-supplied stream (see M3 audit D1).
+    lib.quantize_act_nvfp4_2lvl_s.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                        + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.qb_init_moe_attrs()
@@ -763,8 +926,76 @@ def _load_sparse_moe():
             off += pe
         return src, eblk, r_pad
 
+    # ---- graph-safe (M3) additive helpers: preallocated buffers + current-stream launches + fixed
+    # capacity device routing. Numerically identical to the eager path in eager mode (the current
+    # stream IS the default stream), but capture-legal: no in-region alloc, no host sync. Opt-in via
+    # the plugin's QB_GRAPH flag; the frozen eager helpers above are untouched.
+    def _st():
+        return torch.cuda.current_stream().cuda_stream
+
+    def quant_into(x, bb, sb, gb):
+        # stream-safe quantize into preallocated bb/sb/gb (no alloc, no default-stream sync)
+        r, in_f = x.shape
+        lib.quantize_act_nvfp4_2lvl_s(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(),
+                                      r, in_f, _st())
+
+    def seg_into(w, bb, sb, gb, c, mpe, in_f, eblk):
+        # sparse_moe_mm_2lvl on the CURRENT stream into preallocated c (kills the stream==0 forced sync)
+        ac, meta, scale_a, ga = w
+        r = c.shape[0]
+        lib.sparse_moe_mm_2lvl(ac.data_ptr(), bb.data_ptr(), scale_a.data_ptr(), sb.data_ptr(),
+                               meta.data_ptr(), c.data_ptr(), ac.shape[0], mpe, r, in_f,
+                               ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, _st())
+
+    def route_fixed_cap(assign, e, cap, valid=None):
+        # fixed-capacity DEVICE routing (replaces build_routing's host sync + dynamic alloc). assign:[R]
+        # local expert per routed row. Returns src:[e*cap] (row index per padded slot, -1=pad), eblk:
+        # [e*cap/_BN] (CONSTANT block->expert map), dropped count. No .item()/host loop/dynamic shape;
+        # overflow (>cap rows for one expert) dropped deterministically (lowest sorted rows kept).
+        # valid:[R] optional bool mask. On an EP shard, off-rank slots (valid=False) must be dropped
+        # WITHOUT compacting the row set (compaction = data-dependent shape = capture-illegal). They are
+        # sent to a sink bucket `e` that consumes no real-expert capacity and is never gemm'd, keeping R
+        # fixed. valid=None => all valid (identical to the single-rank path).
+        assign = assign.to(torch.long)   # vLLM's expert_map is int32; scatter_add/index need long
+        r = assign.shape[0]
+        if valid is None:
+            a = assign
+            nb = e
+        else:
+            # off-rank -> sink bucket `e`; where(valid) uses assign (which may hold junk under invalid,
+            # so clamp into range first) else the sink id. counts/offs run over e+1 buckets.
+            a = torch.where(valid, assign.clamp(0, e - 1), torch.full_like(assign, e))
+            nb = e + 1
+        order = torch.argsort(a, stable=True)
+        sa = a[order]
+        # counts via scatter_add, NOT torch.bincount: bincount reads the max element to the host to
+        # size its output, which is a CPU<->CUDA copy illegal inside a captured region. nb is constant
+        # and `a` is in [0,nb), so a fixed-size scatter_add is graph-safe.
+        counts = torch.zeros(nb, dtype=torch.long, device=assign.device).scatter_add_(
+            0, a, torch.ones_like(a))
+        offs = torch.cumsum(counts, 0) - counts
+        within = torch.arange(r, device=assign.device) - offs[sa]
+        keep = (within < cap) & (sa < e)   # sink rows (sa==e) never kept; real overflow dropped
+        # boolean-index scatter (`src[dest[keep]] = order[keep]`) calls .nonzero() -> data-dependent
+        # size -> invalidates capture. Instead send overflow rows to a single trash slot via
+        # torch.where and scatter unconditionally; the trash slot is sliced off. Real slots each get a
+        # unique dest (within is the per-expert rank), so the result is identical to the masked form.
+        sink = e * cap
+        dest = torch.where(keep, sa * cap + within, sink)
+        src = torch.full((e * cap + 1,), -1, dtype=torch.long, device=assign.device)
+        src.scatter_(0, dest, order)
+        src = src[:e * cap]
+        eblk = (torch.arange(e * cap // _BN, device=assign.device) // (cap // _BN)).to(torch.int32)
+        # dropped = REAL (on-rank) rows that overflowed, not sink rows. Stays on-device (a DEVICE
+        # scalar): reading it with .item() would host-sync, so callers needing the int do so OUTSIDE
+        # any captured region.
+        real = r if valid is None else valid.sum()
+        dropped = real - keep.sum()
+        return src, eblk, dropped
+
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
-                              seg_gemm=seg_gemm, build_routing=build_routing)
+                              seg_gemm=seg_gemm, build_routing=build_routing,
+                              quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap)
     return _SPARSE
 
 
@@ -992,6 +1223,19 @@ def install() -> None:
     # (order among the k is irrelevant to the downstream set-attention). Correctness-first.
     def _topk_into(logits, seq_lens, topk_indices, topk_tokens):
         rows, width = logits.shape
+        if _GRAPH:
+            # A6 graph-safe indexer top-k: no seq_lens.cpu() copy and no Python row loop (both break
+            # capture). Mask positions >= seq_len to -inf, one batched top-k, then invalidate slots
+            # beyond each row's seq_len to -1. Same selected set as the eager loop; fully static shapes.
+            topk_indices[:rows, :topk_tokens] = -1
+            k = min(topk_tokens, width)
+            ar = torch.arange(width, device=logits.device).unsqueeze(0)
+            n = seq_lens.reshape(-1)[:rows].to(torch.long).clamp(0, width).unsqueeze(1)
+            idx = torch.topk(logits.masked_fill(ar >= n, float("-inf")), k, dim=1).indices
+            rk = torch.arange(k, device=logits.device).unsqueeze(0)
+            topk_indices[:rows, :k] = torch.where(rk < n, idx.to(topk_indices.dtype),
+                                                  torch.full_like(idx, -1, dtype=topk_indices.dtype))
+            return
         sl = seq_lens.reshape(-1).cpu().tolist()  # copy once; .item() per row would sync every iter
         topk_indices[:rows, :topk_tokens] = -1
         for r in range(rows):
@@ -1057,6 +1301,11 @@ def _install_moe() -> None:
 
     STATS["moe_calls"] = 0
     STATS["sparse_expert_calls"] = 0
+    # originals, captured BEFORE patching, so dense-anchor layers can be delegated to the native
+    # FlashInfer fused NVFP4 MoE (fast + already graph-capturable on SM120) under QB_GRAPH instead of
+    # the decode-slow all-E dequant loop. Only used for _qb_native layers; sparse layers are unaffected.
+    orig_moe_pw = ModelOptNvFp4FusedMoE.process_weights_after_loading
+    orig_moe_apply = ModelOptNvFp4FusedMoE.apply
 
     def patched_moe_pw(self, layer):
         # Keep the RAW NVFP4 expert weights on the layer (dequant on the fly in apply); do NOT run
@@ -1087,6 +1336,15 @@ def _install_moe() -> None:
         do_pack = (qb_moe == "sparse" and not is_anchor) or is_probe
         if is_anchor:
             layer._qb_dense_anchor = True
+            if _GRAPH:
+                # graph mode: run the NATIVE weight processing (CUTLASS NVFP4 layout) + delegate apply to
+                # the native fused MoE (fast, graph-safe) instead of the decode-slow all-E dequant loop.
+                orig_moe_pw(self, layer)
+                layer._qb_native = True
+                if first:
+                    print(f"[qb_sm120] dense-anchor layer {layer_idx}: NATIVE fused NVFP4 MoE "
+                          "(QB_GRAPH delegate)", flush=True)
+                return None
             if first:
                 print(f"[qb_sm120] dense-anchor layer {layer_idx}: kept NVFP4 (no packing)", flush=True)
             return None
@@ -1163,6 +1421,10 @@ def _install_moe() -> None:
     def patched_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
                           shared_experts_input=None):
         STATS["moe_calls"] += 1
+        if getattr(layer, "_qb_native", False):
+            # dense-anchor layer under QB_GRAPH: native FlashInfer fused NVFP4 MoE (fast, graph-safe).
+            return orig_moe_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
+                                  shared_experts_input)
         t, h = x.shape
         y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
         topk = topk_ids.shape[1]
@@ -1175,6 +1437,38 @@ def _install_moe() -> None:
             sp = _load_sparse_moe()
             ii, ee = layer._qb_i, layer._qb_e
             proj = layer._qb_proj
+            if _GRAPH and _GRAPH_CAP > 0:
+                # P4 graph-capturable DEPLOYED sparse policies (M3 + M4 validated). Fixed-capacity DEVICE
+                # routing with off-rank slots sink-routed keeps every shape static and removes all host
+                # syncs, so vLLM can CUDA-graph the MoE forward. Covers both, down49 (down sparse /
+                # gate_up anchored dense), gateup49, and route-slot D2 (dense top-N slots + sparse tail).
+                # Overflow / off-rank rows dropped deterministically; _sanitize restored (capture-safe).
+                assign_g = topk_ids.reshape(-1).to(torch.long)
+                tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
+                w_g = topk_weights.reshape(-1).to(torch.float32)
+                emap = getattr(layer, "expert_map", None)
+                if emap is not None:
+                    local_g = emap[assign_g]
+                    valid_g = local_g >= 0
+                    local_g = local_g.clamp_min(0)
+                else:
+                    local_g = assign_g
+                    valid_g = torch.ones_like(local_g, dtype=torch.bool)
+                # only the SPARSE projection(s) are packed: down49 sets _qb_dn (gate_up anchored dense),
+                # gateup49 sets _qb_gu; _seg_apply_gs only reads the one its proj needs.
+                gu_p = getattr(layer, "_qb_gu", None)
+                dn_p = getattr(layer, "_qb_dn", None)
+                if _ROUTE_SLOT > 0 and proj == "both":
+                    rank = topk_weights.argsort(dim=1, descending=True).argsort(dim=1)
+                    dense_slot = (rank < _ROUTE_SLOT).reshape(-1)
+                    _route_slot_apply_gs(sp, x, local_g, tok_g, w_g, dense_slot, valid_g,
+                                         gu_p, dn_p, layer, ii, h, ee, _GRAPH_CAP, on_input, y)
+                else:
+                    _seg_apply_gs(sp, x, tok_g, local_g, w_g, gu_p, dn_p, ii, h, ee,
+                                  _GRAPH_CAP, on_input, y, valid_g, proj, layer)
+                if shared_experts is not None and shared_experts_input is not None:
+                    shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+                return y
             if _ROUTE_SLOT > 0 and proj == "both":
                 y = _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y)
                 if shared_experts is not None and shared_experts_input is not None:
@@ -1248,6 +1542,26 @@ def _install_moe() -> None:
         w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
         i = w13.shape[1] // 2
         emap = getattr(layer, "expert_map", None)
+        if _GRAPH and _GRAPH_CAP > 0:
+            # Graph-safe fully-dense layer (dense-anchor layers of down49/D2, or QB_MOE=dense). See the
+            # _dense_seg_gs note on decode cost: dense NVFP4 has no fused grouped-GEMM, so all E experts
+            # are dequant'd every step -- captures + correct but decode-slow (precisely attributed).
+            spd = _load_sparse_moe()
+            assign_g = topk_ids.reshape(-1).to(torch.long)
+            tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
+            w_g = topk_weights.reshape(-1).to(torch.float32)
+            if emap is not None:
+                local_g = emap[assign_g]
+                valid_g = local_g >= 0
+                local_g = local_g.clamp_min(0)
+            else:
+                local_g = assign_g
+                valid_g = torch.ones_like(local_g, dtype=torch.bool)
+            _dense_apply_gs(spd, x, tok_g, local_g, w_g, valid_g, layer, i, h,
+                            w13.shape[0], _GRAPH_CAP, on_input, y)
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+            return y
         flat_ids = topk_ids.reshape(-1)
         flat_w = topk_weights.reshape(-1).to(torch.float32)
         tok = torch.arange(t, device=x.device).repeat_interleave(topk)

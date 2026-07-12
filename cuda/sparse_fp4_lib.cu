@@ -313,6 +313,15 @@ extern "C" void quantize_act_nvfp4_2lvl(const void *x, void *Bbytes, void *scale
     quant_act_2lvl_k<<<batch, 256>>>((const __nv_bfloat16 *)x, (uint32_t *)Bbytes, (uint8_t *)scaleB,
                                      (float *)gB, in_f);
 }
+// Stream-safe variant (P4 graph capture): identical kernel, launched on the caller's stream so it is
+// visible to torch's capture stream. `stream` is a raw cudaStream_t as void* (0 = default). Additive:
+// the stream-less quantize_act_nvfp4_2lvl above is untouched for its ~40 existing callers.
+extern "C" void quantize_act_nvfp4_2lvl_s(const void *x, void *Bbytes, void *scaleB, void *gB, int batch,
+                                          int in_f, void *stream) {
+    if (batch <= 0) return;  // empty grid -> cudaErrorInvalidConfiguration
+    quant_act_2lvl_k<<<batch, 256, 0, (cudaStream_t)stream>>>((const __nv_bfloat16 *)x, (uint32_t *)Bbytes,
+                                                              (uint8_t *)scaleB, (float *)gB, in_f);
+}
 
 // ---- Fused SwiGLU epilogue: silu(g)*u + NVFP4 quantize in ONE pass. g,u are the gate/up GEMM
 // outputs in [hidden, batch] (the kernel's C[out,batch] layout); output Hbytes[batch,hidden/2] +

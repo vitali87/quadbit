@@ -1,0 +1,34 @@
+Note that running a local entrypoint in detached mode only keeps the last triggered Modal function alive after the parent process has been killed or disconnected.
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-n4oSmMYKCNXALAcHph7VZl
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/p4_m4d_dense.py
+└── 🔨 Created function validate.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.8.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+/usr/local/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+# torch 2.12.0.dev20260408+cu128 | NVIDIA RTX PRO 6000 Blackwell Server Edition | cap (12, 0)
+   E  cap    in   out |  GvsE cos  nf |  eagerms  graphms |   loopMB  weightMB | capture
+  32  128  4096  4096 |  1.000000   0 |    6.514    6.226 |    138.4    1073.7 | OK
+ 128  128  4096  4096 |  1.000000   0 |   25.922   24.926 |    205.5    4295.0 | OK
+ 128  256  4096  4096 |  1.000000   0 |   34.088   32.675 |    343.9    4295.0 | OK
+
+# capture OK 3/3; graph==eager 3/3
+# M4D-DENSE PASS (loopMB bounded => capture pool reuses buffers, no E-fold blowup)
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-n4oSmMYKCNXALAcHph7VZl

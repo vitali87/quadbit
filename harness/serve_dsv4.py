@@ -309,6 +309,167 @@ def unblock(
     )
 
 
+def _graph_gate_body(
+    tp: int = 2,
+    eager: bool = False,
+    force_graph_path: bool = False,
+    proj: str = "both",
+    route_slot: int = 0,
+    dense_layers: str = "",
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    glm: bool = False,
+) -> None:
+    """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
+      A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
+      B eager=True  force_graph_path=True  -> QB_GRAPH=1, enforce_eager=True   (graph-safe path, eager exec)
+      C eager=False                        -> QB_GRAPH=1, enforce_eager=False  (graph-safe path, CAPTURED)
+    B vs A isolates the code-path change; C vs B isolates capture; C vs A is the end-to-end M4 claim.
+    Prints greedy token_ids (exact diff) + teacher-forced PPL. cap is the fixed per-local-expert row
+    capacity; max_seqs bounds the decode batch so cap can't overflow (a drop would break quality)."""
+    import math
+    import os
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    gp = force_graph_path or (not eager)
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "sparse"
+    os.environ["QB_SPARSE_PROJ"] = proj
+    os.environ["QB_ROUTE_SLOT"] = str(route_slot)
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
+    os.environ["QB_GRAPH"] = "1" if gp else "0"
+    os.environ["QB_GRAPH_CAP"] = str(cap)
+    cfg = "C-captured" if (gp and not eager) else ("B-graphpath-eager" if gp else "A-frozen-eager")
+    pol = f"proj={proj} route_slot={route_slot} dense_layers=[{dense_layers}]"
+    print(f"# M4 graph_gate cfg={cfg} {pol} cap={cap} max_seqs={max_seqs} "
+          f"QB_GRAPH={os.environ['QB_GRAPH']} enforce_eager={eager} tp={tp} "
+          f"model={'GLM' if glm else 'DeepSeek'}", flush=True)
+
+    t0 = time.time()
+    if glm:
+        # GLM-5.2 keeps its own rope/config (1M ctx); no DeepSeek yarn override or tokenizer_mode.
+        kw = dict(model=GLM_MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
+                  max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
+                  max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs, enable_expert_parallel=True)
+        llm = LLM(**kw)
+    else:
+        rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+                "beta_fast": 32, "beta_slow": 1}
+        kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
+                  max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
+                  max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
+                  enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+        try:
+            llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+        except Exception as ex:  # noqa: BLE001
+            print(f"  (deepseek_v4 tokenizer_mode rejected: {type(ex).__name__}; default) ", flush=True)
+            llm = LLM(**kw)
+    print(f"  load+capture ok in {time.time() - t0:.0f}s (captured => graph capture SUCCEEDED)", flush=True)
+
+    prompts = ["The capital of France is", "def fibonacci(n):", "The three primary colors are",
+               "Water is made of hydrogen and"]
+    sp = SamplingParams(temperature=0.0, max_tokens=24)
+    outs = llm.generate(prompts, sp)
+    for o in outs:
+        print(f"  [gen] {o.prompt!r} -> {o.outputs[0].text!r}", flush=True)
+        print(f"        ids={list(o.outputs[0].token_ids)}", flush=True)
+    ntok = sum(len(o.outputs[0].token_ids) for o in outs)
+
+    passage = (
+        "The mitochondria is the powerhouse of the cell. Photosynthesis converts sunlight, water, "
+        "and carbon dioxide into glucose and oxygen. The Earth orbits the Sun once every year, and "
+        "the Moon orbits the Earth roughly every twenty-eight days. Water boils at one hundred "
+        "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
+        "through arteries and veins, delivering oxygen to every tissue in the body."
+    )
+    pids = llm.get_tokenizer().encode(passage)
+    pout = llm.generate([{"prompt_token_ids": pids}],
+                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+    plp = pout[0].prompt_logprobs or []
+    nlls = [-d[tid].logprob for tid, d in zip(pids[1:], plp[1:], strict=False)
+            if d and tid in d and math.isfinite(d[tid].logprob)]
+    ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
+    print(f"# PPL over {len(nlls)}-token passage: {ppl:.4f}", flush=True)
+    print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f})", flush=True)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=75 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate(
+    tp: int = 2,
+    eager: bool = False,
+    force_graph_path: bool = False,
+    proj: str = "both",
+    route_slot: int = 0,
+    dense_layers: str = "",
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+) -> None:
+    """2-GPU P4 M4 graph-capture gate (down49 / gateup49). See _graph_gate_body for config A/B/C."""
+    _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
+                     cap, max_seqs, max_len, gpu_mem)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate4(
+    tp: int = 4,
+    eager: bool = False,
+    force_graph_path: bool = False,
+    proj: str = "both",
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+) -> None:
+    """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
+    packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C."""
+    _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
+                     cap, max_seqs, max_len, gpu_mem)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:8",
+    timeout=120 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def glm_graph_gate(
+    tp: int = 8,
+    eager: bool = False,
+    force_graph_path: bool = False,
+    proj: str = "both",
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.92,
+) -> None:
+    """8-GPU P4 M4 graph-capture gate on GLM-5.2 route-slot D2 (directive #4). GLM's EP MoE capture was
+    previously blocked by the plugin's torch.unique().tolist() host-sync; the QB_GRAPH graph-safe path
+    (route_fixed_cap) removes it. Config A/B/C as in _graph_gate_body; defaults tp=8, route_slot=2 (D2)."""
+    _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
+                     cap, max_seqs, max_len, gpu_mem, glm=True)
+
+
 @app.function(
     gpu="RTX-PRO-6000:2",
     timeout=60 * MIN,

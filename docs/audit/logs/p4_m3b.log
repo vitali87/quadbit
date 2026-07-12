@@ -1,0 +1,38 @@
+Note that running a local entrypoint in detached mode only keeps the last triggered Modal function alive after the parent process has been killed or disconnected.
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-W0OnIzkziJDG0y74IeALsN
+✓ Created objects.
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/harness/p4_m3b.py
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/cuda
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+└── 🔨 Created function validate.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.8.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# torch 2.12.0.dev20260408+cu128 | NVIDIA RTX PRO 6000 Blackwell Server Edition | cap (12, 0) | driver 12.8
+
+             tag     T  tk    cap   drop |  NEWvsOLD       rel  nf |      GvsE  nf |  eagerms  graphms    memMB | capture
+       single-e0  4096   1   1024   3072 |  0.499790  8.66e-01   0 |  1.000000   0 |    2.029    1.734   1573.4 | OK
+         uniform  4096   6   6144      0 |  1.000000  4.79e-04   0 |  1.000000   0 |   11.122   10.790   4225.6 | OK
+   empty-experts  4096   6   6144      0 |  1.000000  0.00e+00   0 |  1.000000   0 |   11.121   10.769   4225.6 | OK
+   near-capacity  4096   6   6784      0 |  1.000000  4.81e-04   0 |  1.000000   0 |   12.301   11.994   4557.1 | OK
+        overflow  4096   6   2048   8192 |  0.816465  5.77e-01   0 |  1.000000   0 |    3.712    3.367   2104.2 | OK
+ uniform-oninput  4096   6   6144      0 |  1.000000  4.15e-04   0 |  1.000000   0 |   11.520   11.174   4225.6 | OK
+
+# capture OK 6/6; graph==eager 6/6; NEW==OLD (no-drop) 4/4
+# M3-B PASS
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-W0OnIzkziJDG0y74IeALsN

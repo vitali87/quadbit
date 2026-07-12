@@ -1,0 +1,37 @@
+Note that running a local entrypoint in detached mode only keeps the last triggered Modal function alive after the parent process has been killed or disconnected.
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-vmr2K3FWflLN3Li3pkpl5T
+✓ Created objects.
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/harness/p4_m3c.py
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/cuda
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+└── 🔨 Created function validate.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.8.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# torch 2.12.0.dev20260408+cu128 | NVIDIA RTX PRO 6000 Blackwell Server Edition | cap (12, 0) | EP world=2 EG=8 (4/shard) T=4096 topk=6
+
+  shard  lo  el    cap  onrank  drop |                 counts |  NEWvsOLD      GvsE  nf |  eagerms  graphms    memMB | capture
+ shard0   0   4   6144   12328     0 | [3090, 3075, 3125, 3038] |  1.000000  1.000000   0 |    3.281    2.927   1142.3 | OK
+ shard1   4   4   6144   12248     0 | [3083, 3078, 3093, 2994] |  1.000000  1.000000   0 |    3.282    2.928   1159.1 | OK
+ full-8   0   8   6144   24576     0 | [3090, 3075, 3125, 3038, 3083, 3078, 3093, 2994] |  1.000000  1.000000   0 |    6.218    5.858   1981.6 | OK
+
+# EP-reduce: cos(sum_shards, full-8) = 0.999994 (shards partition the 8 experts; in-process sum stands in for all-reduce)
+
+# capture OK 3/3; graph==eager 3/3; NEW==OLD (no-drop) 3/3; EP-reduce OK
+# M3-C PASS
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-vmr2K3FWflLN3Li3pkpl5T

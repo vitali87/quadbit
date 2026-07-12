@@ -1,0 +1,25 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-ElZyu7Pbau45p8HmesfSDz
+✓ Created objects.
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/harness/build_so.py
+├── 🔨 Created mount /Users/vitaliavagyan/Documents/quadbit/cuda
+└── 🔨 Created function build.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.8.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# built /cache/sparse_fp4.so (1757176 bytes) under CUDA 12.8 ptxas -> committed to volume
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-ElZyu7Pbau45p8HmesfSDz
