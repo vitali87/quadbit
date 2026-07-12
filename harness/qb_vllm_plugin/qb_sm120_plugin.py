@@ -246,6 +246,25 @@ def _paged_mqa_logits_bf16(q, kv_cache, weights, context_lens, block_tables, sch
     ctx = context_lens
     out = torch.full((b * next_n, max_model_len), float("-inf"),
                      device=q_values.device, dtype=torch.float32)
+    if _GRAPH:
+        # graph-safe DSA decode logits: FIXED gather length (max_model_len) + device masking beyond
+        # each request's context, so no .item() and no data-dependent shape (b/next_n are static at
+        # capture, so the Python loops unroll into the graph). Trades extra gather work (max_model_len
+        # rows every step) for capture-legality; the eager path below keeps the variable-length gather.
+        pos = torch.arange(max_model_len, device=q_values.device)
+        blk_idx = torch.div(pos, block_size, rounding_mode="floor").long().clamp(0, block_tables.shape[1] - 1)
+        wpos = (pos % block_size).long()
+        for bi in range(b):
+            blk = block_tables[bi, blk_idx].long().clamp(0, num_blocks - 1)
+            rows = kv_u8[blk, wpos]  # [max_model_len, width] uint8
+            kf = rows[:, :d].contiguous().view(torch.float8_e4m3fn).to(torch.float32)
+            ksc = rows[:, d:d + 4].contiguous().view(torch.float32).reshape(-1)
+            kf = kf * ksc.reshape(-1, 1)
+            logits_bn = qw[bi] @ kf.t()  # [next_n, max_model_len]
+            for ni in range(next_n):
+                ln = ctx[bi, ni] if ctx.ndim == 2 else ctx[bi]     # DEVICE scalar, no host read
+                out[bi * next_n + ni] = torch.where(pos < ln, logits_bn[ni], out[bi * next_n + ni])
+        return out
     for bi in range(b):
         lens_bn = ctx[bi] if ctx.ndim == 2 else ctx[bi].reshape(1).expand(next_n)
         length = int(lens_bn.max().item())
@@ -842,6 +861,7 @@ def _load_sparse_moe():
         # WITHOUT compacting the row set (compaction = data-dependent shape = capture-illegal). They are
         # sent to a sink bucket `e` that consumes no real-expert capacity and is never gemm'd, keeping R
         # fixed. valid=None => all valid (identical to the single-rank path).
+        assign = assign.to(torch.long)   # vLLM's expert_map is int32; scatter_add/index need long
         r = assign.shape[0]
         if valid is None:
             a = assign
