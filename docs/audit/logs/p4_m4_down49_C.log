@@ -1,0 +1,653 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-MUBOG62KEyPwcRc0z5bRNg
+Building image im-rkzqwKkn5GNxwtAKsnpaq3
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.8.1-py3-none-any.whl size=31846 sha256=39ae12815e3f2f316995bd74c920613757b0c052db3178575146890b81b5e0a3
+  Stored in directory: /tmp/pip-ephem-wheel-cache-cyg38b3f/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.8.1
+Saving image...
+Image saved, took 1.94s
+
+Built image im-rkzqwKkn5GNxwtAKsnpaq3 in 5.75s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# M4 graph_gate cfg=C-captured proj=down route_slot=0 dense_layers=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21] cap=128 max_seqs=2 QB_GRAPH=1 enforce_eager=False tp=2
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=sparse) pid=2
+[qb_sm120] installed in pid=2 (method=nvfp4)
+INFO 07-12 09:40:12 [api_utils.py:273] non-default args: {'tokenizer_mode': 'deepseek_v4', 'trust_remote_code': True, 'kv_cache_dtype': 'fp8', 'max_model_len': 1024, 'tensor_parallel_size': 2, 'enable_expert_parallel': True, 'gpu_memory_utilization': 0.95, 'max_num_seqs': 2, 'disable_log_stats': True, 'hf_overrides': {'rope_scaling': {'rope_type': 'yarn', 'factor': 16, 'original_max_position_embeddings': 65536, 'beta_fast': 32, 'beta_slow': 1}}, 'model': 'nvidia/DeepSeek-V4-Flash-NVFP4'}
+INFO 07-12 09:40:12 [config.py:741] Detected quantization_config.scale_fmt=ue8m0; enabling UE8M0 for DeepGEMM.
+INFO 07-12 09:40:25 [model.py:598] Resolved architecture: DeepseekV4ForCausalLM
+INFO 07-12 09:40:25 [model.py:1725] Using max model len 1024
+INFO 07-12 09:40:25 [cache.py:279] Using fp8 data type to store kv cache. It reduces the GPU memory footprint and boosts the performance. Meanwhile, it may cause accuracy drop without a proper scaling factor
+INFO 07-12 09:40:25 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 07-12 09:40:25 [vllm.py:1006] Asynchronous scheduling is enabled.
+INFO 07-12 09:40:25 [vllm.py:1094] Auto-enabling VLLM_USE_BREAKABLE_CUDAGRAPH=1. Set VLLM_USE_BREAKABLE_CUDAGRAPH=0 to opt out.
+WARNING 07-12 09:40:25 [vllm.py:1100] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+WARNING 07-12 09:40:25 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 07-12 09:40:25 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 07-12 09:40:25 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+WARNING 07-12 09:40:27 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=53) [qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+(EngineCore pid=53) [qb_sm120] patched indexer mqa-logits (+3 rebinds)
+(EngineCore pid=53) [qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+(EngineCore pid=53) [qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=sparse) pid=53
+(EngineCore pid=53) [qb_sm120] installed in pid=53 (method=nvfp4)
+(EngineCore pid=53) INFO 07-12 09:40:39 [core.py:114] Initializing a V1 LLM engine (v0.24.0) with config: model='nvidia/DeepSeek-V4-Flash-NVFP4', speculative_config=None, tokenizer='nvidia/DeepSeek-V4-Flash-NVFP4', skip_tokenizer_init=False, tokenizer_mode=deepseek_v4, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=1024, download_dir=None, load_format=auto, tensor_parallel_size=2, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=deepseek_v4_fp8, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=fp8, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_verbose=False), seed=0, served_model_name=nvidia/DeepSeek-V4-Flash-NVFP4, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8', 'all', '+quant_fp8'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 4, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=53) INFO 07-12 09:40:39 [multiproc_executor.py:140] DP group leader: node_rank=0, node_rank_within_dp=0, master_addr=127.0.0.1, mq_connect_ip=172.20.0.100 (local), world_size=2, local_world_size=2
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=sparse) pid=71
+[qb_sm120] installed in pid=71 (method=nvfp4)
+(Worker pid=71) INFO 07-12 09:40:55 [parallel_state.py:1588] world_size=2 rank=1 local_rank=1 distributed_init_method=tcp://127.0.0.1:33506 backend=nccl
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=sparse) pid=70
+[qb_sm120] installed in pid=70 (method=nvfp4)
+(Worker pid=70) INFO 07-12 09:40:57 [parallel_state.py:1588] world_size=2 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:33506 backend=nccl
+(Worker pid=70) INFO 07-12 09:40:57 [pynccl.py:113] vLLM is using nccl==2.28.9
+(Worker pid=70) WARNING 07-12 09:40:57 [symm_mem.py:66] SymmMemCommunicator: Device capability 12.0 not supported, communicator is not available.
+(Worker pid=71) WARNING 07-12 09:40:57 [symm_mem.py:66] SymmMemCommunicator: Device capability 12.0 not supported, communicator is not available.
+(Worker pid=71) WARNING 07-12 09:40:57 [custom_all_reduce.py:162] Custom allreduce is disabled because your platform lacks GPU P2P capability or P2P test failed. To silence this warning, specify disable_custom_all_reduce=True explicitly.
+(Worker pid=70) WARNING 07-12 09:40:57 [custom_all_reduce.py:162] Custom allreduce is disabled because your platform lacks GPU P2P capability or P2P test failed. To silence this warning, specify disable_custom_all_reduce=True explicitly.
+(Worker pid=70) INFO 07-12 09:40:57 [cuda_communicator.py:245] Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=70) INFO 07-12 09:40:57 [cuda_communicator.py:245] Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'ep:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=70) INFO 07-12 09:40:57 [parallel_state.py:1923] rank 0 in world size 2 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank 0, EPLB rank N/A
+(Worker pid=70) INFO 07-12 09:40:58 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:58 [gpu_model_runner.py:5160] Starting to load model nvidia/DeepSeek-V4-Flash-NVFP4...
+(Worker_TP1_EP1 pid=71) WARNING 07-12 09:40:58 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:58 [quant_config.py:75] DeepSeek V4 expert_dtype resolved to 'fp4'
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:58 [__init__.py:563] Selected CutlassFp8BlockScaledMMKernel for Fp8LinearMethod
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:58 [attention.py:87] Using DeepSeek's fp8_ds_mla KV cache format.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:58 [expert_map_manager.py:245] [EP Rank 0/2] Expert parallelism is enabled. Expert placement strategy: linear. Local/global number of experts: 128/256. Experts local to global index map: 0->0, 1->1, 2->2, 3->3, 4->4, 5->5, 6->6, 7->7, 8->8, 9->9, 10->10, 11->11, 12->12, 13->13, 14->14, 15->15, 16->16, 17->17, 18->18, 19->19, 20->20, 21->21, 22->22, 23->23, 24->24, 25->25, 26->26, 27->27, 28->28, 29->29, 30->30, 31->31, 32->32, 33->33, 34->34, 35->35, 36->36, 37->37, 38->38, 39->39, 40->40, 41->41, 42->42, 43->43, 44->44, 45->45, 46->46, 47->47, 48->48, 49->49, 50->50, 51->51, 52->52, 53->53, 54->54, 55->55, 56->56, 57->57, 58->58, 59->59, 60->60, 61->61, 62->62, 63->63, 64->64, 65->65, 66->66, 67->67, 68->68, 69->69, 70->70, 71->71, 72->72, 73->73, 74->74, 75->75, 76->76, 77->77, 78->78, 79->79, 80->80, 81->81, 82->82, 83->83, 84->84, 85->85, 86->86, 87->87, 88->88, 89->89, 90->90, 91->91, 92->92, 93->93, 94->94, 95->95, 96->96, 97->97, 98->98, 99->99, 100->100, 101->101, 102->102, 103->103, 104->104, 105->105, 106->106, 107->107, 108->108, 109->109, 110->110, 111->111, 112->112, 113->113, 114->114, 115->115, 116->116, 117->117, 118->118, 119->119, 120->120, 121->121, 122->122, 123->123, 124->124, 125->125, 126->126, 127->127.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 09:40:58 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:58 [nvfp4.py:270] Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTLASS', 'MARLIN'].
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:40:59 [attention.py:689] Using FP8 indexer cache for Lightning Indexer.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:41:00 [weight_utils.py:849] Filesystem type for checkpoints: 9P. Checkpoint size: 156.72 GiB. Available RAM: 1012.09 GiB.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:41:00 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (9P) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:   0% Completed | 0/46 [00:00<?, ?it/s]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:   2% Completed | 1/46 [00:00<00:08,  5.11it/s]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:   4% Completed | 2/46 [00:01<00:36,  1.21it/s]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:   7% Completed | 3/46 [00:03<00:52,  1.22s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:   9% Completed | 4/46 [00:04<01:00,  1.44s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  11% Completed | 5/46 [00:06<01:01,  1.51s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  13% Completed | 6/46 [00:08<01:05,  1.64s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  15% Completed | 7/46 [00:10<01:04,  1.65s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  17% Completed | 8/46 [00:11<01:04,  1.70s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  20% Completed | 9/46 [00:13<01:02,  1.68s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  22% Completed | 10/46 [00:15<01:01,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  24% Completed | 11/46 [00:17<00:59,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  26% Completed | 12/46 [00:18<00:58,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  28% Completed | 13/46 [00:20<00:56,  1.70s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  30% Completed | 14/46 [00:22<00:55,  1.72s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  33% Completed | 15/46 [00:24<00:54,  1.75s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  35% Completed | 16/46 [00:25<00:51,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  37% Completed | 17/46 [00:27<00:48,  1.67s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  39% Completed | 18/46 [00:28<00:46,  1.67s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  41% Completed | 19/46 [00:30<00:44,  1.64s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  43% Completed | 20/46 [00:32<00:43,  1.68s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  46% Completed | 21/46 [00:33<00:42,  1.70s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  48% Completed | 22/46 [00:35<00:40,  1.69s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  50% Completed | 23/46 [00:37<00:38,  1.66s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  52% Completed | 24/46 [00:38<00:36,  1.67s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  54% Completed | 25/46 [00:40<00:34,  1.66s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  57% Completed | 26/46 [00:42<00:33,  1.65s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  59% Completed | 27/46 [00:43<00:31,  1.64s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  61% Completed | 28/46 [00:45<00:29,  1.64s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  63% Completed | 29/46 [00:47<00:28,  1.65s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  65% Completed | 30/46 [00:48<00:26,  1.66s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  67% Completed | 31/46 [00:50<00:24,  1.63s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  70% Completed | 32/46 [00:52<00:23,  1.68s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  72% Completed | 33/46 [00:53<00:22,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  74% Completed | 34/46 [00:55<00:20,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  76% Completed | 35/46 [00:57<00:18,  1.71s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  78% Completed | 36/46 [00:59<00:17,  1.70s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  80% Completed | 37/46 [01:00<00:15,  1.73s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  83% Completed | 38/46 [01:03<00:14,  1.86s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  85% Completed | 39/46 [01:04<00:12,  1.83s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  87% Completed | 40/46 [01:06<00:10,  1.82s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  89% Completed | 41/46 [01:08<00:09,  1.80s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  91% Completed | 42/46 [01:10<00:07,  1.80s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  93% Completed | 43/46 [01:11<00:05,  1.79s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  96% Completed | 44/46 [01:13<00:03,  1.78s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards:  98% Completed | 45/46 [01:13<00:01,  1.32s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards: 100% Completed | 46/46 [01:14<00:00,  1.13s/it]
+(Worker_TP0_EP0 pid=70) Loading safetensors checkpoint shards: 100% Completed | 46/46 [01:14<00:00,  1.62s/it]
+(Worker_TP0_EP0 pid=70) 
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:42:14 [default_loader.py:430] Loading weights took 74.61 seconds
+(Worker_TP1_EP1 pid=71) [qb_sm120] fp8-fallback ACTIVE pid=71 method=nvfp4
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_sm120] fp8-fallback ACTIVE pid=70 method=nvfp4
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(16384, 1024) s=(128, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(4096, 1024) s=(32, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 0: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(16384, 1024) s=(128, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_shape] w=(4096, 1024) s=(32, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 1: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 2: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 3: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 4: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 5: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 6: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 7: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 8: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 9: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 10: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 11: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 12: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 13: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 14: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 15: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 16: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 17: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 18: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 19: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 20: kept NVFP4 (no packing)
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] dense-anchor layer 21: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(16384, 1024) s=(128, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(4096, 1024) s=(32, 8) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 0: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(16384, 1024) s=(128, 8) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(4096, 4096) s=(32, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_shape] w=(4096, 1024) s=(32, 8) bs=[128, 128]
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 1: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 2: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 3: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 4: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 5: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 6: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 7: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 8: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 9: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 10: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 11: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 12: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 13: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 14: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 15: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 16: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 17: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 18: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 19: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 20: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] dense-anchor layer 21: kept NVFP4 (no packing)
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 22: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 22: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 23: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 23: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 24: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 24: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 25: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 25: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 26: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 26: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 27: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 27: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 28: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 28: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 29: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 29: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 30: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 30: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 31: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 31: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 32: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 32: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 33: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 33: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 34: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 34: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 35: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 35: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 36: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 36: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 37: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 37: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 38: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 38: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 39: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 39: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 40: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 40: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 41: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 41: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP0_EP0 pid=70) [qb_sm120] MoE sparse path: raw NVFP4 kept w13=(128, 4096, 2048) w2=(128, 4096, 1024) I=2048 experts=128 emap=y
+(Worker_TP1_EP1 pid=71) [qb_sm120] WS-C proj=down layer 42: down sparse, other kept dense
+(Worker_TP0_EP0 pid=70) [qb_sm120] WS-C proj=down layer 42: down sparse, other kept dense
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:43:38 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:43:38 [gpu_model_runner.py:5255] Model loading took 75.02 GiB memory and 159.400697 seconds
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:43:38 [breakable_cudagraph.py:288] Breakable CUDA graph enabled
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:43:38 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:43:44  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:43:47  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:43:48  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:43:56  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(EngineCore pid=53) INFO 07-12 09:44:39 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:43:44  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:43:47  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:43:48  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:43:56  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=71) [qb_sm120] o_proj bf16 path ACTIVE pid=71 o=(2048, 32, 512) n_groups=4 hpg=8 o_lora_rank=1024 wo_a.weight=(4096, 4096) wa=(4096, 4096) qb_bf16=n scale=(32, 32)
+(Worker_TP0_EP0 pid=70) [qb_sm120] o_proj bf16 path ACTIVE pid=70 o=(2048, 32, 512) n_groups=4 hpg=8 o_lora_rank=1024 wo_a.weight=(4096, 4096) wa=(4096, 4096) qb_bf16=n scale=(32, 32)
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:45:18  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:45:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:45:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:45:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(EngineCore pid=53) INFO 07-12 09:45:39 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=53) INFO 07-12 09:46:39 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:45:18  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:45:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:45:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:45:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:46:45 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:46:45 [indexer.py:276] DSA indexer decode path: use_flattening=False (next_n=1, use_fp4_indexer_cache=False)
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:46:45 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:46:46  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:46:48  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:46:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:47:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(EngineCore pid=53) INFO 07-12 09:47:39 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:46:46  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:46:48  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:46:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:46:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:47:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=70) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=70 q=(2, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 4)
+(Worker_TP1_EP1 pid=71) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=71 q=(2, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 4)
+(Worker_TP0_EP0 pid=70) [qb_sm120] torch top-k ACTIVE pid=70 logits=(2, 256) topk=512
+(Worker_TP1_EP1 pid=71) [qb_sm120] torch top-k ACTIVE pid=71 logits=(2, 256) topk=512
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:48:12 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 3.94 GiB total
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:48:12 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 3.94 GiB total
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:48:13 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9500 is equivalent to --gpu-memory-utilization=0.9085 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9915. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:48:13 [gpu_worker.py:508] Available KV cache memory: 4.14 GiB
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:48:13 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9500 is equivalent to --gpu-memory-utilization=0.9085 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9915. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(EngineCore pid=53) INFO 07-12 09:48:13 [kv_cache_utils.py:2146] GPU KV cache size: 11,656 tokens
+(EngineCore pid=53) INFO 07-12 09:48:13 [kv_cache_utils.py:2147] Maximum concurrency for 1,024 tokens per request: 11.38x
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:48:13 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:48:13 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:48:13 [flashinfer_sparse_mla_warmup.py:124] Autotuning FlashInfer SM120 sparse MLA DSv4 decode with cache: /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/b354458f2e01d9823864c19ac9bb43e701d48ed6e81c856ab0d7b804ea203022/autotune_configs.json
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:13,417 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:06<00:27,  6.80s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm:  60%|██████    | 3/5 [00:06<00:03,  1.81s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:07<00:00,  1.08profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:07<00:00,  1.42s/profile]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:00<00:00,  7.62profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00,  8.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 12.22profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 12.10profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 973.87profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:00<00:00,  8.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  60%|██████    | 3/5 [00:00<00:00, 13.89profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 14.97profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 14.20profile/s]
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00,  9.17profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 11.00profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 11.29profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 14.84profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 15.61profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 15.39profile/s]
+(Worker_TP0_EP0 pid=70) 
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:14  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:18  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:30  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=71) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=71 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 11.89profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 13.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 13.69profile/s]
+(Worker_TP0_EP0 pid=70) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=70 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 144.13profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 458.59profile/s]
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:40,612 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:40,634 - INFO - autotuner.py:1808 - flashinfer.jit: [Autotuner]: Saved 48 configs to /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/b354458f2e01d9823864c19ac9bb43e701d48ed6e81c856ab0d7b804ea203022/autotune_configs.json (48 new, 0 from previous config)
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:40,652 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 48 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/b354458f2e01d9823864c19ac9bb43e701d48ed6e81c856ab0d7b804ea203022/autotune_configs.json
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:48:40 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 0 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/b354458f2e01d9823864c19ac9bb43e701d48ed6e81c856ab0d7b804ea203022/autotune_configs.json.
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:40,654 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:40,655 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 48 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/b354458f2e01d9823864c19ac9bb43e701d48ed6e81c856ab0d7b804ea203022/autotune_configs.json
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:48:40 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 1 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/b354458f2e01d9823864c19ac9bb43e701d48ed6e81c856ab0d7b804ea203022/autotune_configs.json.
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:40,658 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP1_EP1 pid=71) 2026-07-12 09:48:40,661 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  9.77profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  7.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 13.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 13.05profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 14.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 14.61profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 15.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 15.54profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 15.22profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 15.32profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.47profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.93profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.59profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.83profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 11.63profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 11.60profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 13.56profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 13.65profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 13.53profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 13.62profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.42profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 12.97profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.00profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.89profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.88profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 14.89profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 15.04profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.30profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.00profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 12.65profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 12.40profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.27profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.23profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.17profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.13profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.96profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  9.16profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 13.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 13.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 15.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 15.07profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 15.24profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 14.73profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.42profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.38profile/s]
+(Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.68profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.90profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.53profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 18.69profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 18.04profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 18.63profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 18.21profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 18.80profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 18.43profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 18.61profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 18.25profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 18.61profile/s]
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 18.22profile/s]
+(Worker_TP1_EP1 pid=71) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP0_EP0 pid=70) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 14.37profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 14.18profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.15profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.15profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.84profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.89profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.59profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.27profile/s]
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.10profile/s]
+(Worker_TP0_EP0 pid=70) 2026-07-12 09:48:52,317 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP1_EP1 pid=71) 2026-07-12 09:48:52,317 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=70) 
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/3 [00:00<?, ?it/s]
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE):  33%|███▎      | 1/3 [00:08<00:17,  8.56s/it]
+(EngineCore pid=53) INFO 07-12 09:49:14 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE):  67%|██████▋   | 2/3 [00:17<00:08,  8.64s/it]
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 3/3 [00:25<00:00,  8.64s/it]
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 3/3 [00:25<00:00,  8.63s/it]
+(Worker_TP0_EP0 pid=70) 
+[1ACapturing CUDA graphs (decode, FULL):   0%|          | 0/2 [00:00<?, ?it/s](Worker_TP1_EP1 pid=71) 2026-07-12 09:49:18,647 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+
+[1ACapturing CUDA graphs (decode, FULL):  50%|█████     | 1/2 [00:08<00:08,  8.89s/it]
+[1ACapturing CUDA graphs (decode, FULL): 100%|██████████| 2/2 [00:18<00:00,  9.17s/it]
+[1ACapturing CUDA graphs (decode, FULL): 100%|██████████| 2/2 [00:18<00:00,  9.13s/it]
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:49:37 [gpu_model_runner.py:6656] Graph capturing finished in 45 secs, took 1.99 GiB
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:49:37 [gpu_worker.py:667] CUDA graph pool memory: 1.99 GiB (actual), 3.94 GiB (estimated), difference: 1.95 GiB (97.9%).
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:49:37 [gpu_worker.py:667] CUDA graph pool memory: 1.99 GiB (actual), 3.94 GiB (estimated), difference: 1.95 GiB (97.9%).
+(Worker_TP1_EP1 pid=71) INFO 07-12 09:49:44 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:49:44 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=53) INFO 07-12 09:49:44 [core.py:344] init engine (profile, create kv cache, warmup model) took 365.81 s
+(EngineCore pid=53) INFO 07-12 09:49:46 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=53) WARNING 07-12 09:49:46 [vllm.py:1100] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+(EngineCore pid=53) WARNING 07-12 09:49:46 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=53) INFO 07-12 09:49:46 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(EngineCore pid=53) INFO 07-12 09:49:46 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+  load+capture ok in 579s (captured => graph capture SUCCEEDED)
+
+[1ARendering prompts:   0%|          | 0/4 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 4/4 [00:00<00:00, 115.22it/s]
+
+(Worker_TP0_EP0 pid=70) WARNING 07-12 09:49:46 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 09:49:46 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_prefill_chunk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 09:49:46 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_c128a_topk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 09:49:46 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_prefill_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=70) WARNING 07-12 09:49:47 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_global_topk_indices_and_lens_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+[1AProcessed prompts:   0%|          | 0/4 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:  25%|██▌       | 1/4 [02:45<08:15, 165.28s/it, est. speed input: 0.03 toks/s, output: 0.15 toks/s]
+[1AProcessed prompts:  50%|█████     | 2/4 [02:52<02:24, 72.08s/it, est. speed input: 0.05 toks/s, output: 0.28 toks/s] 
+[1AProcessed prompts:  75%|███████▌  | 3/4 [05:36<01:54, 114.09s/it, est. speed input: 0.04 toks/s, output: 0.21 toks/s]
+[1AProcessed prompts: 100%|██████████| 4/4 [05:43<00:00, 71.75s/it, est. speed input: 0.06 toks/s, output: 0.28 toks/s] 
+[1AProcessed prompts: 100%|██████████| 4/4 [05:43<00:00, 71.75s/it, est. speed input: 0.06 toks/s, output: 0.28 toks/s]
+[1AProcessed prompts: 100%|██████████| 4/4 [05:43<00:00, 85.76s/it, est. speed input: 0.06 toks/s, output: 0.28 toks/s]
+  [gen] 'The capital of France is' -> ' Paris. The capital of France is Paris. The capital of France is Paris. The capital of France is Paris. The'
+        ids=[11111, 16, 455, 6102, 294, 8760, 344, 11111, 16, 455, 6102, 294, 8760, 344, 11111, 16, 455, 6102, 294, 8760, 344, 11111, 16, 455]
+  [gen] 'def fibonacci(n):' -> '\\n    if n <= 0:\\n        return 0\\n    elif n == 1:\\n       '
+        ids=[62, 80, 361, 855, 313, 8593, 223, 18, 19804, 80, 528, 1354, 223, 18, 5809, 361, 19132, 313, 2606, 223, 19, 19804, 80, 528]
+  [gen] 'The three primary colors are' -> ' red, yellow and blue. By mixing these colors in various ways, all other colors can be made. The three secondary'
+        ids=[4332, 14, 13009, 305, 8295, 16, 3715, 24394, 1305, 11273, 295, 3624, 4689, 14, 710, 915, 11273, 588, 366, 1960, 16, 455, 2038, 11586]
+  [gen] 'Water is made of hydrogen and' -> ' oxygen. 水是由氢和氧组成的。\nThe bridge is made of steel. 这座桥是由钢建成的'
+        ids=[11627, 16, 223, 1172, 15348, 18942, 548, 8034, 29908, 876, 671, 15986, 344, 1960, 294, 14308, 16, 223, 36179, 7774, 15348, 7105, 1245, 16258]
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 1814.15it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:07<00:00,  7.50s/it, est. speed input: 10.80 toks/s, output: 0.13 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:07<00:00,  7.50s/it, est. speed input: 10.80 toks/s, output: 0.13 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:07<00:00,  7.50s/it, est. speed input: 10.80 toks/s, output: 0.13 toks/s]
+# PPL over 80-token passage: 4.3815
+# graph_gate C-captured PASS (ntok=96, ppl=4.3815)
+(EngineCore pid=53) INFO 07-12 09:55:36 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=53) INFO 07-12 09:55:36 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=53) INFO 07-12 09:55:36 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=53) INFO 07-12 09:55:36 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore pid=53) INFO 07-12 09:55:36 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=2
+(Worker_TP0_EP0 pid=70) INFO 07-12 09:55:36 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(EngineCore pid=53) INFO 07-12 09:55:41 [multiproc_executor.py:433] [shutdown] Executor: all workers exited gracefully
+WARNING 07-12 09:55:41 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+[modal-client] 2026-07-12T13:55:52+0400 Timed out waiting for final app logs.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-MUBOG62KEyPwcRc0z5bRNg

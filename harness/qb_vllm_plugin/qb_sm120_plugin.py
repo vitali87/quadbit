@@ -87,7 +87,11 @@ def _dequant_nvfp4_expert(w_u8, w_scale_e4m3, w_scale_2, group=16):
     codes[:, 1::2] = (bb >> 4) & 0xF
     vals = lut[codes]
     bs = w_scale_e4m3.float().repeat_interleave(group, dim=1)[:, :k]
-    return (vals * bs * float(w_scale_2)).to(torch.bfloat16)
+    # keep w_scale_2 on-device (broadcast multiply): float(w_scale_2) would host-sync, illegal under
+    # CUDA-graph capture (the dense-anchor route runs this INSIDE the captured region). A 0-dim tensor
+    # multiply is bit-identical to the scalar multiply, so the frozen eager path is unaffected.
+    s2 = w_scale_2 if isinstance(w_scale_2, torch.Tensor) else torch.as_tensor(w_scale_2, device=dev)
+    return (vals * bs * s2.to(torch.float32)).to(torch.bfloat16)
 
 
 def _dense_route(inp, w, ws, ws2, out_dim, eblk):
@@ -1427,14 +1431,17 @@ def _install_moe() -> None:
                 else:
                     local_g = assign_g
                     valid_g = torch.ones_like(local_g, dtype=torch.bool)
+                # only the SPARSE projection(s) are packed: down49 sets _qb_dn (gate_up anchored dense),
+                # gateup49 sets _qb_gu; _seg_apply_gs only reads the one its proj needs.
+                gu_p = getattr(layer, "_qb_gu", None)
+                dn_p = getattr(layer, "_qb_dn", None)
                 if _ROUTE_SLOT > 0 and proj == "both":
                     rank = topk_weights.argsort(dim=1, descending=True).argsort(dim=1)
                     dense_slot = (rank < _ROUTE_SLOT).reshape(-1)
                     _route_slot_apply_gs(sp, x, local_g, tok_g, w_g, dense_slot, valid_g,
-                                         layer._qb_gu, layer._qb_dn, layer, ii, h, ee, _GRAPH_CAP,
-                                         on_input, y)
+                                         gu_p, dn_p, layer, ii, h, ee, _GRAPH_CAP, on_input, y)
                 else:
-                    _seg_apply_gs(sp, x, tok_g, local_g, w_g, layer._qb_gu, layer._qb_dn, ii, h, ee,
+                    _seg_apply_gs(sp, x, tok_g, local_g, w_g, gu_p, dn_p, ii, h, ee,
                                   _GRAPH_CAP, on_input, y, valid_g, proj, layer)
                 if shared_experts is not None and shared_experts_input is not None:
                     shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)

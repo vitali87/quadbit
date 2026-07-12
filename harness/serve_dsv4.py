@@ -325,6 +325,7 @@ def graph_gate(
     cap: int = 512,
     max_seqs: int = 8,
     max_len: int = 2048,
+    gpu_mem: float = 0.9,
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -356,7 +357,7 @@ def graph_gate(
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
     kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.9, kv_cache_dtype="fp8",
+              max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
               max_num_seqs=max_seqs, enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
     t0 = time.time()
     try:
