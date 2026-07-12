@@ -13,11 +13,14 @@ downstream smoke suite at `cc00b8b`.
   `fp8_ds_mla` format). No silent fallback, no dense trap.
 - **EP**: 32 local / 256 global experts per rank, `FLASHINFER_CUTLASS` NVFP4 MoE backend; the quadbit
   hook patches all 8 workers.
-- **Eager only.** The run launched with graph capture on first fails: the plugin's EP local-expert
-  loop calls `torch.unique(local).tolist()` (a device->host sync), illegal under CUDA-graph stream
-  capture (`cudaErrorStreamCaptureUnsupported`, `qb_sm120_plugin.py:1255`). This is our own hook, not
-  a DSA/attention/memory/loader blocker; it is the same limitation as DeepSeek's graph-capture status.
-  Graph-capturable EP MoE is future work; all rows below are eager, matching the DeepSeek evals.
+- **Graph-captured (P4 update).** The rows below were measured eager. The original blocker was our own
+  hook: the EP local-expert loop called `torch.unique(local).tolist()` (a device->host sync), illegal
+  under CUDA-graph stream capture. P4 replaced it with a graph-safe fixed-capacity device-routing path
+  (`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`), and route-slot D2 now **fully
+  CUDA-graph-captures on 8 GPUs** (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU, DSA sparse-MLA native),
+  quality-neutral vs the frozen eager path (A eager 4.0040 ≡ C captured 4.1565 on an 80-tok passage,
+  both coherent, drop=0). See `docs/p4/m4_glm_d2_verdict.md`. The "graph-capturable EP MoE is future
+  work" caveat is **overturned**; the rows below stay eager as the deployed-quality reference.
 - Weights 432.9 GiB; model load 54.62 GiB/GPU (~360 s); init engine ~127 s.
 
 ## Policy table
