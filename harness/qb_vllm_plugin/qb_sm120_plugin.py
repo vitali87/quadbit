@@ -342,7 +342,7 @@ def _paged_mqa_logits_bf16(q, kv_cache, weights, context_lens, block_tables, sch
         # capture, so the Python loops unroll into the graph). Trades extra gather work (max_model_len
         # rows every step) for capture-legality; the eager path below keeps the variable-length gather.
         pos = torch.arange(max_model_len, device=q_values.device)
-        blk_idx = torch.div(pos, block_size, rounding_mode="floor").long().clamp(0, block_tables.shape[1] - 1)
+        blk_idx = (pos // block_size).long().clamp(0, block_tables.shape[1] - 1)
         wpos = (pos % block_size).long()
         for bi in range(b):
             blk = block_tables[bi, blk_idx].long().clamp(0, num_blocks - 1)

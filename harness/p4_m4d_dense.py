@@ -20,6 +20,7 @@ image = (
     .env({"PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
           "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"})
     .pip_install("torch", index_url="https://download.pytorch.org/whl/nightly/cu128", pre=True)
+    .pip_install("numpy")
 )
 app = modal.App("quadbit-p4m4d-dense", image=image)
 
