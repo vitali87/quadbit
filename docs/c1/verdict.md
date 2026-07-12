@@ -41,11 +41,25 @@ captured region (static `cap` makes the `a_scale` offsets compile-time constants
 changed (opt-in `QB_DENSE_BACKEND=native_nvfp4`, default `dequant` untouched). Only the dense-anchor
 projection's backend changed.
 
-## Next step
+## GLM route-slot D2 transfer (8 GPU) — CONFIRMED
 
-Per the ladder ("do not start GLM 8-GPU until DeepSeek-D2 shows a real speed win"), the D2 win is real, so
-GLM route-slot D2 (8 GPU) is the authorized next step to confirm the win transfers to the 8-GPU model.
-Custom `grouped_dense_nvfp4_moe_mm_2lvl` is **not needed** — the native primitive suffices.
+The D2 win transfers to the second model. GLM-5.2-NVFP4 route-slot D2 (dense_layers 0-37, `cap=128`,
+`max_seqs=2`, tp=8, `native_nvfp4`; log `c1_glm_d2_native_C.log`): graph **PIECEWISE 3/3 + FULL 2/2**, DSA
+`sparse_mla_sm120_decode_dsv3_2` native, pool **1.21 GiB/GPU**, PPL **4.0705** (P4 band: frozen-eager 4.004
+/ dequant-captured 4.157 — quality preserved), coherent (Paris+distances/fibonacci/red-blue-yellow/H2O),
+decode **5.296 tok/s = 2.5× the eager D2 reference 2.10**. `load+capture ok in 2038s`. So native delegation
+makes the deployed sparse MoE decode graph-fast on **both** DeepSeek (4 GPU) and GLM (8 GPU), quality-neutral,
+no custom CUDA.
+
+## Bottom line
+
+`grouped_dense_nvfp4_moe_mm_2lvl` (custom CUDA) is **not needed** — FlashInfer's `group_gemm_nvfp4_nt_
+groupwise` is the fused dense NVFP4 grouped-GEMM P4 assumed absent. The P4 canonical claim ("the remaining
+speed limitation is the dense anchored/grouped projection path, which lacks a fused dense NVFP4 grouped-
+GEMM") is **overturned**: the deployed sparse MoE policy path now graph-captures *and* decodes fast on
+SM120 for both DeepSeek-D2 and GLM route-slot D2. Updating the user-mandated P4 wording in
+`paper.md` / `command_manifest.md` / `glm_results.md` is flagged for user review (headline claim change),
+not done unilaterally on this branch.
 
 ## Deliverables
 
