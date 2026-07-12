@@ -135,16 +135,18 @@ delegating those projections to FlashInfer's native grouped NVFP4 GEMM
 grouped-GEMM required. DeepSeek-D2 and GLM route-slot D2 now run as
 graph-enabled, quality-matching deployed policies with native SM120 DSA;
 native-delegate captured DeepSeek-D2 decodes faster than eager (5.82 vs
-4.04 tok/s at matched PPL). Limitations we state up front: this is a
-same-model/same-policy speed/quality/memory Pareto result against our
-own dequant-loop and eager paths, not a production-wide decode-speed win
-over other serving stacks, and dense FP4 speed belongs to the ecosystem
-baselines; the native delegate depends on FlashInfer availability and
-its swizzled NVFP4 scale layout; the GLM graph run is validated on a
-short held-out passage; GLM-5.2 requires 8x RTX PRO 6000; the GLM
-downstream evidence is a small 4-task smoke suite, not an exhaustive
-benchmark; and all-MLP sparsity carries a real PPL tax that
-training-free repair does not close.
+4.04 tok/s at matched PPL). Limitations we state up front: a direct
+same-harness board (C2) shows the dense NVFP4 fused MoE decodes 6-8x
+faster than the sparse policy and uses less memory, so this is a
+quality-preservation and graph-transfer result, not a MoE decode-speed
+SOTA; the C1 speedup is a same-model/same-policy Pareto result against
+our own dequant-loop and eager paths, not a production-wide decode-speed
+win, and dense FP4 speed belongs to the ecosystem baselines; the native
+delegate depends on FlashInfer availability and its swizzled NVFP4 scale
+layout; the GLM graph run is validated on a short held-out passage;
+GLM-5.2 requires 8x RTX PRO 6000; the GLM downstream evidence is a small
+4-task smoke suite, not an exhaustive benchmark; and all-MLP sparsity
+carries a real PPL tax that training-free repair does not close.
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -1311,6 +1313,54 @@ graph rows are validated on a short held-out passage (the dense-baseline
 within-protocol capture-neutrality comparisons are valid). Full result:
 \texttt{docs/c1/verdict.md}; logs \texttt{docs/audit/logs/c1\_*.log}.
 
+\textbf{C2 SOTA board: the dense NVFP4 fused MoE is the SM120 MoE decode
+SOTA, not the sparse policy.} To place the C1 result honestly, we ran a
+direct same-harness board (same mito80 passage, decode-only formula,
+captured graph mode, memory accounting) against the strongest
+dense/NVFP4 baseline that runs on SM120: vLLM's native
+FlashInfer-CUTLASS fused NVFP4 MoE (\texttt{QB\_MOE=off}, with the
+plugin's attention/DSA unblock so the model loads at all; vanilla vLLM
+cannot init this model on SM120, and SGLang has no SM120 path for it).
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2143}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2857}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2857}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2143}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+model (captured)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+dense NVFP4 fused
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+quadbit D2 native
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+dense advantage
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+DeepSeek, 4 GPU & 48.248 tok/s, 40.83 GiB/GPU & 5.972 tok/s, 51.7
+GiB/GPU & 8.1x decode, less memory \\
+GLM, 8 GPU & 33.810 tok/s, 54.62 GiB/GPU & 5.367 tok/s, 68.98 GiB/GPU &
+6.3x decode, less memory \\
+\end{longtable}
+
+The dense fused MoE wins decode (6-8x) and weight memory (the sparse
+policy's dual residency costs +26-27\% weight memory and, on GLM, 62\%
+less KV). C1's 11.3x was measured against the crippled dequant loop
+(0.514 tok/s), not this dense path. So the sparse route-slot policy is
+\textbf{not} a decode-speed or decode-memory SOTA; its contribution is
+the only deployed 2:4-sparse FP4 MoE, training-free
+capability-preserving structural sparsity that transfers across
+architectures and graph-captures with native DSA (downstream within
+\textasciitilde1 pt), and the prefill/large-M kernel Pareto of Section 5
+(a kernel microbench, not re-measured in serving here). The remaining
+MoE decode gap is a kernel problem, a fused sparse grouped decode GEMM
+at tiny M, identified but not built. Board: \texttt{docs/c2/verdict.md};
+logs \texttt{docs/audit/logs/c2\_*.log}.
+
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
 \subsection{11. Related work}\label{related-work}
@@ -1481,6 +1531,17 @@ pair-granular 2:4 for the FP4 sparse path.
   depends on FlashInfer availability and its swizzled NVFP4 scale
   layout, and the GLM graph rows are validated on a short held-out
   passage. Not a DSA, attention, memory, or loader blocker.
+\item
+  \textbf{The sparse MoE policy is not a decode-speed or decode-memory
+  SOTA (Section 10.1, C2).} A direct same-harness board shows vLLM's
+  native FlashInfer-CUTLASS fused NVFP4 MoE decodes 6-8x faster than the
+  quadbit sparse route-slot D2 policy (DeepSeek 48.2 vs 6.0, GLM 33.8 vs
+  5.4 tok/s captured) and uses less memory (D2's dual residency costs
+  +26-27\% weight memory). The sparse-MoE value is quality-preserving
+  structural sparsity + graph-enabled cross-architecture transfer + the
+  Section 5 prefill/large-M kernel Pareto, \textbf{not} MoE decode
+  speed; closing the decode gap needs a fused sparse grouped decode GEMM
+  (new CUDA, identified but not built).
 \item
   \textbf{GLM-5.2 requires 8x RTX PRO 6000.} At 432.9 GiB it does not
   fit on 2 or 4 cards; the smaller footprint DeepSeek-V4-Flash enjoyed

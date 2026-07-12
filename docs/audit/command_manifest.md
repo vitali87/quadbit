@@ -154,3 +154,23 @@ the win decomposes as native backend 3.2x times capture 3.6x. GLM-D2 native-capt
 reference 2.10 tok/s (pool 1.21 GiB/GPU, DSA `sparse_mla_sm120_decode_dsv3_2` native). These are
 same-model/same-policy Pareto results against our own dequant-loop and eager paths, **not** a
 production-wide decode-speed win over other serving stacks.
+
+## C2 SOTA board (branch `c2-sota-board`) — dense NVFP4 fused MoE is the SM120 MoE decode SOTA
+
+Same harness as C1 (`graph_gate4` / `glm_graph_gate` / `_graph_gate_body`), same mito80 PPL passage, same
+decode-only formula, same graph mode. `baseline=dense_nvfp4` sets `QB_MOE=off` so vLLM's native
+FlashInfer-CUTLASS NVFP4 fused MoE runs (the production dense path) with attention/DSA still SM120-unblocked.
+Env M. Full result `docs/c2/verdict.md`; logs `docs/audit/logs/c2_*.log`.
+
+| row | command (prefix `uv run modal run --detach harness/serve_dsv4.py`) | GPU | result |
+|---|---|---|---|
+| A1 DeepSeek dense baseline captured | `::graph_gate4 --cap 128 --max-seqs 2 --baseline dense_nvfp4` | 4 | PPL 4.1222, **48.248 tok/s**, 40.83 GiB wt, 0.18 pool |
+| A4 DeepSeek D2 native captured | `::graph_gate4 --cap 128 --max-seqs 2 --dense-layers 0,1,..,21 --dense-anchor-backend native_nvfp4` | 4 | PPL 4.0943, 5.972 tok/s, 51.7 GiB wt, 2.08 pool |
+| B1 GLM dense baseline captured | `::glm_graph_gate --cap 128 --max-seqs 2 --baseline dense_nvfp4` | 8 | PPL 3.9572, **33.810 tok/s**, 54.62 GiB wt, 0.10 pool |
+| B3 GLM D2 native captured | `::glm_graph_gate --cap 128 --max-seqs 2 --dense-layers 0,1,..,37 --dense-anchor-backend native_nvfp4` | 8 | PPL 4.0674, 5.367 tok/s, 68.98 GiB wt, 0.80 pool |
+
+Verdict: the dense NVFP4 fused MoE baseline is **8.1x (DeepSeek) / 6.3x (GLM) faster at decode** and lighter
+in memory than quadbit sparse D2. quadbit sparse MoE is **not** a decode SOTA; its value is quality-preserving
+structural sparsity + graph-enabled cross-arch transfer + the prefill/large-M kernel Pareto (§5). Absent
+baselines recorded: vanilla vLLM init-fails on SM120 (the plugin unblock is what lets A1/B1 run), SGLang
+unavailable for these models. No custom CUDA started (the decode gap is identified as a kernel problem).
