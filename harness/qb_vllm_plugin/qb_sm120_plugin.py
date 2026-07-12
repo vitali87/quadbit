@@ -966,10 +966,10 @@ def _load_sparse_moe():
         # counts via scatter_add, NOT torch.bincount: bincount reads the max element to the host to
         # size its output, which is a CPU<->CUDA copy illegal inside a captured region. nb is constant
         # and `a` is in [0,nb), so a fixed-size scatter_add is graph-safe.
-        counts = torch.zeros(nb, dtype=torch.long, device=dev).scatter_add_(
+        counts = torch.zeros(nb, dtype=torch.long, device=assign.device).scatter_add_(
             0, a, torch.ones_like(a))
         offs = torch.cumsum(counts, 0) - counts
-        within = torch.arange(r, device=dev) - offs[sa]
+        within = torch.arange(r, device=assign.device) - offs[sa]
         keep = (within < cap) & (sa < e)   # sink rows (sa==e) never kept; real overflow dropped
         # boolean-index scatter (`src[dest[keep]] = order[keep]`) calls .nonzero() -> data-dependent
         # size -> invalidates capture. Instead send overflow rows to a single trash slot via
@@ -977,10 +977,10 @@ def _load_sparse_moe():
         # unique dest (within is the per-expert rank), so the result is identical to the masked form.
         sink = e * cap
         dest = torch.where(keep, sa * cap + within, torch.full_like(within, sink))
-        src = torch.full((e * cap + 1,), -1, dtype=torch.long, device=dev)
+        src = torch.full((e * cap + 1,), -1, dtype=torch.long, device=assign.device)
         src.scatter_(0, dest, order)
         src = src[:e * cap]
-        eblk = (torch.arange(e * cap // _BN, device=dev) // (cap // _BN)).to(torch.int32)
+        eblk = (torch.arange(e * cap // _BN, device=assign.device) // (cap // _BN)).to(torch.int32)
         # dropped = REAL (on-rank) rows that overflowed, not sink rows. Stays on-device (a DEVICE
         # scalar): reading it with .item() would host-sync, so callers needing the int do so OUTSIDE
         # any captured region.
