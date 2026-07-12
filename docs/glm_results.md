@@ -24,7 +24,7 @@ downstream smoke suite at `cc00b8b`.
   grouped NVFP4 GEMM (`group_gemm_nvfp4_nt_groupwise`, opt-in `QB_DENSE_BACKEND=native_nvfp4`) instead of
   the dequant-to-bf16 loop, with no custom dense grouped-GEMM. **GLM route-slot D2 native captured: PPL
   4.0705, decode 5.296 tok/s = 2.5× the eager reference 2.10, PIECEWISE 3/3 + FULL 2/2, DSA
-  `sparse_mla_sm120_decode_dsv3_2` native, pool 1.21 GiB/GPU** (`docs/audit/logs/c1_glm_d2_native_C.log`).
+  `sparse_mla_sm120_decode_dsv3_2` native, pool 1.21 GiB/GPU** ([docs/audit/logs/c1_glm_d2_native_C.log](audit/logs/c1_glm_d2_native_C.log)).
   The old "graph-correct but dense-loop-slow" limitation is **superseded by native delegation**. See
   [docs/c1/verdict.md](c1/verdict.md) and [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md). The
   PPL numbers here (short held-out passage) and the 3.171 dense-baseline (114-token policy-sweep passage)

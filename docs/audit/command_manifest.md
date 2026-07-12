@@ -138,8 +138,8 @@ The prior dense anchored/grouped projection ran a dequant-to-bf16 loop over all 
 grouped NVFP4 GEMM `group_gemm_nvfp4_nt_groupwise` (opt-in `QB_DENSE_BACKEND=native_nvfp4`, default
 `dequant` untouched), with **no custom dense grouped-GEMM required**. Env **M** (CUDA 13.0, torch
 2.11.0+cu130, vLLM 0.24.0, FlashInfer python 0.6.14 + cubin 0.6.13), RTX PRO 6000 (SM120, `sm_120a`).
-Full result `docs/c1/verdict.md`; standalone A/B `docs/c1/standalone_ab.md`; serving A/B/C
-`docs/c1/d2_serving.md`; logs `docs/audit/logs/c1_*.log`.
+Full result [docs/c1/verdict.md](../c1/verdict.md); standalone A/B [docs/c1/standalone_ab.md](../c1/standalone_ab.md);
+serving A/B/C [docs/c1/d2_serving.md](../c1/d2_serving.md); logs `docs/audit/logs/c1_*.log`.
 
 | row | command (prefix `uv run modal run --detach harness/serve_dsv4.py`) | GPU | env vars | result |
 |---|---|---|---|---|

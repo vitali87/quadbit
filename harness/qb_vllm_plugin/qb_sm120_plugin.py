@@ -231,6 +231,8 @@ def _dense_seg_native(xs, b_w, b_sf, wgsf, out_dim, e, cap):
         a_fp4_c.append(a_q); a_sf_c.append(a_s)
         alpha_c.append(1.0 / (a_gsf * wgsf[le]))
     sf_k, sf_rows = a_sf_c[0].shape[1], a_sf_c[0].shape[0]   # swizzled rows/cols per cap-group (static)
+    # a_scale offsets align to _BN, which is 128 == the layout_128x4 a_scale row alignment
+    # group_gemm_nvfp4_nt_groupwise requires (and == the route_fixed_cap block size); they coincide by design.
     offs = [(le * cap + le * (_BN - 1)) // _BN * _BN for le in range(e)]
     a_sf_pad = torch.zeros((offs[-1] + sf_rows, sf_k), dtype=a_sf_c[0].dtype, device=xs.device)
     for le in range(e):
@@ -493,6 +495,11 @@ if _GRAPH_CAP and _GRAPH_CAP % _BN:
 # QB_GRAPH=1 (the graph-safe path); the load-time prep re-quantizes each anchored expert into the
 # flashinfer 128x4 layout so the grouped GEMM reads it directly.
 _DENSE_BACKEND = os.environ.get("QB_DENSE_BACKEND", "dequant").lower()
+# Fail fast on a typo: an unknown value would silently behave like "dequant" (only the exact
+# "native_nvfp4" string enables the native prep below), so a mistyped A/B run would benchmark the
+# wrong backend while printing the typo. Same import-time-guard style as the _GRAPH_CAP check.
+if _DENSE_BACKEND not in ("dequant", "native_nvfp4"):
+    raise ValueError(f"QB_DENSE_BACKEND={_DENSE_BACKEND!r} must be 'dequant' or 'native_nvfp4'")
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the

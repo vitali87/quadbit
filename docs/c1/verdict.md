@@ -64,8 +64,8 @@ not done unilaterally on this branch.
 ## Deliverables
 
 1. Branch `c1-native-dense-anchor`; commits `bda69ae` (gate), `6dd2d55` (wiring).
-2. Design note `docs/c1/design_note.md`; standalone A/B `docs/c1/standalone_ab.md`; serving A/B/C
-   `docs/c1/d2_serving.md`; this verdict.
+2. Design note [docs/c1/design_note.md](design_note.md); standalone A/B [docs/c1/standalone_ab.md](standalone_ab.md);
+   serving A/B/C [docs/c1/d2_serving.md](d2_serving.md); this verdict.
 3. Raw logs `docs/audit/logs/c1_{recon,recon2,dense_anchor,d2_native_C,d2_dequant_C,d2_native_B}.log`.
 4. Commands: `uv run modal run --detach harness/serve_dsv4.py::c1_dense_anchor` (standalone);
    `uv run modal run --detach harness/serve_dsv4.py::graph_gate4 --cap 128 --max-seqs 2
