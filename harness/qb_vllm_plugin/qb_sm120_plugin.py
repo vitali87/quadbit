@@ -967,7 +967,7 @@ def _load_sparse_moe():
         # size its output, which is a CPU<->CUDA copy illegal inside a captured region. nb is constant
         # and `a` is in [0,nb), so a fixed-size scatter_add is graph-safe.
         counts = torch.zeros(nb, dtype=torch.long, device=assign.device).scatter_add_(
-            0, a, torch.ones_like(a))
+            0, a, torch.ones(1, dtype=torch.long, device=assign.device).expand_as(a))
         offs = torch.cumsum(counts, 0) - counts
         within = torch.arange(r, device=assign.device) - offs[sa]
         keep = (within < cap) & (sa < e)   # sink rows (sa==e) never kept; real overflow dropped
@@ -976,7 +976,7 @@ def _load_sparse_moe():
         # torch.where and scatter unconditionally; the trash slot is sliced off. Real slots each get a
         # unique dest (within is the per-expert rank), so the result is identical to the masked form.
         sink = e * cap
-        dest = torch.where(keep, sa * cap + within, torch.full_like(within, sink))
+        dest = torch.where(keep, sa * cap + within, sink)
         src = torch.full((e * cap + 1,), -1, dtype=torch.long, device=assign.device)
         src.scatter_(0, dest, order)
         src = src[:e * cap]
