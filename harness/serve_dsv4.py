@@ -355,7 +355,7 @@ def _graph_gate_body(
         # GLM-5.2 keeps its own rope/config (1M ctx); no DeepSeek yarn override or tokenizer_mode.
         kw = dict(model=GLM_MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
                   max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
-                  max_num_batched_tokens=max_len, max_num_seqs=max_seqs, enable_expert_parallel=True)
+                  max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs, enable_expert_parallel=True)
         llm = LLM(**kw)
     else:
         rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,

@@ -184,7 +184,7 @@ def _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap):
 
     out = torch.empty(e * cap, out_dim, dtype=torch.bfloat16, device=xs.device)
     for le in range(e):
-        s2 = ws2[le, 0] if ws2.ndim > 1 else ws2[le]
+        s2 = ws2 if ws2.ndim == 0 else (ws2[le, 0] if ws2.ndim > 1 else ws2[le])
         we = _dequant_nvfp4_expert(w[le], ws[le], s2)  # [out_dim, in] bf16
         out[le * cap:(le + 1) * cap] = (
             xs[le * cap:(le + 1) * cap].float() @ we.float().t()).to(torch.bfloat16)
