@@ -320,6 +320,8 @@ def graph_gate(
     eager: bool = False,
     force_graph_path: bool = False,
     proj: str = "both",
+    route_slot: int = 0,
+    dense_layers: str = "",
     cap: int = 512,
     max_seqs: int = 8,
     max_len: int = 2048,
@@ -342,11 +344,13 @@ def graph_gate(
     os.environ["QB_DENSE"] = "nvfp4"
     os.environ["QB_MOE"] = "sparse"
     os.environ["QB_SPARSE_PROJ"] = proj
-    os.environ["QB_ROUTE_SLOT"] = "0"
+    os.environ["QB_ROUTE_SLOT"] = str(route_slot)
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
     os.environ["QB_GRAPH"] = "1" if gp else "0"
     os.environ["QB_GRAPH_CAP"] = str(cap)
     cfg = "C-captured" if (gp and not eager) else ("B-graphpath-eager" if gp else "A-frozen-eager")
-    print(f"# M4 graph_gate cfg={cfg} proj={proj} cap={cap} max_seqs={max_seqs} "
+    pol = f"proj={proj} route_slot={route_slot} dense_layers=[{dense_layers}]"
+    print(f"# M4 graph_gate cfg={cfg} {pol} cap={cap} max_seqs={max_seqs} "
           f"QB_GRAPH={os.environ['QB_GRAPH']} enforce_eager={eager} tp={tp}", flush=True)
 
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,

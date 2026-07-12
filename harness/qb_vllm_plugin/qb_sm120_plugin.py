@@ -169,20 +169,40 @@ def _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y):
     return y
 
 
-def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y, valid=None):
-    # Graph-safe sparse-FP4 MoE seg apply (proj=both). Fixed-capacity DEVICE routing + current-stream
-    # launches into buffers whose shapes are compile-time constant (E*cap), so the whole body is
-    # CUDA-graph-capturable: no .item(), no host loop, no data-dependent shape. Mirrors the frozen
-    # `both` branch's math (route -> quant/seg gate_up -> swiglu -> quant/seg down -> weighted scatter),
-    # but replaces build_routing (host sync) with sp.route_fixed_cap and quant_act/seg_gemm (alloc /
-    # stream-0 sync) with sp.quant_into/seg_into. assign:[R] local expert per routed slot (R fixed =
-    # T*topk). valid:[R] optional bool mask marking on-rank slots (EP): off-rank slots are sink-routed
-    # so R stays static. Overflow (>cap rows for one expert) dropped deterministically. Returns the
-    # dropped-row count; writes the routed contribution into y.
+def _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap):
+    # Graph-safe dense NVFP4 grouped matmul over a fixed-capacity seg-layout buffer xs:[e*cap, in]
+    # (expert le owns rows [le*cap,(le+1)*cap)). The anchored-projection analogue of seg_into for the
+    # DEPLOYED policies (down49 gate_up-anchored, gateup49 down-anchored, route-slot dense slots).
+    # range(e) is a compile-time constant so the loop UNROLLS into the graph; each iteration's dequant
+    # temp `we` is freed before the next, so the capture memory pool REUSES one we-buffer -- no E-fold
+    # blowup. This is the graph-safe replacement for _dense_route's torch.unique(eblk).tolist() host loop.
+    import torch
+
+    out = torch.empty(e * cap, out_dim, dtype=torch.bfloat16, device=xs.device)
+    for le in range(e):
+        s2 = ws2[le, 0] if ws2.ndim > 1 else ws2[le]
+        we = _dequant_nvfp4_expert(w[le], ws[le], s2)  # [out_dim, in] bf16
+        out[le * cap:(le + 1) * cap] = (
+            xs[le * cap:(le + 1) * cap].float() @ we.float().t()).to(torch.bfloat16)
+    return out
+
+
+def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y, valid=None,
+                  proj="both", layer=None):
+    # Graph-safe sparse-FP4 MoE seg apply for proj in {both, down, gateup}. Fixed-capacity DEVICE
+    # routing + current-stream launches into compile-time-constant (E*cap) buffers, so the whole body
+    # is CUDA-graph-capturable: no .item(), no host loop, no data-dependent shape. Mirrors the frozen
+    # branch math (route -> gate_up -> swiglu -> down -> weighted scatter) but replaces build_routing
+    # with sp.route_fixed_cap and quant_act/seg_gemm with quant_into/seg_into; the ANCHORED projection
+    # (the one NOT named by proj) runs the dense _dense_seg_gs. proj names the SPARSE projection(s):
+    # both=both sparse, down=down sparse/gate_up anchored (down49), gateup=gate_up sparse/down anchored.
+    # valid:[R] optional EP on-rank mask (off-rank slots sink-routed so R stays static). _sanitize is
+    # restored (capture-safe: its .item() diag is _INSTR-gated). Returns the dropped-row count.
     import torch
     import torch.nn.functional as F
 
     dev = x.device
+    li = getattr(layer, "_qb_layer_idx", -1) if layer is not None else -1
     src, eblk, dropped = sp.route_fixed_cap(assign, e, cap, valid)
     rp = e * cap
     valid = src >= 0
@@ -190,23 +210,89 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
     xs = (x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None])
     if on_input:
         xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
-    xs = xs.contiguous()
+    xs = _sanitize(xs.contiguous(), li, "x_in")
     ksh, ksi = h // 128, ii // 128
-    bb = torch.empty((rp, h // 2), dtype=torch.uint8, device=dev)
-    sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=dev)
-    gb = torch.empty((rp,), dtype=torch.float32, device=dev)
-    gu = torch.empty((rp, 2 * ii), dtype=torch.bfloat16, device=dev)
-    sp.quant_into(xs, bb, sb, gb)
-    sp.seg_into(gu_W, bb, sb, gb, gu, 2 * ii, h, eblk)
-    hh = (F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16)
-    bb2 = torch.empty((rp, ii // 2), dtype=torch.uint8, device=dev)
-    sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=dev)
-    gb2 = torch.empty((rp,), dtype=torch.float32, device=dev)
-    dseg = torch.empty((rp, h), dtype=torch.bfloat16, device=dev)
-    sp.quant_into(hh, bb2, sb2, gb2)
-    sp.seg_into(dn_W, bb2, sb2, gb2, dseg, h, ii, eblk)
+    if proj in ("both", "gateup"):
+        bb = torch.empty((rp, h // 2), dtype=torch.uint8, device=dev)
+        sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=dev)
+        gb = torch.empty((rp,), dtype=torch.float32, device=dev)
+        gu = torch.empty((rp, 2 * ii), dtype=torch.bfloat16, device=dev)
+        sp.quant_into(xs, bb, sb, gb)
+        sp.seg_into(gu_W, bb, sb, gb, gu, 2 * ii, h, eblk)
+    else:  # down-only (down49): gate_up anchored dense
+        gu = _dense_seg_gs(xs, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
+                           2 * ii, e, cap)
+    gu = _sanitize(gu, li, "gate_up")
+    hh = _sanitize((F.silu(gu[:, :ii].float()) * gu[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
+    if proj in ("both", "down"):
+        bb2 = torch.empty((rp, ii // 2), dtype=torch.uint8, device=dev)
+        sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=dev)
+        gb2 = torch.empty((rp,), dtype=torch.float32, device=dev)
+        dseg = torch.empty((rp, h), dtype=torch.bfloat16, device=dev)
+        sp.quant_into(hh, bb2, sb2, gb2)
+        sp.seg_into(dn_W, bb2, sb2, gb2, dseg, h, ii, eblk)
+    else:  # gateup-only (gateup49): down anchored dense
+        dseg = _dense_seg_gs(hh, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2,
+                             h, e, cap)
+    dseg = _sanitize(dseg, li, "down")
     rw = valid.float() if on_input else (w_of[srcc] * valid.float())
     y.index_add_(0, tok_of[srcc], (dseg.float() * rw[:, None]).to(y.dtype))
+    return dropped
+
+
+def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W, dn_W, layer,
+                         ii, h, e, cap, on_input, y):
+    # Graph-safe route-slot (D2): the top-N highest-weight slots per token run DENSE (both projections
+    # raw NVFP4), the low-weight tail runs the 2:4 seg kernel (both projections). Both groups use
+    # fixed-capacity routing with a validity mask (dense = dense_slot & on-rank; sparse = tail & on-rank)
+    # so shapes stay static. dense_slot/valid are per-slot [R] bool aligned with ids_local. Disjoint
+    # groups -> each (token,expert) slot contributes once; off-rank contributes nowhere.
+    import torch
+    import torch.nn.functional as F
+
+    li = getattr(layer, "_qb_layer_idx", -1)
+    v_dense = valid & dense_slot
+    # DENSE group: both projections dense NVFP4 over the dense-slot rows.
+    srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
+    validd = srcd >= 0
+    scd = srcd.clamp_min(0)
+    xd = (x[tok_of[scd]].to(torch.bfloat16) * validd[:, None])
+    if on_input:
+        xd = xd * w_of[scd][:, None].to(torch.bfloat16)
+    xd = _sanitize(xd.contiguous(), li, "x_in")
+    gud = _dense_seg_gs(xd, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
+                        2 * ii, e, cap)
+    hhd = _sanitize((F.silu(gud[:, :ii].float()) * gud[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
+    dd = _dense_seg_gs(hhd, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2, h, e, cap)
+    rwd = validd.float() if on_input else (w_of[scd] * validd.float())
+    y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
+    # SPARSE group: low-weight tail through the 2:4 seg path (both projections).
+    _seg_apply_gs(sp, x, tok_of, ids_local, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y,
+                  valid & (~dense_slot), "both", layer)
+    return drop_d
+
+
+def _dense_apply_gs(sp, x, tok_of, assign, w_of, valid, layer, i, h, e, cap, on_input, y):
+    # Graph-safe FULLY-DENSE NVFP4 MoE apply (both projections dense), for the dense-anchor LAYERS of
+    # down49/D2 (first-N kept dense) and for QB_MOE=dense. Fixed-capacity routing + _dense_seg_gs; the
+    # graph-safe replacement for the frozen dense `else` branch's torch.unique(local).tolist() loop.
+    import torch
+    import torch.nn.functional as F
+
+    li = getattr(layer, "_qb_layer_idx", -1)
+    src, _eb, dropped = sp.route_fixed_cap(assign, e, cap, valid)
+    vv = src >= 0
+    sc = src.clamp_min(0)
+    xs = (x[tok_of[sc]].to(torch.bfloat16) * vv[:, None])
+    if on_input:
+        xs = xs * w_of[sc][:, None].to(torch.bfloat16)
+    xs = _sanitize(xs.contiguous(), li, "x_in")
+    gu = _dense_seg_gs(xs, layer.w13_weight, layer.w13_weight_scale, layer.w13_weight_scale_2,
+                       2 * i, e, cap)
+    hh = _sanitize((F.silu(gu[:, :i].float()) * gu[:, i:].float()).to(torch.bfloat16), li, "swiglu")
+    dd = _dense_seg_gs(hh, layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2, h, e, cap)
+    rw = vv.float() if on_input else (w_of[sc] * vv.float())
+    y.index_add_(0, tok_of[sc], (dd.float() * rw[:, None]).to(y.dtype))
     return dropped
 
 
@@ -1324,17 +1410,12 @@ def _install_moe() -> None:
             sp = _load_sparse_moe()
             ii, ee = layer._qb_i, layer._qb_e
             proj = layer._qb_proj
-            if _ROUTE_SLOT > 0 and proj == "both":
-                y = _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y)
-                if shared_experts is not None and shared_experts_input is not None:
-                    shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
-                return y
-            if _GRAPH and proj == "both" and _GRAPH_CAP > 0:
-                # P4 graph-capturable `both` apply (M3-A/B/C validated). Fixed-capacity DEVICE routing
-                # with off-rank slots sink-routed keeps every shape static and removes all host syncs, so
-                # vLLM can CUDA-graph the MoE forward. Overflow / off-rank rows dropped deterministically.
-                # NOTE: skips the eager path's _sanitize NaN guardrail (it host-syncs); the graph path is
-                # opt-in for capture and relies on finite inputs (see the sparse NaN note above).
+            if _GRAPH and _GRAPH_CAP > 0:
+                # P4 graph-capturable DEPLOYED sparse policies (M3 + M4 validated). Fixed-capacity DEVICE
+                # routing with off-rank slots sink-routed keeps every shape static and removes all host
+                # syncs, so vLLM can CUDA-graph the MoE forward. Covers both, down49 (down sparse /
+                # gate_up anchored dense), gateup49, and route-slot D2 (dense top-N slots + sparse tail).
+                # Overflow / off-rank rows dropped deterministically; _sanitize restored (capture-safe).
                 assign_g = topk_ids.reshape(-1).to(torch.long)
                 tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
                 w_g = topk_weights.reshape(-1).to(torch.float32)
@@ -1344,9 +1425,22 @@ def _install_moe() -> None:
                     valid_g = local_g >= 0
                     local_g = local_g.clamp_min(0)
                 else:
-                    local_g, valid_g = assign_g, None
-                _seg_apply_gs(sp, x, tok_g, local_g, w_g, layer._qb_gu, layer._qb_dn, ii, h, ee,
-                              _GRAPH_CAP, on_input, y, valid_g)
+                    local_g = assign_g
+                    valid_g = torch.ones_like(local_g, dtype=torch.bool)
+                if _ROUTE_SLOT > 0 and proj == "both":
+                    rank = topk_weights.argsort(dim=1, descending=True).argsort(dim=1)
+                    dense_slot = (rank < _ROUTE_SLOT).reshape(-1)
+                    _route_slot_apply_gs(sp, x, local_g, tok_g, w_g, dense_slot, valid_g,
+                                         layer._qb_gu, layer._qb_dn, layer, ii, h, ee, _GRAPH_CAP,
+                                         on_input, y)
+                else:
+                    _seg_apply_gs(sp, x, tok_g, local_g, w_g, layer._qb_gu, layer._qb_dn, ii, h, ee,
+                                  _GRAPH_CAP, on_input, y, valid_g, proj, layer)
+                if shared_experts is not None and shared_experts_input is not None:
+                    shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+                return y
+            if _ROUTE_SLOT > 0 and proj == "both":
+                y = _route_slot_apply(layer, sp, x, topk_ids, topk_weights, on_input, y)
                 if shared_experts is not None and shared_experts_input is not None:
                     shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
                 return y
@@ -1418,6 +1512,26 @@ def _install_moe() -> None:
         w2, w2s, w2s2 = layer.w2_weight, layer.w2_weight_scale, layer.w2_weight_scale_2
         i = w13.shape[1] // 2
         emap = getattr(layer, "expert_map", None)
+        if _GRAPH and _GRAPH_CAP > 0:
+            # Graph-safe fully-dense layer (dense-anchor layers of down49/D2, or QB_MOE=dense). See the
+            # _dense_seg_gs note on decode cost: dense NVFP4 has no fused grouped-GEMM, so all E experts
+            # are dequant'd every step -- captures + correct but decode-slow (precisely attributed).
+            spd = _load_sparse_moe()
+            assign_g = topk_ids.reshape(-1).to(torch.long)
+            tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
+            w_g = topk_weights.reshape(-1).to(torch.float32)
+            if emap is not None:
+                local_g = emap[assign_g]
+                valid_g = local_g >= 0
+                local_g = local_g.clamp_min(0)
+            else:
+                local_g = assign_g
+                valid_g = torch.ones_like(local_g, dtype=torch.bool)
+            _dense_apply_gs(spd, x, tok_g, local_g, w_g, valid_g, layer, i, h,
+                            w13.shape[0], _GRAPH_CAP, on_input, y)
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input, SharedExpertsOrder.MK_INTERNAL_OVERLAPPED)
+            return y
         flat_ids = topk_ids.reshape(-1)
         flat_w = topk_weights.reshape(-1).to(torch.float32)
         tok = torch.arange(t, device=x.device).repeat_interleave(topk)
