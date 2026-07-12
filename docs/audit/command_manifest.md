@@ -129,5 +129,6 @@ device->host sync illegal under stream capture (`cudaErrorStreamCaptureUnsupport
 `docs/audit/logs/glm_graphfail.log`). P4 replaced it with a graph-safe fixed-capacity device-routing path
 (`route_fixed_cap` / `_route_slot_apply_gs`, behind `QB_GRAPH`); DeepSeek-D2 captures FULL decode 2/2 and
 GLM route-slot D2 captures PIECEWISE 3/3 + FULL 2/2 (pool 1.01 GiB/GPU, DSA native), both quality-neutral
-vs the frozen eager path, drop=0. See `docs/p4/m4_d2_verdict.md`, `docs/p4/m4_glm_d2_verdict.md`. This is
+vs the frozen eager path, drop=0. See [docs/p4/m4_d2_verdict.md](../p4/m4_d2_verdict.md),
+[docs/p4/m4_glm_d2_verdict.md](../p4/m4_glm_d2_verdict.md). This is
 a graph-correctness and graph-enablement result, **not** a production-wide decode-speed win.
