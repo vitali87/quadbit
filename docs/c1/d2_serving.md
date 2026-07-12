@@ -12,11 +12,20 @@
 | # | config | backend | command | capture | PPL | decode tok/s | gen coherent |
 |---|---|---|---|---|---|---|---|
 | 1 | C-captured | dequant | `graph_gate4 --cap 128 --max-seqs 2 --dense-layers 0..21` | FULL 2/2 | 3.9746 | **0.514** | yes (Paris/fib/RGB/H2O EN+ZH) |
-| 2 | B-graphpath-eager | native_nvfp4 | `... --force-graph-path --eager --dense-anchor-backend native_nvfp4` | eager | _tbd_ | _tbd_ | _tbd_ |
+| 2 | B-graphpath-eager | native_nvfp4 | `... --force-graph-path --eager --dense-anchor-backend native_nvfp4` | eager | 4.0483 | 1.637 | yes |
 | 3 | C-captured | native_nvfp4 | `... --dense-anchor-backend native_nvfp4` | **PIECEWISE 3/3 + FULL 2/2** | **4.0112** | **5.820** | yes (Paris/fib/RGB/H2O EN+ZH) |
 
 All rows same harness/timing (two-run TTFT-subtracted decode). P4 reference (different timing method):
 frozen-eager 4.04 tok/s, dequant-captured 0.97 tok/s.
+
+**Decomposition (why 11.3×):** the backend change and capture compound.
+- native backend alone (Row 2 eager 1.637) vs dequant captured (Row 1 0.514) = **3.2×** — the
+  `group_gemm_nvfp4` compute is far cheaper than the `range(E)` dequant loop.
+- capture on top of native (Row 3 5.820 vs Row 2 1.637) = **3.6×** — launch-overhead removal, which only
+  pays off once each step is cheap. Capturing the dequant loop barely helped (its 124.6s/64tok is compute,
+  not launch), which is exactly why P4's captured path was *slower* than eager.
+- product ≈ 11.3× over the dequant-captured baseline. PPL across all three rows 3.97-4.05 (noise, all
+  coherent); captured native (4.0112) is cleaner than eager native (4.0483).
 
 **Headline:** native-captured D2 = PPL 4.0112 (dequant-captured 3.9746; +0.037 from fp4-act on the anchor,
 negligible, generation identically coherent) at **5.82 decode tok/s = 11.3× the dequant-captured 0.514**
