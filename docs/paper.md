@@ -42,9 +42,13 @@ W4A4 and costs +0.63 PPL with no calibration; sparse deploys at its trained accu
 real PPL behind dense, so sparse is a speed Pareto point conditioned on prunability, not an
 accuracy win.
 
-Limitations we state up front: the MoE plugin path is eager-only (a plugin host-sync blocks
-CUDA-graph capture, so the DeepSeek/GLM serving numbers are eager-vs-eager, not
-production-vs-production); GLM-5.2 requires 8x RTX PRO 6000; the GLM downstream evidence is a
+Limitations we state up front: the MoE plugin path is graph-enabled but speed-limited by the dense
+grouped path (P4) — the deployed sparse policies now CUDA-graph-capture correctly in vLLM on SM120
+(DeepSeek-D2 on 2 GPUs, GLM route-slot D2 on 8 GPUs, native SM120 DSA sparse-MLA, quality-neutral);
+the remaining limitation is not graph capture but decode speed on the unfused dense anchored-projection
+path, which still lacks a native dense NVFP4 grouped-GEMM, so the DeepSeek/GLM serving numbers are a
+graph-correctness result, not a production-wide decode-speed win; GLM-5.2 requires 8x RTX PRO 6000;
+the GLM downstream evidence is a
 small 4-task smoke suite, not an exhaustive benchmark; all-MLP sparsity carries a real PPL tax
 that training-free repair does not close; and dense FP4 speed belongs to the ecosystem baselines.
 
@@ -92,8 +96,8 @@ a `torch.library` custom op that vLLM's fullgraph compile and CUDA-graph capture
 correct sparse output (guarded against a silent dense fall-back). On recovered
 Llama-3.1-8B-Instruct, graph-vs-graph, sparse wins decode and total request latency in the
 interactive/low-batch, long-generation regime (81 of 112 cells); NVFP4 keeps the prefill-bound
-corner. The MoE plugin path (C4) is eager-only, so full production CUDA-graph parity there is
-future work.
+corner. The MoE plugin path (C4) now graph-captures for the deployed sparse policies (P4); its
+remaining gap is decode speed on the unfused dense grouped path, not graph capture.
 
 **C4. Cross-architecture sparse-policy transfer (Section 10).** On DeepSeek-V4-Flash and GLM-5.2
 the accuracy cost of sparsity is a *placement* problem that transfers across architectures:
@@ -838,13 +842,15 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
 - **MoE accuracy recovery untried.** The MoE experts are pruned 2:4 by magnitude only; calibrated
   SparseGPT / distillation on the experts (the dense-model levers of Section 8) are not yet applied at
   MoE scale. The per-expert-output tax (cos ~0.70 on random activations) is reported un-repaired.
-- **The MoE plugin path is eager-only; its serving numbers are eager-vs-eager, not
-  production-vs-production** (Section 10). The quadbit vLLM plugin's expert-parallel local-expert loop
-  uses a host-syncing `torch.unique(...).tolist()` (`qb_sm120_plugin.py:1255`) that is illegal under
-  CUDA-graph stream capture (`cudaErrorStreamCaptureUnsupported`), so every DeepSeek/GLM row runs with
-  `enforce_eager=True`. The Llama sparse-MLP serving result (Section 9, Table C) *is* graph-vs-graph, but
-  the MoE cross-architecture rows are not; removing the plugin host-sync to make expert-parallel MoE
-  graph-capturable is future work (P4), not a DSA, attention, memory, or loader blocker.
+- **The MoE plugin path is graph-enabled, speed-limited by the dense grouped path** (Section 10, P4).
+  The old expert-parallel local-expert loop used a host-syncing `torch.unique(...).tolist()` that was
+  illegal under CUDA-graph stream capture; P4 replaced it with a fixed-capacity device-routing path
+  (`route_fixed_cap` / `_route_slot_apply_gs`), and the deployed sparse policies now CUDA-graph-capture
+  correctly in vLLM on SM120 (DeepSeek-D2 on 2 GPUs, GLM route-slot D2 on 8 GPUs, native SM120 DSA
+  sparse-MLA, quality-neutral, `drop=0`). The DeepSeek/GLM serving numbers are eager as the deployed
+  reference and this is a **graph-correctness result, not a production-wide decode-speed win**: the
+  remaining limitation is decode speed on the unfused dense anchored-projection path, which still lacks a
+  native dense NVFP4 grouped-GEMM. Not a DSA, attention, memory, or loader blocker.
 - **GLM-5.2 requires 8x RTX PRO 6000.** At 432.9 GiB it does not fit on 2 or 4 cards; the smaller
   footprint DeepSeek-V4-Flash enjoyed (down-only at 2 GPUs) does not transfer. Route-slot dual residency
   fits on the 8-GPU host but drops KV capacity from 607k to 241k tokens (raw NVFP4 + 2:4 codes

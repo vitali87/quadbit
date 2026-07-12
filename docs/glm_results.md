@@ -93,5 +93,7 @@ downstream regression. Commands: `--mode glm_downstream --moe {dense | sparse --
 - **Sparse path is active, not a dense trap.** Each sparse run logs exactly 304 dense-anchor lines
   (38 anchored layers x 8 workers); layers 38-74 pack to 2:4 codes. Route-slot's KV collapse to 241k
   tokens independently confirms raw+codes co-residency.
-- **Eager only.** Graph-captured EP MoE is future work (plugin host-sync in the expert loop).
+- **Graph-enabled (P4).** Route-slot D2 CUDA-graph-captures on 8 GPUs (the old expert-loop host-sync was
+  replaced by a fixed-capacity device-routing path); the rows above stay eager as the deployed-quality
+  reference. See `docs/p4/m4_glm_d2_verdict.md`.
 - GLM needs 8 GPUs (433 GiB); the 2/4-GPU footprint DeepSeek enjoyed does not transfer.
