@@ -54,6 +54,29 @@ app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
+@app.function(timeout=10 * MIN)
+def inspect_vllm() -> None:
+    """C4: dump vLLM's custom_all_reduce guard so the enable-on-4-PCIe patch is exact (the ncclDevKernel
+    RING_LL all-reduce is 90.8% of decode; custom AR is disabled by a >2-PCIe policy check)."""
+    import inspect
+
+    from vllm.distributed.device_communicators import custom_all_reduce as car
+    src = inspect.getsource(car).split("\n")
+    print(f"# custom_all_reduce.py ({car.__file__})", flush=True)
+    # full __init__ (lines ~55-210) + should_custom_ar (~230-263): the exact guard + nvlink detection
+    for i, line in enumerate(src, 1):
+        if 55 <= i <= 210 or 228 <= i <= 265 or 25 <= i <= 50:
+            print(f"{i:4d}: {line}", flush=True)
+    print("# --- also check the tp group all_reduce dispatch ---", flush=True)
+    try:
+        from vllm.distributed.parallel_state import GroupCoordinator
+        gsrc = inspect.getsource(GroupCoordinator.all_reduce)
+        for line in gsrc.split("\n"):
+            print(f"    {line}", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  (GroupCoordinator.all_reduce introspect failed: {ex})", flush=True)
+
+
 @app.function(
     gpu="RTX-PRO-6000:8",
     timeout=90 * MIN,
@@ -471,6 +494,10 @@ def graph_gate4(
     compact: bool = False,
     a_dense: int = 0,
     a_sparse: int = 0,
+    nccl_algo: str = "",
+    nccl_proto: str = "",
+    nccl_nchannels: int = 0,
+    force_custom_ar: bool = False,
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
@@ -496,6 +523,25 @@ def graph_gate4(
         os.environ["QB_A_DENSE"] = str(a_dense)
     if a_sparse:
         os.environ["QB_A_SPARSE"] = str(a_sparse)
+    # C4: NCCL collective tuning. Decode is 90.8% RING_LL all-reduce over PCIe (no NVLink), latency-bound at
+    # batch=1. NCCL_ALGO=Tree has fewer latency hops than Ring for tiny payloads at 4 ranks. Must be set
+    # before LLM() (NCCL reads these at communicator init); worker subprocs inherit this env.
+    for _k in ("NCCL_ALGO", "NCCL_PROTO", "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS", "NCCL_NCHANNELS"):
+        os.environ.pop(_k, None)
+    if nccl_algo:
+        os.environ["NCCL_ALGO"] = nccl_algo
+    if nccl_proto:
+        os.environ["NCCL_PROTO"] = nccl_proto
+    if nccl_nchannels:
+        os.environ["NCCL_MIN_NCHANNELS"] = str(nccl_nchannels)
+        os.environ["NCCL_MAX_NCHANNELS"] = str(nccl_nchannels)
+    if nccl_algo or nccl_proto or nccl_nchannels:
+        print(f"# C4 NCCL tuning: ALGO={nccl_algo or '(auto)'} PROTO={nccl_proto or '(auto)'} "
+              f"NCHANNELS={nccl_nchannels or '(auto)'}", flush=True)
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+        print("# C4: QB_FORCE_CUSTOM_AR=1 (enable vLLM one-shot custom all-reduce on 4 PCIe GPUs)", flush=True)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)
@@ -606,6 +652,133 @@ def c3_profile(
           flush=True)
     print("# C3 profile DONE — see worker [qb_prof] (MoE component ms) + [qb_profile] (routing waste) lines",
           flush=True)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def floor_profile(
+    tp: int = 4,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    baseline: str = "dense_nvfp4",
+    force_custom_ar: bool = False,
+) -> None:
+    """C4 gating: the decode step is 94.5% non-MoE floor (19.6 ms) and 5.5% MoE apply (1.13 ms), so the
+    only decode headroom worth chasing is the floor. Profile the DENSE baseline (QB_MOE=off, the 48.248
+    tok/s SOTA config) with vLLM's worker-side profiler (captures NCCL collectives + attention/DSA + GEMM
+    + norm kernels), then sum GPU-kernel time by category to localize the floor. Eager so kernel boundaries
+    are clean; GPU kernel durations are the same eager vs captured, only launch gaps differ, so the category
+    breakdown is representative. Prime suspect: 4-GPU EP all-to-all over PCIe (no NVLink), 43 layers x 2."""
+    import glob
+    import gzip
+    import json
+    import os
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "off" if baseline == "dense_nvfp4" else "sparse"
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+    prof_dir = "/cache/floorprof"
+    os.environ["VLLM_TORCH_PROFILER_DIR"] = prof_dir
+    os.makedirs(prof_dir, exist_ok=True)
+    for f in glob.glob(f"{prof_dir}/*.json*"):
+        os.remove(f)
+    print(f"# floor_profile: baseline={baseline} QB_MOE={os.environ['QB_MOE']} tp={tp} -> {prof_dir}",
+          flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
+              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope},
+              profiler_config={"profiler": "torch", "torch_profiler_dir": prof_dir})
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  (deepseek_v4 mode / profiler_config rejected: {type(ex).__name__}: {ex}; retry)", flush=True)
+        try:
+            llm = LLM(**kw)
+        except Exception as ex2:  # noqa: BLE001
+            print(f"  (profiler_config rejected: {type(ex2).__name__}: {ex2}; retry w/o it)", flush=True)
+            kw.pop("profiler_config", None)
+            llm = LLM(**kw)
+
+    tids = llm.get_tokenizer().encode("The history of the Roman empire spans many centuries and")
+    llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=8))  # warm
+    torch.cuda.synchronize()
+    llm.start_profile()
+    llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=16))
+    llm.stop_profile()
+    torch.cuda.synchronize()
+    vol.commit()
+
+    # categorize GPU-kernel time from the rank-0 trace (each rank ~symmetric; collectives show on all)
+    cats = [
+        ("collective(EP a2a / allreduce)", ("nccl", "alltoall", "all_to_all", "allreduce", "all_reduce",
+                                            "reduce_scatter", "reducescatter", "sendrecv", "_reduce", "gather")),
+        ("attention+DSA", ("flash", "fmha", "attn", "mla", "sparse_mla", "dsv3", "mqa", "sm120_decode",
+                           "paged", "rope")),
+        ("gemm/moe", ("gemm", "cutlass", "nvfp4", "matmul", "moe", "quant", "fp4", "fp8", "wgmma")),
+        ("norm/elementwise", ("norm", "rms", "silu", "add", "mul", "cast", "copy", "elementwise", "act")),
+    ]
+    def bucket(name):
+        n = name.lower()
+        for label, keys in cats:
+            if any(k in n for k in keys):
+                return label
+        return "other"
+
+    traces = sorted(glob.glob(f"{prof_dir}/*.json*"))
+    print(f"# traces: {[os.path.basename(t) for t in traces]}", flush=True)
+    if not traces:
+        print("# NO TRACE WRITTEN — profiler dir empty", flush=True)
+        return
+    t = traces[0]
+    raw = gzip.open(t, "rt").read() if t.endswith(".gz") else open(t).read()
+    data = json.loads(raw)
+    evs = data.get("traceEvents", data) if isinstance(data, dict) else data
+    by_cat: dict = {}
+    by_name: dict = {}
+    total = 0.0
+    for e in evs:
+        if not isinstance(e, dict) or e.get("ph") != "X":
+            continue
+        cat = str(e.get("cat", ""))
+        if cat not in ("kernel", "gpu_op", "Kernel"):   # GPU kernels only
+            continue
+        dur = float(e.get("dur", 0.0))
+        nm = str(e.get("name", ""))
+        b = bucket(nm)
+        by_cat[b] = by_cat.get(b, 0.0) + dur
+        by_name[nm] = by_name.get(nm, 0.0) + dur
+        total += dur
+    if total <= 0:
+        print("# no GPU-kernel events found (cat filter); dumping distinct cats seen:", flush=True)
+        seen = {}
+        for e in evs:
+            if isinstance(e, dict) and e.get("ph") == "X":
+                seen[str(e.get("cat", ""))] = seen.get(str(e.get("cat", "")), 0) + 1
+        print(f"#   {seen}", flush=True)
+        return
+    print(f"# === FLOOR DECOMPOSITION (rank0 GPU-kernel us, total={total/1000:.2f} ms over 16 decode steps) ===",
+          flush=True)
+    for label, us in sorted(by_cat.items(), key=lambda kv: -kv[1]):
+        print(f"#   {label:34s} {us/1000:8.2f} ms  {100*us/total:5.1f}%", flush=True)
+    print("# --- top 15 kernels ---", flush=True)
+    for nm, us in sorted(by_name.items(), key=lambda kv: -kv[1])[:15]:
+        print(f"#   {us/1000:8.2f} ms  {100*us/total:4.1f}%  {nm[:90]}", flush=True)
+    print("# floor_profile DONE", flush=True)
 
 
 @app.function(
