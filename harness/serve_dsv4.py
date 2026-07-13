@@ -471,6 +471,9 @@ def graph_gate4(
     compact: bool = False,
     a_dense: int = 0,
     a_sparse: int = 0,
+    nccl_algo: str = "",
+    nccl_proto: str = "",
+    nccl_nchannels: int = 0,
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
@@ -496,6 +499,21 @@ def graph_gate4(
         os.environ["QB_A_DENSE"] = str(a_dense)
     if a_sparse:
         os.environ["QB_A_SPARSE"] = str(a_sparse)
+    # C4: NCCL collective tuning. Decode is 90.8% RING_LL all-reduce over PCIe (no NVLink), latency-bound at
+    # batch=1. NCCL_ALGO=Tree has fewer latency hops than Ring for tiny payloads at 4 ranks. Must be set
+    # before LLM() (NCCL reads these at communicator init); worker subprocs inherit this env.
+    for _k in ("NCCL_ALGO", "NCCL_PROTO", "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS", "NCCL_NCHANNELS"):
+        os.environ.pop(_k, None)
+    if nccl_algo:
+        os.environ["NCCL_ALGO"] = nccl_algo
+    if nccl_proto:
+        os.environ["NCCL_PROTO"] = nccl_proto
+    if nccl_nchannels:
+        os.environ["NCCL_MIN_NCHANNELS"] = str(nccl_nchannels)
+        os.environ["NCCL_MAX_NCHANNELS"] = str(nccl_nchannels)
+    if nccl_algo or nccl_proto or nccl_nchannels:
+        print(f"# C4 NCCL tuning: ALGO={nccl_algo or '(auto)'} PROTO={nccl_proto or '(auto)'} "
+              f"NCHANNELS={nccl_nchannels or '(auto)'}", flush=True)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)
