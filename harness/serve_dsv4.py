@@ -55,6 +55,34 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
 @app.function(timeout=10 * MIN)
+def inspect_dp() -> None:
+    """C5: find the correct vLLM offline data-parallel launch API (LLM(data_parallel_size>1) is rejected)."""
+    import os
+    import subprocess
+
+    import vllm
+    root = os.path.dirname(vllm.__file__)
+    # locate the exact guard that raises "single-process usage" and dump surrounding code for a bypass
+    r = subprocess.run(["grep", "-rn", "single-process usage", root], capture_output=True, text=True)
+    print(f"# guard hits:\n{r.stdout}", flush=True)
+    for line in r.stdout.strip().split("\n"):
+        if ":" not in line:
+            continue
+        fp = line.split(":")[0]
+        ln = int(line.split(":")[1])
+        print(f"# ===== {fp} around {ln} =====", flush=True)
+        src = open(fp).read().split("\n")
+        for i in range(max(0, ln - 22), min(len(src), ln + 3)):
+            print(f"{i+1:4d}: {src[i]}", flush=True)
+        break
+    # also: does data_parallel_rank / a bypass flag exist on LLM/EngineArgs?
+    r2 = subprocess.run(["grep", "-rn", "data_parallel_rank\\|_data_parallel_master\\|dp_rank",
+                         f"{root}/entrypoints/llm.py", f"{root}/engine/arg_utils.py"],
+                        capture_output=True, text=True)
+    print(f"# dp_rank/bypass refs:\n{r2.stdout[:2000]}", flush=True)
+
+
+@app.function(timeout=10 * MIN)
 def inspect_vllm() -> None:
     """C4: dump vLLM's custom_all_reduce guard so the enable-on-4-PCIe patch is exact (the ncclDevKernel
     RING_LL all-reduce is 90.8% of decode; custom AR is disabled by a >2-PCIe policy check)."""
@@ -346,6 +374,7 @@ def _graph_gate_body(
     glm: bool = False,
     dense_anchor_backend: str = "dequant",
     baseline: str = "",
+    dp: int = 1,
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -398,6 +427,12 @@ def _graph_gate_body(
                   max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
                   max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
                   enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+        if dp > 1:
+            # C5: DP attention + EP MoE. tp=1 so attention runs replicated per DP rank (NO per-layer TP
+            # all-reduce, the 94.5% floor); experts EP-sharded across all dp ranks (MoE all-to-all only).
+            kw["data_parallel_size"] = dp
+            print(f"  C5 DP-attention: tp={tp} data_parallel_size={dp} (removes the attention TP all-reduce)",
+                  flush=True)
         try:
             llm = LLM(tokenizer_mode="deepseek_v4", **kw)
         except Exception as ex:  # noqa: BLE001
@@ -545,6 +580,107 @@ def graph_gate4(
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate2(
+    proj: str = "both",
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.92,
+    dense_anchor_backend: str = "native_nvfp4",
+    baseline: str = "dense_nvfp4",
+    nccl_algo: str = "",
+    nccl_proto: str = "",
+    force_custom_ar: bool = False,
+) -> None:
+    """C5 collective-floor lever: TP=2 variant of the graph_gate board. At world_size=2 the per-layer TP
+    all-reduce is a single peer exchange (custom AR is natively enabled by vLLM for world_size==2), so decode
+    collective latency should drop vs the 4-GPU ring/one-shot. Same _graph_gate_body, tp=2, captured.
+    force_custom_ar still available (verifies the 2x2 P2P matrix, bypasses the flaky probe). Memory is tight
+    at TP=2 (~82 GiB/GPU weights of 96), so gpu_mem default 0.92 and short max_len."""
+    import os
+    for _k in ("NCCL_ALGO", "NCCL_PROTO", "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS", "NCCL_NCHANNELS"):
+        os.environ.pop(_k, None)
+    if nccl_algo:
+        os.environ["NCCL_ALGO"] = nccl_algo
+    if nccl_proto:
+        os.environ["NCCL_PROTO"] = nccl_proto
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+        print("# C5: QB_FORCE_CUSTOM_AR=1 (TP=2, custom AR native at world_size==2)", flush=True)
+    print(f"# C5 TP=2 board: baseline={baseline} route_slot={route_slot} cap={cap} gpu_mem={gpu_mem}",
+          flush=True)
+    _graph_gate_body(2, False, False, proj, route_slot, dense_layers, cap, max_seqs, max_len, gpu_mem,
+                     dense_anchor_backend=dense_anchor_backend, baseline=baseline)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate_dp(
+    dp: int = 4,
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    baseline: str = "dense_nvfp4",
+    eager: bool = False,
+) -> None:
+    """C5 reduce-count lever: DP attention + EP MoE (tp=1, data_parallel_size=dp). Attention runs replicated
+    per DP rank so there is NO per-layer TP all-reduce (the 94.5% decode floor); the MoE stays EP (already
+    all-to-all today, not the dominant cost), so DP removes the ~43 attention all-reduces without adding MoE
+    collectives. Spawns dp processes (vLLM offline DP needs per-proc VLLM_DP_* env). Rank 0 reports."""
+    import subprocess
+    import sys
+
+    # Launch each DP rank as a FRESH python interpreter (subprocess), not multiprocessing.spawn: spawn
+    # re-imports this Modal-decorated __main__ in the child and chokes on the @app.function decorators.
+    # A fresh interpreter importing the installed qb_dp_worker module avoids both re-import and pickling.
+    print(f"# C5 DP board: dp={dp} tp=1 baseline={baseline} eager={eager} (subprocess DP attention)",
+          flush=True)
+    port = 29591
+    procs = []
+    for r in range(dp):
+        code = (f"import qb_dp_worker; qb_dp_worker.dp_worker({r},{dp},{port},{MODEL!r},{cap},"
+                f"{max_seqs},{max_len},{gpu_mem},{baseline!r},{eager})")
+        procs.append(subprocess.Popen([sys.executable, "-c", code]))
+    # Poll all ranks: if any exits non-zero, the survivors would hang on that rank's missing collective, so
+    # terminate them and fail loudly (a DP init error / OOM must not be reported as a successful run).
+    codes: list = [None] * dp
+    while any(c is None for c in codes):
+        for i, p in enumerate(procs):
+            if codes[i] is None and (rc := p.poll()) is not None:
+                codes[i] = rc
+        if any(c is not None and c != 0 for c in codes):
+            for p in procs:
+                if p.poll() is None:
+                    p.terminate()
+            for p in procs:
+                try:
+                    p.wait(timeout=15)
+                except Exception:  # noqa: BLE001
+                    p.kill()
+            for i, p in enumerate(procs):
+                codes[i] = p.poll()
+            break
+        time.sleep(2)
+    print(f"# C5 DP board DONE (exit codes: {codes})", flush=True)
+    if any(c != 0 for c in codes):
+        raise RuntimeError(f"C5 DP workers failed (exit codes {codes}); see log. Offline LLM likely "
+                           "rejected data_parallel_size>1 (needs vllm serve/AsyncLLM).")
 
 
 @app.function(
@@ -750,6 +886,7 @@ def floor_profile(
     evs = data.get("traceEvents", data) if isinstance(data, dict) else data
     by_cat: dict = {}
     by_name: dict = {}
+    by_name_cnt: dict = {}
     total = 0.0
     for e in evs:
         if not isinstance(e, dict) or e.get("ph") != "X":
@@ -762,6 +899,7 @@ def floor_profile(
         b = bucket(nm)
         by_cat[b] = by_cat.get(b, 0.0) + dur
         by_name[nm] = by_name.get(nm, 0.0) + dur
+        by_name_cnt[nm] = by_name_cnt.get(nm, 0) + 1
         total += dur
     if total <= 0:
         print("# no GPU-kernel events found (cat filter); dumping distinct cats seen:", flush=True)
@@ -771,13 +909,44 @@ def floor_profile(
                 seen[str(e.get("cat", ""))] = seen.get(str(e.get("cat", "")), 0) + 1
         print(f"#   {seen}", flush=True)
         return
-    print(f"# === FLOOR DECOMPOSITION (rank0 GPU-kernel us, total={total/1000:.2f} ms over 16 decode steps) ===",
-          flush=True)
+
+    # count key kernels -> all-reduce COUNT per layer / per decode token. The DSA decode kernel fires once
+    # per layer per decode forward, so ar_per_layer = n_customAR / n_dsa (both scale with forwards*layers),
+    # independent of how many decode steps the trace captured. n_layers from config gives per-token count.
+    def cnt(*subs):
+        return sum(c for k, c in by_name_cnt.items() if any(s in k.lower() for s in subs))
+    n_customar = cnt("cross_device_reduce")
+    n_ring_ar = cnt("allreduce_") + cnt("allreduce ")  # ncclDevKernel_AllReduce_*
+    n_dsa = cnt("sparse_mla_decode", "sparse_mla")
+    # n_layers from the model config. The model is already on the /cache volume (HF_HOME), so
+    # from_pretrained reads the local cached config.json (no network); local_files_only makes that explicit.
+    n_layers = 0
+    try:
+        from transformers import AutoConfig
+        n_layers = int(getattr(AutoConfig.from_pretrained(MODEL, trust_remote_code=True,
+                                                          local_files_only=True),
+                               "num_hidden_layers", 0))
+    except Exception:  # noqa: BLE001
+        pass
+    fwd = (n_dsa / n_layers) if (n_dsa and n_layers) else 0.0   # decode forward passes in the trace
+    ar_active = n_customar or n_ring_ar
+    ar_per_layer = (ar_active / n_dsa) if n_dsa else 0.0
+    ar_per_tok = (ar_active / fwd) if fwd else 0.0
+    step_ms = (total / fwd) if fwd else 0.0                     # GPU-busy ms per decode forward
+
+    print(f"# === POST-C4 ROOFLINE (rank0 GPU-kernel time; n_layers={n_layers}, "
+          f"decode_forwards~{fwd:.1f}, per-token GPU-busy~{step_ms/1000:.2f} ms) ===", flush=True)
+    print(f"# all-reduce: custom_1stage={n_customar} ring={n_ring_ar} | DSA-decode={n_dsa} | "
+          f"per-layer={ar_per_layer:.2f} per-token={ar_per_tok:.1f}", flush=True)
+    print(f"# --- category (of {total/1000:.2f} ms GPU-busy total) ---", flush=True)
     for label, us in sorted(by_cat.items(), key=lambda kv: -kv[1]):
-        print(f"#   {label:34s} {us/1000:8.2f} ms  {100*us/total:5.1f}%", flush=True)
-    print("# --- top 15 kernels ---", flush=True)
+        pt = (us / fwd / 1000) if fwd else 0.0
+        print(f"#   {label:34s} {us/1000:8.2f} ms  {100*us/total:5.1f}%  ({pt:.2f} ms/tok)", flush=True)
+    print("# --- top 15 kernels (time, %, count, count/tok) ---", flush=True)
     for nm, us in sorted(by_name.items(), key=lambda kv: -kv[1])[:15]:
-        print(f"#   {us/1000:8.2f} ms  {100*us/total:4.1f}%  {nm[:90]}", flush=True)
+        c = by_name_cnt.get(nm, 0)
+        cpt = (c / fwd) if fwd else 0.0
+        print(f"#   {us/1000:8.2f} ms  {100*us/total:4.1f}%  n={c:5d} ({cpt:4.1f}/tok)  {nm[:78]}", flush=True)
     print("# floor_profile DONE", flush=True)
 
 

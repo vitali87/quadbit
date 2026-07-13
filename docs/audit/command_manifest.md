@@ -220,3 +220,24 @@ verification) lifts the whole quadbit stack **+20.5% past the prior SOTA row** (
 applies to dense and sparse D2 alike (shared floor), NOT a sparse-kernel speedup. Speed is validated; quality
 is NOT claimed neutral: mito80 PPL is reduction-order-dependent (tree 4.01 / ring 4.12 / one-shot 4.25, both
 directions), judge with the downstream / fixed quality protocol (bit-identical fibonacci is a smoke check).
+
+## C5 collective-floor (branch `c5-collective-floor`) — ceiling reached; C4 one-shot AR stands
+
+Attack the remaining TP all-reduce floor after C4. `floor_profile` now counts all-reduce invocations per
+layer/token; `graph_gate2` (TP=2), `graph_gate_dp` (DP attention, subprocess per rank + `qb_dp_worker`).
+Full result [docs/c5/verdict.md](../c5/verdict.md); logs `docs/audit/logs/c5_*.log`.
+
+| row | command (prefix `uv run modal run --detach harness/serve_dsv4.py`) | GPU | result |
+|---|---|---|---|
+| post-C4 roofline | `::floor_profile --tp 4 --baseline dense_nvfp4 --force-custom-ar` | 4 | collective 91-94%, 43.5 AR/tok = 1/layer, ~374 us/AR |
+| TP=2 (reduce ranks) | `::graph_gate2 --baseline dense_nvfp4 --force-custom-ar --gpu-mem 0.92` | 2 | 40.565 tok/s (NEGATIVE, 2x weight bytes/GPU), PPL 4.0855 |
+| DP attention (reduce count) | `::graph_gate_dp --dp 4 --baseline dense_nvfp4` | 4 | BLOCKED: offline LLM rejects data_parallel_size>1 (needs vllm serve/AsyncLLM) |
+| NCCL tree (hierarchical) | `::graph_gate4 ... --baseline dense_nvfp4 --nccl-algo allreduce:tree` | 4 | 48.983 tok/s (+1.5% only) |
+
+Verdict (B, ceiling): the decode floor is 91-94% one collective, ~1 all-reduce/layer (attention TP AR),
+sequential/non-overlappable at batch=1, ~374 us/AR = PCIe sync latency (no NVLink). Count is structural
+(no safe algebraic transform at batch=1); TP=2 is negative; a hierarchical AR adds syncs (worse; NCCL tree
++1.5%). The one lever with headroom, DP attention (removes the attention AR), is unreachable in the offline
+`LLM` harness. No C5 row beats 58.126; C4's +20.5% stands. Next lever: DP-attention via an AsyncLLM/vllm-serve
+latency harness, or NVLink. Also found: Modal 4-GPU P2P topology varies (C4 win conditional on full-P2P;
+safety guard falls back to NCCL otherwise). Speed only; no quality claim changed.

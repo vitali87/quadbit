@@ -1,0 +1,107 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-wDDqNNHo2KeXHLmNWNnDs6
+Building image im-v4n43WiMGZ9j2nocK8XV4j
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=40022 sha256=7dfce1a3ea3af83e430679e208ebe18384b1e2ffcc64fdf8938e42eb2636cd54
+  Stored in directory: /tmp/pip-ephem-wheel-cache-idgxs2t6/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 5.38s
+
+Built image im-v4n43WiMGZ9j2nocK8XV4j in 10.59s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_dp.
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function graph_gate2.
+├── 🔨 Created function graph_gate_dp.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+# guard hits:
+
+# dp_rank/bypass refs:
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:477:    data_parallel_rank: int | None = None
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1909:        inferred_data_parallel_rank = 0
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1926:            inferred_data_parallel_rank = (
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1930:                self.data_parallel_rank = inferred_data_parallel_rank
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1932:                    "Inferred data_parallel_rank %d from node_rank %d for external lb",
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1933:                    self.data_parallel_rank,
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1942:            self.data_parallel_external_lb or self.data_parallel_rank is not None
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1956:            assert self.data_parallel_rank is not None, (
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1957:                "data_parallel_rank or node_rank must be specified if "
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1961:                "data_parallel_size_local must be 1 or None when data_parallel_rank "
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1988:            self.data_parallel_rank = (
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1989:                self.data_parallel_start_rank or inferred_data_parallel_rank
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1993:                    "Inferred data_parallel_rank %d from node_rank %d",
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:1994:                    self.data_parallel_rank,
+/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py:2049:            data_parallel_rank=self.data_parallel_rank or 0,
+
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-wDDqNNHo2KeXHLmNWNnDs6
