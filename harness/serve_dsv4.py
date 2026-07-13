@@ -61,13 +61,11 @@ def inspect_vllm() -> None:
     import inspect
 
     from vllm.distributed.device_communicators import custom_all_reduce as car
-    src = inspect.getsource(car)
+    src = inspect.getsource(car).split("\n")
     print(f"# custom_all_reduce.py ({car.__file__})", flush=True)
-    for i, line in enumerate(src.split("\n"), 1):
-        low = line.lower()
-        if any(k in low for k in ("pcie", "nvlink", "full_nvlink", "disabl", "world_size", "def __init__",
-                                  "def should", "def custom_all", "def _can", "warning", "supported",
-                                  "class customallreduce", "self.disabled")):
+    # full __init__ (lines ~55-210) + should_custom_ar (~230-263): the exact guard + nvlink detection
+    for i, line in enumerate(src, 1):
+        if 55 <= i <= 210 or 228 <= i <= 265 or 25 <= i <= 50:
             print(f"{i:4d}: {line}", flush=True)
     print("# --- also check the tp group all_reduce dispatch ---", flush=True)
     try:
@@ -499,6 +497,7 @@ def graph_gate4(
     nccl_algo: str = "",
     nccl_proto: str = "",
     nccl_nchannels: int = 0,
+    force_custom_ar: bool = False,
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
@@ -539,6 +538,10 @@ def graph_gate4(
     if nccl_algo or nccl_proto or nccl_nchannels:
         print(f"# C4 NCCL tuning: ALGO={nccl_algo or '(auto)'} PROTO={nccl_proto or '(auto)'} "
               f"NCHANNELS={nccl_nchannels or '(auto)'}", flush=True)
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+        print("# C4: QB_FORCE_CUSTOM_AR=1 (enable vLLM one-shot custom all-reduce on 4 PCIe GPUs)", flush=True)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)

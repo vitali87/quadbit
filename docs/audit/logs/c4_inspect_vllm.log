@@ -1,0 +1,161 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-AtsFIPfrVv3mentJitVGbd
+Building image im-wIfCciRf52ky56AjygGlAD
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=36994 sha256=bbbaaaca5998e958ce21d68af88e213dd1de21b4cb41b7e28680d1924bde2634
+  Stored in directory: /tmp/pip-ephem-wheel-cache-sqhqoyff/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 2.58s
+
+Built image im-wIfCciRf52ky56AjygGlAD in 6.16s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+WARNING 07-13 15:20:29 [interface.py:358] Failed to import from vllm._C: ModuleNotFoundError("No module named 'vllm._C'")
+# custom_all_reduce.py (/usr/local/lib/python3.12/site-packages/vllm/distributed/device_communicators/custom_all_reduce.py)
+  31: def _can_p2p(rank: int, world_size: int) -> bool:
+  32:     for i in range(world_size):
+  51: class CustomAllreduce:
+  52:     _SUPPORTED_WORLD_SIZES = [2, 4, 6, 8]
+  54:     # max_size: max supported allreduce size
+  55:     def __init__(
+  73:         self.disabled = True
+  76:             # disable because of missing custom allreduce library
+  79:                 "Custom allreduce is disabled because "
+  92:             logger.warning(
+  93:                 "Custom allreduce is disabled because this process group"
+ 100:         world_size = dist.get_world_size(group=self.group)
+ 101:         if world_size == 1:
+ 105:         if world_size not in CustomAllreduce._SUPPORTED_WORLD_SIZES:
+ 106:             logger.warning(
+ 107:                 "Custom allreduce is disabled due to an unsupported world"
+ 108:                 " size: %d. Supported world sizes: %s. To silence this "
+ 109:                 "warning, specify disable_custom_all_reduce=True explicitly.",
+ 110:                 world_size,
+ 111:                 str(CustomAllreduce._SUPPORTED_WORLD_SIZES),
+ 131:                     CUSTOM_ALL_REDUCE_MAX_SIZES[device_capability_str][world_size],
+ 140:             torch.tensor([0], dtype=torch.int, device="cpu") for _ in range(world_size)
+ 145:         # test nvlink first, this will filter out most of the cases
+ 146:         # where custom allreduce is not supported
+ 147:         # this checks hardware and driver support for NVLink
+ 150:         if world_size > 2 and not fully_connected:
+ 151:             logger.warning(
+ 152:                 "Custom allreduce is disabled because it's not supported on"
+ 153:                 " more than two PCIe-only GPUs. To silence this warning, "
+ 154:                 "specify disable_custom_all_reduce=True explicitly."
+ 161:         if not current_platform.is_rocm() and not _can_p2p(rank, world_size):
+ 162:             logger.warning(
+ 163:                 "Custom allreduce is disabled because your platform lacks "
+ 165:                 "warning, specify disable_custom_all_reduce=True explicitly."
+ 169:         self.disabled = False
+ 181:         # 8*world_size bytes where world_size is at most 8. Allocating 8MB
+ 189:         self.world_size = world_size
+ 208:             if not self.disabled:
+ 218:         all_data = [[None, None] for _ in range(dist.get_world_size(group=self.group))]
+ 230:     def should_custom_ar(self, inp: torch.Tensor):
+ 231:         if self.disabled:
+ 239:         # for 4 or more non NVLink-capable GPUs, custom allreduce provides
+ 241:         if self.world_size == 2 or self.fully_connected:
+ 264:     def custom_all_reduce(self, input: torch.Tensor) -> torch.Tensor | None:
+ 266:         # When custom allreduce is disabled, this will be None.
+ 267:         if self.disabled or not self.should_custom_ar(input):
+ 283:         if not self.disabled and self._ptr:
+ 301:         world_size = dist.get_world_size(group=group)
+ 303:         handles = [None] * world_size
+# --- also check the tp group all_reduce dispatch ---
+        def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
+            """
+            User-facing all-reduce function before we actually call the
+            all-reduce operation.
+    
+            We need this because Dynamo does not support passing an arbitrary
+            object (`self` in this case) to a custom op. We need to pass the
+             group name as a string, and then look up the group coordinator from
+             the group name, dispatch the all-reduce operation to the group
+             coordinator.
+    
+            In addition, PyTorch custom ops do not support mutation or returning
+            a new tensor in the same op. So we always make the all-reduce operation
+            out-of-place.
+            """
+            # Bypass the function if we are using only 1 GPU.
+            if self.world_size == 1:
+                return input_
+    
+            if self.use_custom_op_call:
+                return torch.ops.vllm.all_reduce(input_, group_name=self.unique_name)
+            else:
+                return self._all_reduce_out_place(input_)
+    
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-AtsFIPfrVv3mentJitVGbd

@@ -1229,6 +1229,22 @@ def _load_sparse_moe():
 
 
 def install() -> None:
+    # C4: enable vLLM's one-shot custom all-reduce on 4 PCIe GPUs. Decode is 90.8% ncclDevKernel
+    # AllReduce_RING_LL over PCIe (no NVLink); vLLM disables custom AR for >2 PCIe GPUs
+    # (custom_all_reduce.py:150 + should_custom_ar:241, both gated on is_fully_connected). For the tiny
+    # latency-bound decode all-reduces (batch=1), a one-shot P2P AR beats the 6-hop ring. Spoof
+    # is_fully_connected -> True so the NVLink-gated path activates; vLLM's real _can_p2p test (line 161)
+    # still guards actual P2P support and safely disables if P2P is unavailable. Runs here because
+    # general_plugins load before the TP group builds CustomAllreduce. Opt-in via QB_FORCE_CUSTOM_AR=1.
+    if os.environ.get("QB_FORCE_CUSTOM_AR") == "1":
+        try:
+            from vllm.platforms import current_platform
+            current_platform.is_fully_connected = lambda ids: True  # instance override (bound arg = ids)
+            print("[qb_sm120] QB_FORCE_CUSTOM_AR: is_fully_connected spoofed True -> one-shot custom AR "
+                  "on PCIe (real _can_p2p still guards correctness)", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[qb_sm120] custom-AR spoof failed: {type(ex).__name__}: {ex}", flush=True)
+
     method = os.environ.get("QB_DENSE", "bf16").lower()
     if method == "off":
         print("[qb_sm120] QB_DENSE=off -> native path (expect the SM120 fp8 wall)", flush=True)
