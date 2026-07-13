@@ -548,6 +548,48 @@ def graph_gate4(
 
 
 @app.function(
+    gpu="RTX-PRO-6000:2",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate2(
+    proj: str = "both",
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.92,
+    dense_anchor_backend: str = "native_nvfp4",
+    baseline: str = "dense_nvfp4",
+    nccl_algo: str = "",
+    nccl_proto: str = "",
+    force_custom_ar: bool = False,
+) -> None:
+    """C5 collective-floor lever: TP=2 variant of the graph_gate board. At world_size=2 the per-layer TP
+    all-reduce is a single peer exchange (custom AR is natively enabled by vLLM for world_size==2), so decode
+    collective latency should drop vs the 4-GPU ring/one-shot. Same _graph_gate_body, tp=2, captured.
+    force_custom_ar still available (verifies the 2x2 P2P matrix, bypasses the flaky probe). Memory is tight
+    at TP=2 (~82 GiB/GPU weights of 96), so gpu_mem default 0.92 and short max_len."""
+    import os
+    for _k in ("NCCL_ALGO", "NCCL_PROTO", "NCCL_MIN_NCHANNELS", "NCCL_MAX_NCHANNELS", "NCCL_NCHANNELS"):
+        os.environ.pop(_k, None)
+    if nccl_algo:
+        os.environ["NCCL_ALGO"] = nccl_algo
+    if nccl_proto:
+        os.environ["NCCL_PROTO"] = nccl_proto
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+        print("# C5: QB_FORCE_CUSTOM_AR=1 (TP=2, custom AR native at world_size==2)", flush=True)
+    print(f"# C5 TP=2 board: baseline={baseline} route_slot={route_slot} cap={cap} gpu_mem={gpu_mem}",
+          flush=True)
+    _graph_gate_body(2, False, False, proj, route_slot, dense_layers, cap, max_seqs, max_len, gpu_mem,
+                     dense_anchor_backend=dense_anchor_backend, baseline=baseline)
+
+
+@app.function(
     gpu="RTX-PRO-6000:8",
     timeout=120 * MIN,
     volumes={"/cache": vol},
