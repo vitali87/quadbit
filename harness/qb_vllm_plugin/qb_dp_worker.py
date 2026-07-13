@@ -28,13 +28,18 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
 
     rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
             "beta_fast": 32, "beta_slow": 1}
-    kw = dict(model=model, tensor_parallel_size=1, data_parallel_size=dp, enforce_eager=eager,
+    # External-LB DP: we launch each rank as its own process, so pass data_parallel_rank +
+    # data_parallel_size_local=1 + data_parallel_external_lb=True. This is the "I launch the processes
+    # myself" path that bypasses the single-process LLM(data_parallel_size>1) rejection.
+    kw = dict(model=model, tensor_parallel_size=1, data_parallel_size=dp, data_parallel_rank=dp_rank,
+              data_parallel_size_local=1, data_parallel_external_lb=True, enforce_eager=eager,
               trust_remote_code=True, max_model_len=max_len, gpu_memory_utilization=gpu_mem,
               kv_cache_dtype="fp8", max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
               enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-    except Exception:  # noqa: BLE001
+    except Exception as ex:  # noqa: BLE001
+        print(f"[dp{dp_rank}] deepseek_v4/external-lb kw rejected: {type(ex).__name__}: {ex}", flush=True)
         llm = LLM(**kw)
 
     tids = llm.get_tokenizer().encode("The history of the Roman empire spans many centuries and")
