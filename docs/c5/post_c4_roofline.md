@@ -45,7 +45,7 @@ A retry landed a fully-connected container, so custom AR engaged (`custom_1stage
 (43.5 AR/token, 1.01/layer), collective **91.2%** of GPU-busy. Total eager GPU-busy dropped 166 -> 100
 ms/tok vs the NCCL path (consistent with the +20% captured win), but **the one-shot AR is still 91% of the
 step**, replacing ring with one-shot made each all-reduce cheaper, it did not remove the collective as the
-floor. Log `docs/audit/logs/c5_post_c4_roofline_customar.log`.
+floor. Log [c5_post_c4_roofline_customar.log](../audit/logs/c5_post_c4_roofline_customar.log).
 
 ## Estimated remaining floor on the C4 custom-AR path
 
@@ -61,7 +61,7 @@ native at world_size==2, single peer read). Result: **40.565 tok/s (24.65 ms/ste
 FULL** = **slower** than the TP=4 baseline (48.248 / 20.73 ms) by +3.9 ms. The decode is not purely
 AR-latency-bound: halving the shard count **doubles the weight bytes each GPU reads per token**, and that
 memory cost outweighs the faster 2-GPU all-reduce. **Fewer ranks is a losing lever.** (Log
-`docs/audit/logs/c5_tp2_dense.log`.)
+[c5_tp2_dense.log](../audit/logs/c5_tp2_dense.log).)
 
 ## What this leaves for C5
 

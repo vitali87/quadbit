@@ -657,8 +657,30 @@ def graph_gate_dp(
         code = (f"import qb_dp_worker; qb_dp_worker.dp_worker({r},{dp},{port},{MODEL!r},{cap},"
                 f"{max_seqs},{max_len},{gpu_mem},{baseline!r},{eager})")
         procs.append(subprocess.Popen([sys.executable, "-c", code]))
-    codes = [p.wait() for p in procs]
+    # Poll all ranks: if any exits non-zero, the survivors would hang on that rank's missing collective, so
+    # terminate them and fail loudly (a DP init error / OOM must not be reported as a successful run).
+    codes: list = [None] * dp
+    while any(c is None for c in codes):
+        for i, p in enumerate(procs):
+            if codes[i] is None and (rc := p.poll()) is not None:
+                codes[i] = rc
+        if any(c is not None and c != 0 for c in codes):
+            for p in procs:
+                if p.poll() is None:
+                    p.terminate()
+            for p in procs:
+                try:
+                    p.wait(timeout=15)
+                except Exception:  # noqa: BLE001
+                    p.kill()
+            for i, p in enumerate(procs):
+                codes[i] = p.poll()
+            break
+        time.sleep(2)
     print(f"# C5 DP board DONE (exit codes: {codes})", flush=True)
+    if any(c != 0 for c in codes):
+        raise RuntimeError(f"C5 DP workers failed (exit codes {codes}); see log. Offline LLM likely "
+                           "rejected data_parallel_size>1 (needs vllm serve/AsyncLLM).")
 
 
 @app.function(
@@ -896,10 +918,13 @@ def floor_profile(
     n_customar = cnt("cross_device_reduce")
     n_ring_ar = cnt("allreduce_") + cnt("allreduce ")  # ncclDevKernel_AllReduce_*
     n_dsa = cnt("sparse_mla_decode", "sparse_mla")
+    # n_layers from the model config. The model is already on the /cache volume (HF_HOME), so
+    # from_pretrained reads the local cached config.json (no network); local_files_only makes that explicit.
     n_layers = 0
     try:
         from transformers import AutoConfig
-        n_layers = int(getattr(AutoConfig.from_pretrained(MODEL, trust_remote_code=True),
+        n_layers = int(getattr(AutoConfig.from_pretrained(MODEL, trust_remote_code=True,
+                                                          local_files_only=True),
                                "num_hidden_layers", 0))
     except Exception:  # noqa: BLE001
         pass

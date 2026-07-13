@@ -22,7 +22,7 @@ capture path. Not a count reducer.
 ## Reduce ranks (TP=2): NEGATIVE
 
 Fewer TP ranks -> a cheaper per-layer all-reduce (2-GPU = 1 peer read). Measured
-(`docs/audit/logs/c5_tp2_dense.log`, full 2x2 P2P, custom AR native at world_size==2):
+([c5_tp2_dense.log](../audit/logs/c5_tp2_dense.log), full 2x2 P2P, custom AR native at world_size==2):
 
 | config | decode tok/s | ms/step | PPL | capture |
 |---|---:|---:|---:|---|
@@ -51,7 +51,7 @@ mode tried (single-process; external-LB with `data_parallel_rank` + `data_parall
 `ValueError: LLM(data_parallel_size=4) is not supported for single-process usage`. DP is only reachable via
 the `vllm serve` API server / `AsyncLLM` multi-process launcher (the `examples/features/data_parallel/
 data_parallel_offline.py` path), which is a different harness than this offline two-run-decode measurement.
-Logs `docs/audit/logs/c5_dp_attention.log` (exit codes [1,1,1,1]).
+Logs [c5_dp_attention.log](../audit/logs/c5_dp_attention.log) (exit codes [1,1,1,1]).
 
 So DP attention is the **correct and only structural lever** to remove the 94.5% attention all-reduce, but it
 is **not measurable in this offline `LLM`-based harness**; it needs an AsyncLLM/`vllm serve` decode-latency
