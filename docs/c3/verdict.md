@@ -1,4 +1,4 @@
-# C3 verdict: beat the SM120 MoE decode SOTA by attacking the measured bottleneck
+# C3 verdict: attacked the measured decode bottleneck (compact routing, 2.80× D2); dense fused MoE stays the SM120 SOTA
 
 **Original sparse-kernel premise:** *refuted, and it stays refuted.* The profile
 ([profile_decode.md](profile_decode.md)) showed the sparse 2:4 `matmul_sp` kernel is **0.4%** of the decode step. The
