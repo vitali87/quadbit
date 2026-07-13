@@ -651,11 +651,18 @@ def floor_profile(
     kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
               max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
               max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
-              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope},
+              profiler_config={"profiler": "torch", "torch_profiler_dir": prof_dir})
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-    except Exception:  # noqa: BLE001
-        llm = LLM(**kw)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  (deepseek_v4 mode / profiler_config rejected: {type(ex).__name__}: {ex}; retry)", flush=True)
+        try:
+            llm = LLM(**kw)
+        except Exception as ex2:  # noqa: BLE001
+            print(f"  (profiler_config rejected: {type(ex2).__name__}: {ex2}; retry w/o it)", flush=True)
+            kw.pop("profiler_config", None)
+            llm = LLM(**kw)
 
     tids = llm.get_tokenizer().encode("The history of the Roman empire spans many centuries and")
     llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=8))  # warm
