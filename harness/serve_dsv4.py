@@ -609,6 +609,122 @@ def c3_profile(
 
 
 @app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def floor_profile(
+    tp: int = 4,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    baseline: str = "dense_nvfp4",
+) -> None:
+    """C4 gating: the decode step is 94.5% non-MoE floor (19.6 ms) and 5.5% MoE apply (1.13 ms), so the
+    only decode headroom worth chasing is the floor. Profile the DENSE baseline (QB_MOE=off, the 48.248
+    tok/s SOTA config) with vLLM's worker-side profiler (captures NCCL collectives + attention/DSA + GEMM
+    + norm kernels), then sum GPU-kernel time by category to localize the floor. Eager so kernel boundaries
+    are clean; GPU kernel durations are the same eager vs captured, only launch gaps differ, so the category
+    breakdown is representative. Prime suspect: 4-GPU EP all-to-all over PCIe (no NVLink), 43 layers x 2."""
+    import glob
+    import gzip
+    import json
+    import os
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "off" if baseline == "dense_nvfp4" else "sparse"
+    prof_dir = "/cache/floorprof"
+    os.environ["VLLM_TORCH_PROFILER_DIR"] = prof_dir
+    os.makedirs(prof_dir, exist_ok=True)
+    for f in glob.glob(f"{prof_dir}/*.json*"):
+        os.remove(f)
+    print(f"# floor_profile: baseline={baseline} QB_MOE={os.environ['QB_MOE']} tp={tp} -> {prof_dir}",
+          flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
+              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception:  # noqa: BLE001
+        llm = LLM(**kw)
+
+    tids = llm.get_tokenizer().encode("The history of the Roman empire spans many centuries and")
+    llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=8))  # warm
+    torch.cuda.synchronize()
+    llm.start_profile()
+    llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=16))
+    llm.stop_profile()
+    torch.cuda.synchronize()
+    vol.commit()
+
+    # categorize GPU-kernel time from the rank-0 trace (each rank ~symmetric; collectives show on all)
+    cats = [
+        ("collective(EP a2a / allreduce)", ("nccl", "alltoall", "all_to_all", "allreduce", "all_reduce",
+                                            "reduce_scatter", "reducescatter", "sendrecv", "_reduce", "gather")),
+        ("attention+DSA", ("flash", "fmha", "attn", "mla", "sparse_mla", "dsv3", "mqa", "sm120_decode",
+                           "paged", "rope")),
+        ("gemm/moe", ("gemm", "cutlass", "nvfp4", "matmul", "moe", "quant", "fp4", "fp8", "wgmma")),
+        ("norm/elementwise", ("norm", "rms", "silu", "add", "mul", "cast", "copy", "elementwise", "act")),
+    ]
+    def bucket(name):
+        n = name.lower()
+        for label, keys in cats:
+            if any(k in n for k in keys):
+                return label
+        return "other"
+
+    traces = sorted(glob.glob(f"{prof_dir}/*.json*"))
+    print(f"# traces: {[os.path.basename(t) for t in traces]}", flush=True)
+    if not traces:
+        print("# NO TRACE WRITTEN — profiler dir empty", flush=True)
+        return
+    t = traces[0]
+    raw = gzip.open(t, "rt").read() if t.endswith(".gz") else open(t).read()
+    data = json.loads(raw)
+    evs = data.get("traceEvents", data) if isinstance(data, dict) else data
+    by_cat: dict = {}
+    by_name: dict = {}
+    total = 0.0
+    for e in evs:
+        if not isinstance(e, dict) or e.get("ph") != "X":
+            continue
+        cat = str(e.get("cat", ""))
+        if cat not in ("kernel", "gpu_op", "Kernel"):   # GPU kernels only
+            continue
+        dur = float(e.get("dur", 0.0))
+        nm = str(e.get("name", ""))
+        b = bucket(nm)
+        by_cat[b] = by_cat.get(b, 0.0) + dur
+        by_name[nm] = by_name.get(nm, 0.0) + dur
+        total += dur
+    if total <= 0:
+        print("# no GPU-kernel events found (cat filter); dumping distinct cats seen:", flush=True)
+        seen = {}
+        for e in evs:
+            if isinstance(e, dict) and e.get("ph") == "X":
+                seen[str(e.get("cat", ""))] = seen.get(str(e.get("cat", "")), 0) + 1
+        print(f"#   {seen}", flush=True)
+        return
+    print(f"# === FLOOR DECOMPOSITION (rank0 GPU-kernel us, total={total/1000:.2f} ms over 16 decode steps) ===",
+          flush=True)
+    for label, us in sorted(by_cat.items(), key=lambda kv: -kv[1]):
+        print(f"#   {label:34s} {us/1000:8.2f} ms  {100*us/total:5.1f}%", flush=True)
+    print("# --- top 15 kernels ---", flush=True)
+    for nm, us in sorted(by_name.items(), key=lambda kv: -kv[1])[:15]:
+        print(f"#   {us/1000:8.2f} ms  {100*us/total:4.1f}%  {nm[:90]}", flush=True)
+    print("# floor_profile DONE", flush=True)
+
+
+@app.function(
     gpu="RTX-PRO-6000:2",
     timeout=60 * MIN,
     volumes={"/cache": vol},
