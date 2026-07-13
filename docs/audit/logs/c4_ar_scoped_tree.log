@@ -1,0 +1,85 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-7Ym84dgP21b2pdxmZUoN6M
+Building image im-PVPSkMvFFQuJUeUyydazRZ
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=36994 sha256=bbbaaaca5998e958ce21d68af88e213dd1de21b4cb41b7e28680d1924bde2634
+  Stored in directory: /tmp/pip-ephem-wheel-cache-qc34ozbx/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 10.60s
+
+Built image im-PVPSkMvFFQuJUeUyydazRZ in 18.66s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# C4 NCCL tuning: ALGO=allreduce:tree PROTO=(auto) NCHANNELS=(auto)
+# M4 graph_gate cfg=C-captured BASELINE-dense-nvfp4 (QB_MOE=off, native FlashInfer-CUTLASS fused MoE) cap=128 max_seqs=2 QB_GRAPH=1 enforce_eager=False tp=4 model=DeepSeek dense_backend=dequant
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] installed in pid=2 (method=nvfp4)
+INFO 07-13 15:19:52 [api_utils.py:273] non-default args: {'tokenizer_mode': 'deepseek_v4', 'trust_remote_code': True, 'kv_cache_dtype': 'fp8', 'max_model_len': 2048, 'tensor_parallel_size': 4, 'enable_expert_parallel': True, 'gpu_memory_utilization': 0.9, 'max_num_batched_tokens': 2048, 'max_num_seqs': 2, 'disable_log_stats': True, 'hf_overrides': {'rope_scaling': {'rope_type': 'yarn', 'factor': 16, 'original_max_position_embeddings': 65536, 'beta_fast': 32, 'beta_slow': 1}}, 'model': 'nvidia/DeepSeek-V4-Flash-NVFP4'}
+INFO 07-13 15:19:52 [config.py:741] Detected quantization_config.scale_fmt=ue8m0; enabling UE8M0 for DeepGEMM.

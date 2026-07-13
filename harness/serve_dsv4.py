@@ -54,6 +54,31 @@ app = modal.App("quadbit-serve", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
+@app.function(timeout=10 * MIN)
+def inspect_vllm() -> None:
+    """C4: dump vLLM's custom_all_reduce guard so the enable-on-4-PCIe patch is exact (the ncclDevKernel
+    RING_LL all-reduce is 90.8% of decode; custom AR is disabled by a >2-PCIe policy check)."""
+    import inspect
+
+    from vllm.distributed.device_communicators import custom_all_reduce as car
+    src = inspect.getsource(car)
+    print(f"# custom_all_reduce.py ({car.__file__})", flush=True)
+    for i, line in enumerate(src.split("\n"), 1):
+        low = line.lower()
+        if any(k in low for k in ("pcie", "nvlink", "full_nvlink", "disabl", "world_size", "def __init__",
+                                  "def should", "def custom_all", "def _can", "warning", "supported",
+                                  "class customallreduce", "self.disabled")):
+            print(f"{i:4d}: {line}", flush=True)
+    print("# --- also check the tp group all_reduce dispatch ---", flush=True)
+    try:
+        from vllm.distributed.parallel_state import GroupCoordinator
+        gsrc = inspect.getsource(GroupCoordinator.all_reduce)
+        for line in gsrc.split("\n"):
+            print(f"    {line}", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  (GroupCoordinator.all_reduce introspect failed: {ex})", flush=True)
+
+
 @app.function(
     gpu="RTX-PRO-6000:8",
     timeout=90 * MIN,
