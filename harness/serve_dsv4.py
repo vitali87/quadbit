@@ -602,12 +602,6 @@ def graph_gate2(
     volumes={"/cache": vol},
     secrets=[modal.Secret.from_name("huggingface")],
 )
-@app.function(
-    gpu="RTX-PRO-6000:4",
-    timeout=90 * MIN,
-    volumes={"/cache": vol},
-    secrets=[modal.Secret.from_name("huggingface")],
-)
 def graph_gate_dp(
     dp: int = 4,
     cap: int = 128,

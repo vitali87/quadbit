@@ -294,3 +294,103 @@ WARNING 07-13 19:43:42 [system_utils.py:157] We must use the `spawn` multiproces
 (EngineCore pid=61) INFO 07-13 19:50:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
 (EngineCore pid=61) INFO 07-13 19:51:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
 (EngineCore pid=61) INFO 07-13 19:52:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 19:53:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:47:50  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:47:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:47:50  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:47:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:47:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:47:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:53:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:53:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(EngineCore pid=61) INFO 07-13 19:54:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:53:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:53:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:53:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:53:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:53:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:53:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP0_EP0 pid=82) INFO 07-13 19:54:31 [gpu_worker.py:508] Available KV cache memory: 43.69 GiB
+(EngineCore pid=61) INFO 07-13 19:54:32 [kv_cache_utils.py:2146] GPU KV cache size: 123,383 tokens
+(EngineCore pid=61) INFO 07-13 19:54:32 [kv_cache_utils.py:2147] Maximum concurrency for 2,048 tokens per request: 60.25x
+(Worker_TP0_EP0 pid=82) INFO 07-13 19:54:32 [indexer.py:276] DSA indexer decode path: use_flattening=False (next_n=1, use_fp4_indexer_cache=False)
+(Worker_TP3_EP3 pid=85) INFO 07-13 19:54:32 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP1_EP1 pid=83) INFO 07-13 19:54:32 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0_EP0 pid=82) INFO 07-13 19:54:32 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP2_EP2 pid=84) INFO 07-13 19:54:32 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0_EP0 pid=82) INFO 07-13 19:54:32 [flashinfer_sparse_mla_warmup.py:124] Autotuning FlashInfer SM120 sparse MLA DSv4 decode with cache: /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:54:32,294 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:54:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:54:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0_EP0 pid=82) 
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:54:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:54:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:06<00:26,  6.51s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm:  60%|██████    | 3/5 [00:06<00:03,  1.74s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:06<00:00,  1.14profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:06<00:00,  1.36s/profile]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 19.44profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 19.06profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 19.45profile/s]
+(Worker_TP0_EP0 pid=82) 
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:54:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:54:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 622.69profile/s]
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:54:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:54:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:00<00:00,  9.61profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  60%|██████    | 3/5 [00:00<00:00, 12.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 14.00profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 13.43profile/s]
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:54:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:54:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:54:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:55:04  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1:   0%|          | 0/1 [00:00<?, ?profile/s]2026-07-13 19:55:04,669 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 4 unsupported tactic(s) for trtllm::fused_moe::gemm1 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1: 100%|██████████| 1/1 [00:00<00:00, 11.41profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2:   0%|          | 0/1 [00:00<?, ?profile/s]2026-07-13 19:55:04,841 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 10 unsupported tactic(s) for trtllm::fused_moe::gemm2 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2: 100%|██████████| 1/1 [00:00<00:00,  5.84profile/s][AutoTuner]: Tuning trtllm::fused_moe::gemm2: 100%|██████████| 1/1 [00:00<00:00,  5.84profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 17.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 18.04profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 18.04profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 18.85profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 16.16profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 16.63profile/s]
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:54:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:54:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:54:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:55:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=83) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=83 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:54:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:54:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:54:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:55:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2_EP2 pid=84) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=84 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP0_EP0 pid=82) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=82 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:54:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:54:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:54:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:55:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3_EP3 pid=85) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=85 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP1_EP1 pid=83) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=83 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP1_EP1 pid=83) [qb_sm120] torch top-k ACTIVE pid=83 logits=(1, 512) topk=512
+(Worker_TP2_EP2 pid=84) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=84 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP2_EP2 pid=84) [qb_sm120] torch top-k ACTIVE pid=84 logits=(1, 512) topk=512
+(Worker_TP0_EP0 pid=82) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=82 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP0_EP0 pid=82) [qb_sm120] torch top-k ACTIVE pid=82 logits=(1, 512) topk=512
+(Worker_TP3_EP3 pid=85) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=85 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP3_EP3 pid=85) [qb_sm120] torch top-k ACTIVE pid=85 logits=(1, 512) topk=512
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 161.09profile/s]
