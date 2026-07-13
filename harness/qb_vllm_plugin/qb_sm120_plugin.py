@@ -342,27 +342,30 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
     li = getattr(layer, "_qb_layer_idx", -1)
     _pt = _prof_start() if _PROFILE else None
     v_dense = valid & dense_slot
-    # DENSE group: both projections dense NVFP4 over the dense-slot rows.
-    srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
-    validd = srcd >= 0
-    scd = srcd.clamp_min(0)
-    xd = (x[tok_of[scd]].to(torch.bfloat16) * validd[:, None])
-    if on_input:
-        xd = xd * w_of[scd][:, None].to(torch.bfloat16)
-    xd = _sanitize(xd.contiguous(), li, "x_in")
-    gud = _anchor_gemm(layer, "_qb_ng_gu", xd, layer.w13_weight, layer.w13_weight_scale,
-                       layer.w13_weight_scale_2, 2 * ii, e, cap)
-    hhd = _sanitize((F.silu(gud[:, :ii].float()) * gud[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
-    dd = _anchor_gemm(layer, "_qb_ng_dn", hhd, layer.w2_weight, layer.w2_weight_scale,
-                      layer.w2_weight_scale_2, h, e, cap)
-    rwd = validd.float() if on_input else (w_of[scd] * validd.float())
-    y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
+    drop_d = 0
+    # DENSE group: both projections dense NVFP4 over the dense-slot rows. (C3: skippable for attribution.)
+    if not _C3_SKIP_DENSE:
+        srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
+        validd = srcd >= 0
+        scd = srcd.clamp_min(0)
+        xd = (x[tok_of[scd]].to(torch.bfloat16) * validd[:, None])
+        if on_input:
+            xd = xd * w_of[scd][:, None].to(torch.bfloat16)
+        xd = _sanitize(xd.contiguous(), li, "x_in")
+        gud = _anchor_gemm(layer, "_qb_ng_gu", xd, layer.w13_weight, layer.w13_weight_scale,
+                           layer.w13_weight_scale_2, 2 * ii, e, cap)
+        hhd = _sanitize((F.silu(gud[:, :ii].float()) * gud[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
+        dd = _anchor_gemm(layer, "_qb_ng_dn", hhd, layer.w2_weight, layer.w2_weight_scale,
+                          layer.w2_weight_scale_2, h, e, cap)
+        rwd = validd.float() if on_input else (w_of[scd] * validd.float())
+        y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
     if _PROFILE:
         _prof_end("dense_anchor(group_gemm)", _pt)
         _ps = _prof_start()
-    # SPARSE group: low-weight tail through the 2:4 seg path (both projections).
-    _seg_apply_gs(sp, x, tok_of, ids_local, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y,
-                  valid & (~dense_slot), "both", layer)
+    # SPARSE group: low-weight tail through the 2:4 seg path (both projections). (C3: skippable.)
+    if not _C3_SKIP_SPARSE:
+        _seg_apply_gs(sp, x, tok_of, ids_local, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y,
+                      valid & (~dense_slot), "both", layer)
     if _PROFILE:
         _prof_end("sparse_group(total)", _ps)
         _prof_flush()
@@ -534,6 +537,14 @@ if _DENSE_BACKEND not in ("dequant", "native_nvfp4"):
 # decode (the E*cap fixed-capacity buffer vs the actually-routed slots). Host-syncs, so eager-only.
 _PROFILE = os.environ.get("QB_PROFILE") == "1"
 _PROFILE_SEEN: set = set()
+# C3 Task 1A: captured-mode differential attribution. Each flag no-ops one part of the D2 MoE apply while
+# keeping graph capture valid (static shapes), so decode-tok/s deltas across separate captured runs
+# localize the deployed bottleneck (CUDA events can't time inside a graph). PPL is meaningless when a
+# component is skipped — timing only. SKIP_MOE = everything-but-MoE (attention/DSA/EP); SKIP_DENSE = sparse
+# group only; SKIP_SPARSE = dense-anchor group only.
+_C3_SKIP_MOE = os.environ.get("QB_C3_SKIP_MOE") == "1"
+_C3_SKIP_DENSE = os.environ.get("QB_C3_SKIP_DENSE") == "1"
+_C3_SKIP_SPARSE = os.environ.get("QB_C3_SKIP_SPARSE") == "1"
 # C3 Task 1: worker-side CUDA-event component timing (vLLM V1 runs the model in workers, so driver-side
 # torch.profiler sees nothing; these events run where the work is). Accumulate per-named-region ms and
 # flush a cumulative breakdown periodically. elapsed_time needs a sync, so batch it (every ~1500 pairs).
@@ -1593,6 +1604,8 @@ def _install_moe() -> None:
                                   shared_experts_input)
         t, h = x.shape
         y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+        if _C3_SKIP_MOE:
+            return y  # C3 variant D: MoE no-op (zeros), isolates everything-but-MoE (attention/DSA/EP/norms)
         topk = topk_ids.shape[1]
         on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
 

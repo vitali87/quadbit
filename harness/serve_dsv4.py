@@ -467,11 +467,17 @@ def graph_gate4(
     gpu_mem: float = 0.9,
     dense_anchor_backend: str = "dequant",
     baseline: str = "",
+    c3_skip: str = "",
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
     C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4.
-    C2: baseline=dense_nvfp4 runs vLLM's native NVFP4 fused MoE (QB_MOE=off) through the same board."""
+    C2: baseline=dense_nvfp4 runs vLLM's native NVFP4 fused MoE (QB_MOE=off) through the same board.
+    C3 Task 1A: c3_skip in {moe,dense,sparse} no-ops that component under CAPTURE for differential decode
+    attribution (PPL is meaningless for a skip variant — read only decode tok/s)."""
+    import os
+    if c3_skip:
+        os.environ[f"QB_C3_SKIP_{c3_skip.upper()}"] = "1"
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)
