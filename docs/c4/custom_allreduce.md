@@ -37,6 +37,24 @@ deterministic one-shot reduction signature), CUDA-graph capture FULL, generation
 completion is bit-identical to the RING_LL baseline). With `VLLM_SKIP_P2P_CHECK=1` the AR engages on every
 container (0 "custom allreduce disabled" warnings across the skip-check runs).
 
+## Mechanism (the kernel swap is visible in the trace)
+
+Re-profiling the floor with custom AR engaged (`floor_profile --force-custom-ar`, log
+[c4_floor_profile_customar2.log](../audit/logs/c4_floor_profile_customar2.log), 0 "custom allreduce
+disabled" warnings):
+
+| | top collective kernel | eager GPU-busy |
+|---|---|---:|
+| baseline | `ncclDevKernel_AllReduce_Sum_bf16_RING_LL` | 90.8% |
+| custom AR | **`vllm::cross_device_reduce_1stage<bf16, 4>`** (one-shot) | 90.6% |
+
+The RING_LL all-reduce is gone, replaced by the one-stage (one-shot) custom kernel. Note it is **still ~90%
+of eager GPU-busy time**: decode stays collective-bound either way (the medium is still PCIe). The +19% is
+the one-shot's lower **latency per all-reduce** (1 hop vs 6), which shows in **captured wall-clock**
+(wall64 1.22 s vs 1.50 s), not in the eager GPU-busy breakdown (which is inflated by launch/sync overhead
+and hides the per-op latency). So the win is real but the collective remains the wall (see verdict's next
+lever).
+
 ## Quality note (no softening)
 
 mito80 PPL swings with the all-reduce **reduction order**: tree 4.0102, ring 4.1222, one-shot 4.2514 (an

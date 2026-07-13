@@ -268,3 +268,505 @@ WARNING 07-13 16:35:53 [system_utils.py:157] We must use the `spawn` multiproces
 (Worker_TP0_EP0 pid=82) 2026-07-13 16:38:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
 (Worker_TP0_EP0 pid=82) 2026-07-13 16:38:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
 (Worker_TP0_EP0 pid=82) 2026-07-13 16:38:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(EngineCore pid=61) INFO 07-13 16:39:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:38:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:38:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:38:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:38:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:38:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:38:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:38:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:38:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:38:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:38:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:38:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:38:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=82) [qb_sm120] o_proj bf16 path ACTIVE pid=82 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP1_EP1 pid=83) [qb_sm120] o_proj bf16 path ACTIVE pid=83 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP2_EP2 pid=84) [qb_sm120] o_proj bf16 path ACTIVE pid=84 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP3_EP3 pid=85) [qb_sm120] o_proj bf16 path ACTIVE pid=85 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:39:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:39:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(EngineCore pid=61) INFO 07-13 16:40:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 16:41:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 16:42:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 16:43:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 16:44:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:39:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:39:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:39:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:39:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:39:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:39:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(EngineCore pid=61) INFO 07-13 16:45:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:45:30  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:45:33  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:45:30  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:45:33  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:45:30  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:45:33  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:45:30  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:45:33  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:46:27 [gpu_worker.py:508] Available KV cache memory: 43.69 GiB
+(EngineCore pid=61) INFO 07-13 16:46:27 [kv_cache_utils.py:2146] GPU KV cache size: 123,383 tokens
+(EngineCore pid=61) INFO 07-13 16:46:27 [kv_cache_utils.py:2147] Maximum concurrency for 2,048 tokens per request: 60.25x
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:46:27 [indexer.py:276] DSA indexer decode path: use_flattening=False (next_n=1, use_fp4_indexer_cache=False)
+(Worker_TP3_EP3 pid=85) INFO 07-13 16:46:27 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:46:27 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP2_EP2 pid=84) INFO 07-13 16:46:27 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP1_EP1 pid=83) INFO 07-13 16:46:27 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:46:27 [flashinfer_sparse_mla_warmup.py:124] Autotuning FlashInfer SM120 sparse MLA DSv4 decode with cache: /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:27,207 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:46:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:46:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:05<00:23,  5.94s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm:  60%|██████    | 3/5 [00:06<00:03,  1.58s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:06<00:00,  1.25profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:06<00:00,  1.23s/profile]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 17.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 17.00profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 15.81profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s][AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 584.14profile/s]
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:46:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:46:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0_EP0 pid=82) 
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:46:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:46:31  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 17.64profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 18.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 18.13profile/s]
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:46:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1:   0%|          | 0/1 [00:00<?, ?profile/s]2026-07-13 16:46:58,534 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 4 unsupported tactic(s) for trtllm::fused_moe::gemm1 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=82) [AutoTuner]: Tuning trtllm::fused_moe::gemm1: 100%|██████████| 1/1 [00:00<00:00, 11.32profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2:   0%|          | 0/1 [00:00<?, ?profile/s]2026-07-13 16:46:58,706 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 10 unsupported tactic(s) for trtllm::fused_moe::gemm2 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2: 100%|██████████| 1/1 [00:00<00:00,  5.78profile/s]
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2: 100%|██████████| 1/1 [00:00<00:00,  5.78profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 16.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 18.09profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 18.09profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 19.44profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 18.66profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 19.30profile/s]
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:46:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:46:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:46:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2_EP2 pid=84) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=84 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP0_EP0 pid=82) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=82 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:46:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:46:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:46:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=83) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=83 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:46:49  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:46:51  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:46:52  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:46:57  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3_EP3 pid=85) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=85 q=(15, 64, 128)/torch.float8_e4m3fn k=(4, 128)/torch.float8_e4m3fn w=(15, 64)
+(Worker_TP2_EP2 pid=84) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=84 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP0_EP0 pid=82) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=82 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP1_EP1 pid=83) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=83 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP3_EP3 pid=85) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=85 q=(1, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(45124, 64, 1, 132)/torch.uint8 ctx=(1, 1) bt=(1, 8)
+(Worker_TP1_EP1 pid=83) [qb_sm120] torch top-k ACTIVE pid=83 logits=(1, 512) topk=512
+(Worker_TP0_EP0 pid=82) [qb_sm120] torch top-k ACTIVE pid=82 logits=(1, 512) topk=512
+(Worker_TP2_EP2 pid=84) [qb_sm120] torch top-k ACTIVE pid=84 logits=(1, 512) topk=512
+(Worker_TP3_EP3 pid=85) [qb_sm120] torch top-k ACTIVE pid=85 logits=(1, 512) topk=512
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s][AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 147.38profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 486.31profile/s]
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:09,125 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:09,144 - INFO - autotuner.py:1808 - flashinfer.jit: [Autotuner]: Saved 45 configs to /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json (45 new, 0 from previous config)
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:09,173 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 45 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:47:09 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 0 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json.
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:09,174 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 45 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:09,174 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 45 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json
+(Worker_TP1_EP1 pid=83) INFO 07-13 16:47:09 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 1 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json.
+(Worker_TP3_EP3 pid=85) INFO 07-13 16:47:09 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 3 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json.
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:09,175 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 45 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json
+(Worker_TP2_EP2 pid=84) INFO 07-13 16:47:09 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 2 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/13359824f0b05a5a54a01f82f4021dd331926d66958ac5c4a6882b0878e9dac1/autotune_configs.json.
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:09,176 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:09,177 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:09,177 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:09,178 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP3_EP3 pid=85) 2026-07-13 16:47:09,182 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:09,183 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:09,183 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP3_EP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP1_EP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP2_EP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 15.28profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  6.78profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 13.00profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.87profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 12.13profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 14.86profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 10.07profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.84profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 14.16profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.40profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 12.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.10profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 15.31profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 15.73profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 14.05profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 15.26profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.42profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 14.46profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.58profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.24profile/s]
+(Worker_TP3_EP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.63profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.55profile/s]
+(Worker_TP2_EP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.40profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.89profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.27profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.56profile/s](Worker_TP1_EP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.97profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 18.49profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 18.52profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 17.59profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 19.21profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 18.23profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 18.45profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 18.08profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 19.23profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.20profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 18.21profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.61profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 18.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.43profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 16.03profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 16.36profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 16.97profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.43profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.69profile/s]
+(Worker_TP3_EP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 17.34profile/s]
+(Worker_TP2_EP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 16.06profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 17.64profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.12profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.46profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 18.79profile/s](Worker_TP1_EP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 17.35profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 17.75profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 18.32profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.65profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 17.31profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.90profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 17.78profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.71profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.79profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.47profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.14profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.28profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.28profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 15.04profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.72profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.61profile/s]
+(Worker_TP2_EP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.00profile/s]
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.14profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP3_EP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.02profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.66profile/s]
+(Worker_TP1_EP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.80profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.96profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.20profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 10.26profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 10.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 10.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.02profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 12.35profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 12.39profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 12.00profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 14.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 13.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 13.02profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.72profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 14.70profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 14.00profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 13.58profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 13.36profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.68profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.40profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.88profile/s]
+(Worker_TP2_EP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.86profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.63profile/s]
+(Worker_TP3_EP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.98profile/s]
+(Worker_TP1_EP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.75profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.44profile/s]
+(Worker_TP0_EP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 17.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.08profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 15.93profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 15.74profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.81profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.70profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.36profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 15.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 17.59profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.65profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.33profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 17.07profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 17.81profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 17.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 17.36profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 17.70profile/s]
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:12,769 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:12,770 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 17.17profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 17.07profile/s]
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:12,821 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:12,821 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 17.11profile/s]
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:12,824 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:12,825 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.88profile/s]
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:13,226 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:13,250 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:13,290 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:13,291 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:13  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:15  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:16  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:47:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:47:23 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:13  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:15  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:16  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 16:47:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2_EP2 pid=84) INFO 07-13 16:47:23 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:13  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:15  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:16  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3_EP3 pid=85) INFO 07-13 16:47:23 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:13  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:15  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:16  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:22  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=83) INFO 07-13 16:47:23 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=61) INFO 07-13 16:47:23 [core.py:344] init engine (profile, create kv cache, warmup model) took 532.95 s
+(EngineCore pid=61) INFO 07-13 16:47:25 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=61) WARNING 07-13 16:47:25 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=61) WARNING 07-13 16:47:25 [vllm.py:1100] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+(EngineCore pid=61) WARNING 07-13 16:47:25 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=61) INFO 07-13 16:47:25 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(EngineCore pid=61) INFO 07-13 16:47:25 [vllm.py:1288] Cudagraph is disabled under eager mode
+(EngineCore pid=61) INFO 07-13 16:47:25 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 38.76it/s]
+
+(Worker_TP0_EP0 pid=82) WARNING 07-13 16:47:25 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=82) WARNING 07-13 16:47:26 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_prefill_chunk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=82) WARNING 07-13 16:47:26 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_c128a_topk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=82) WARNING 07-13 16:47:26 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_prefill_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](Worker_TP2_EP2 pid=84) 2026-07-13 16:47:26,886 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP3_EP3 pid=85) 2026-07-13 16:47:26,887 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP1_EP1 pid=83) 2026-07-13 16:47:26,892 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP0_EP0 pid=82) WARNING 07-13 16:47:26 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_global_topk_indices_and_lens_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+
+[1AProcessed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.75s/it, est. speed input: 3.63 toks/s, output: 2.91 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.75s/it, est. speed input: 3.63 toks/s, output: 2.91 toks/s]Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.75s/it, est. speed input: 3.63 toks/s, output: 2.91 toks/s]
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:47:28 [wrapper.py:174] Torch profiling enabled. Traces will be saved to: /cache/floorprof
+(Worker_TP3_EP3 pid=85) /usr/local/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+(Worker_TP3_EP3 pid=85)   _warn_once(
+(Worker_TP1_EP1 pid=83) /usr/local/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+(Worker_TP1_EP1 pid=83)   _warn_once(
+(Worker_TP2_EP2 pid=84) /usr/local/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+(Worker_TP0_EP0 pid=82) /usr/local/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+(Worker_TP2_EP2 pid=84)   _warn_once(
+(Worker_TP0_EP0 pid=82)   _warn_once(
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 2545.09it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:04<00:00,  4.36s/it, est. speed input: 2.30 toks/s, output: 3.67 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:04<00:00,  4.36s/it, est. speed input: 2.30 toks/s, output: 3.67 toks/s]Processed prompts: 100%|██████████| 1/1 [00:04<00:00,  4.36s/it, est. speed input: 2.30 toks/s, output: 3.67 toks/s]
+(EngineCore pid=61) INFO 07-13 16:48:34 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP0_EP0 pid=82) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_TP0_EP0 pid=82)                                                    Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+(Worker_TP0_EP0 pid=82) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_TP0_EP0 pid=82)                    execute_context_0(0)_generation_1(1)         0.00%       0.000us         0.00%       0.000us       0.000us       19.168s       636.92%       19.168s     255.575ms            75  
+(Worker_TP0_EP0 pid=82)                                _C_custom_ar::all_reduce         0.23%       9.840ms         0.69%      29.755ms      21.376us        2.723s        90.47%        2.725s       1.958ms          1392  
+(Worker_TP0_EP0 pid=82) void vllm::cross_device_reduce_1stage<__nv_bfloat16,...         0.00%       0.000us         0.00%       0.000us       0.000us        2.721s        90.42%        2.721s       1.955ms          1392  
+(Worker_TP0_EP0 pid=82)                   execute_context_1(10)_generation_0(0)         0.00%       0.000us         0.00%       0.000us       0.000us        1.380s        45.84%        1.380s     275.903ms             5  
+(Worker_TP0_EP0 pid=82)                                             aten::copy_         1.42%      61.428ms         3.35%     145.548ms       8.360us      70.717ms         2.35%      70.838ms       4.069us         17410  
+(Worker_TP0_EP0 pid=82)                                vllm::moe_forward_shared        17.55%     761.635ms        24.90%        1.081s       1.571ms      47.027ms         1.56%      79.643ms     115.760us           688  
+(Worker_TP0_EP0 pid=82) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us      39.513ms         1.31%      39.513ms       5.476us          7216  
+(Worker_TP0_EP0 pid=82)                                                 INVALID         0.18%       7.602ms         0.18%       7.602ms       0.165us      31.657ms         1.05%      31.657ms       0.688us         46032  
+(Worker_TP0_EP0 pid=82)                                               aten::mul         1.47%      63.720ms         2.69%     116.559ms       7.717us      28.922ms         0.96%      28.938ms       1.916us         15104  
+(Worker_TP0_EP0 pid=82)                                    cudaDriverGetVersion         0.04%       1.645ms         0.04%       1.645ms       0.036us      28.430ms         0.94%      28.430ms       0.618us         46016  
+(Worker_TP0_EP0 pid=82)                                                aten::mm         0.84%      36.524ms         1.24%      54.027ms      22.815us      20.954ms         0.70%      20.954ms       8.849us          2368  
+(Worker_TP0_EP0 pid=82) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      17.293ms         0.57%      17.293ms       5.027us          3440  
+(Worker_TP0_EP0 pid=82) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      16.170ms         0.54%      16.170ms       7.599us          2128  
+(Worker_TP0_EP0 pid=82)                                   cudaStreamIsCapturing         0.09%       3.981ms         0.09%       3.981ms       0.273us      16.074ms         0.53%      16.074ms       1.101us         14604  
+(Worker_TP0_EP0 pid=82) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      15.400ms         0.51%      15.400ms      22.384us           688  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      15.191ms         0.50%      15.191ms       3.403us          4464  
+(Worker_TP0_EP0 pid=82)                                  cudaDeviceGetAttribute         0.09%       3.807ms         0.09%       3.807ms       0.221us      13.684ms         0.45%      13.684ms       0.794us         17238  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       9.749ms         0.32%       9.749ms       1.291us          7552  
+(Worker_TP0_EP0 pid=82)                                        aten::reciprocal         0.66%      28.628ms         1.24%      53.605ms       7.098us       9.605ms         0.32%       9.605ms       1.272us          7552  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       9.605ms         0.32%       9.605ms       1.272us          7552  
+(Worker_TP0_EP0 pid=82) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       9.480ms         0.31%       9.480ms      13.779us           688  
+(Worker_TP0_EP0 pid=82)                                               aten::max         0.68%      29.430ms         1.22%      52.952ms      12.896us       8.654ms         0.29%       8.654ms       2.108us          4106  
+(Worker_TP0_EP0 pid=82)                                     cudaLaunchKernelExC         1.71%      74.004ms         1.71%      74.004ms       4.874us       8.594ms         0.29%       8.594ms       0.566us         15182  
+(Worker_TP0_EP0 pid=82)                                               aten::bmm         0.46%      19.866ms         0.58%      25.139ms      24.550us       8.436ms         0.28%       8.436ms       8.238us          1024  
+(Worker_TP0_EP0 pid=82) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       8.381ms         0.28%       8.381ms      12.181us           688  
+(Worker_TP0_EP0 pid=82) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us       8.047ms         0.27%       8.047ms       2.131us          3776  
+(Worker_TP0_EP0 pid=82) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       7.693ms         0.26%       7.693ms       7.883us           976  
+(Worker_TP0_EP0 pid=82)                                      record_param_comms         0.05%       2.121ms         0.06%       2.422ms     151.364us       7.516ms         0.25%       7.516ms     469.720us            16  
+(Worker_TP0_EP0 pid=82) ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us       7.516ms         0.25%       7.516ms     469.720us            16  
+(Worker_TP0_EP0 pid=82)                                   nccl:_all_gather_base         0.00%       0.000us         0.00%       0.000us       0.000us       7.516ms         0.25%       7.516ms     469.720us            16  
+(Worker_TP0_EP0 pid=82)                                cudaEventRecordWithFlags         0.16%       6.881ms         0.16%       6.881ms       1.172us       7.221ms         0.24%       7.221ms       1.230us          5872  
+(Worker_TP0_EP0 pid=82)                                     cudaPeekAtLastError         0.01%     293.710us         0.01%     293.710us       0.105us       7.141ms         0.24%       7.141ms       2.561us          2788  
+(Worker_TP0_EP0 pid=82) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       6.933ms         0.23%       6.933ms      10.749us           645  
+(Worker_TP0_EP0 pid=82)                                        cuLaunchKernelEx         0.52%      22.655ms         0.52%      22.655ms       4.234us       6.907ms         0.23%       6.907ms       1.291us          5351  
+(Worker_TP0_EP0 pid=82)                                     cudaStreamWaitEvent         0.14%       5.913ms         0.14%       5.913ms       0.878us       6.517ms         0.22%       6.517ms       0.967us          6736  
+(Worker_TP0_EP0 pid=82)                                    cudaFuncSetAttribute         0.61%      26.648ms         0.61%      26.648ms       2.586us       6.410ms         0.21%       6.410ms       0.622us         10304  
+(Worker_TP0_EP0 pid=82)              mhc_pre_big_fuse_with_norm_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       6.115ms         0.20%       6.115ms       4.444us          1376  
+(Worker_TP0_EP0 pid=82) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       6.000ms         0.20%       6.000ms       6.250us           960  
+(Worker_TP0_EP0 pid=82) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       5.882ms         0.20%       5.882ms       9.564us           615  
+(Worker_TP0_EP0 pid=82) void tensorrt_llm::kernels::quantize_with_block_size...         0.00%       0.000us         0.00%       0.000us       0.000us       5.847ms         0.19%       5.847ms       1.549us          3776  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       5.660ms         0.19%       5.660ms       4.113us          1376  
+(Worker_TP0_EP0 pid=82)                               mhc_fused_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       5.630ms         0.19%       5.630ms       4.139us          1360  
+(Worker_TP0_EP0 pid=82)                                             aten::index         0.34%      14.881ms         0.56%      24.482ms      18.135us       5.323ms         0.18%       5.347ms       3.961us          1350  
+(Worker_TP0_EP0 pid=82) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us       5.296ms         0.18%       5.296ms      16.812us           315  
+(Worker_TP0_EP0 pid=82)                                               aten::abs         0.59%      25.719ms         2.21%      95.756ms      12.680us       4.911ms         0.16%       9.832ms       1.302us          7552  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.911ms         0.16%       4.911ms       1.301us          3776  
+(Worker_TP0_EP0 pid=82) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.797ms         0.16%       4.797ms       6.972us           688  
+(Worker_TP0_EP0 pid=82)                                        aten::nan_to_num         0.45%      19.549ms         1.56%      67.745ms       8.970us       4.462ms         0.15%       8.924ms       1.182us          7552  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.462ms         0.15%       4.462ms       1.182us          3776  
+(Worker_TP0_EP0 pid=82)                                         aten::clamp_min         0.44%      19.098ms         0.76%      32.916ms       8.717us       4.420ms         0.15%       4.420ms       1.170us          3776  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.420ms         0.15%       4.420ms       1.170us          3776  
+(Worker_TP0_EP0 pid=82) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       3.982ms         0.13%       3.982ms       1.290us          3088  
+(Worker_TP0_EP0 pid=82)                          Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us       3.721ms         0.12%       3.721ms       1.056us          3523  
+(Worker_TP0_EP0 pid=82) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       3.624ms         0.12%       3.624ms       5.267us           688  
+(Worker_TP0_EP0 pid=82)                              _moe_C::topk_softplus_sqrt         0.11%       4.760ms         0.18%       7.803ms      11.342us       3.320ms         0.11%       3.320ms       4.825us           688  
+(Worker_TP0_EP0 pid=82) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       3.094ms         0.10%       3.094ms       4.834us           640  
+(Worker_TP0_EP0 pid=82) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.960ms         0.10%       2.960ms       3.033us           976  
+(Worker_TP0_EP0 pid=82)                                 Activity Buffer Request         0.25%      10.792ms         0.26%      11.149ms     619.390us       2.630ms         0.09%       4.762ms     264.531us            18  
+(Worker_TP0_EP0 pid=82)                                        cudaLaunchKernel         5.68%     246.422ms         5.73%     248.530ms       3.754us       2.460ms         0.08%       2.478ms       0.037us         66205  
+(Worker_TP0_EP0 pid=82) void tensorrt_llm::kernels::cutlass_kernels::expandI...         0.00%       0.000us         0.00%       0.000us       0.000us       2.262ms         0.08%       2.262ms       3.288us           688  
+(Worker_TP0_EP0 pid=82) void tensorrt_llm::kernels::cutlass_kernels::finaliz...         0.00%       0.000us         0.00%       0.000us       0.000us       2.228ms         0.07%       2.228ms       3.238us           688  
+(Worker_TP0_EP0 pid=82) void tensorrt_llm::kernels::cutlass_kernels::compute...         0.00%       0.000us         0.00%       0.000us       0.000us       2.215ms         0.07%       2.215ms       3.219us           688  
+(Worker_TP0_EP0 pid=82) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.202ms         0.07%       2.202ms       6.992us           315  
+(Worker_TP0_EP0 pid=82)                             _save_partial_states_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.065ms         0.07%       2.065ms       2.081us           992  
+(Worker_TP0_EP0 pid=82) void tensorrt_llm::kernels::cutlass_kernels::doActiv...         0.00%       0.000us         0.00%       0.000us       0.000us       2.005ms         0.07%       2.005ms       2.914us           688  
+(Worker_TP0_EP0 pid=82)                                              aten::topk         0.10%       4.258ms         0.21%       8.899ms      28.250us       1.993ms         0.07%       1.993ms       6.328us           315  
+(Worker_TP0_EP0 pid=82) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       1.883ms         0.06%       1.883ms       2.737us           688  
+(Worker_TP0_EP0 pid=82) _C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_inser...         0.22%       9.556ms         0.39%      16.882ms      24.538us       1.637ms         0.05%       1.637ms       2.379us           688  
+(Worker_TP0_EP0 pid=82) void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us       1.637ms         0.05%       1.637ms       2.379us           688  
+(Worker_TP0_EP0 pid=82)                                               aten::add         0.20%       8.843ms         0.34%      14.719ms      10.222us       1.595ms         0.05%       1.595ms       1.108us          1440  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.594ms         0.05%       1.594ms       1.158us          1376  
+(Worker_TP0_EP0 pid=82)                             _C::silu_and_mul_with_clamp         0.09%       4.066ms         0.16%       7.126ms      10.357us       1.392ms         0.05%       1.392ms       2.023us           688  
+(Worker_TP0_EP0 pid=82) void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us       1.392ms         0.05%       1.392ms       2.023us           688  
+(Worker_TP0_EP0 pid=82) void tensorrt_llm::kernels::cutlass_kernels::fusedBu...         0.00%       0.000us         0.00%       0.000us       0.000us       1.340ms         0.04%       1.340ms       1.947us           688  
+(Worker_TP0_EP0 pid=82) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.251ms         0.04%       1.251ms       3.723us           336  
+(Worker_TP0_EP0 pid=82) void at::native::bitonicSortKVInPlace<-2, -1, 16, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       1.142ms         0.04%       1.142ms       3.624us           315  
+(Worker_TP0_EP0 pid=82) void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us       1.117ms         0.04%       1.117ms      10.444us           107  
+(Worker_TP0_EP0 pid=82)                              _fused_q_kv_rmsnorm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       1.113ms         0.04%       1.113ms       1.617us           688  
+(Worker_TP0_EP0 pid=82)                                             aten::fill_         0.15%       6.372ms         0.30%      12.996ms       9.397us       1.038ms         0.03%       1.038ms       0.751us          1383  
+(Worker_TP0_EP0 pid=82) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     963.178us         0.03%     963.178us       1.529us           630  
+(Worker_TP0_EP0 pid=82)                                    _C::scaled_fp4_quant         0.09%       3.818ms         0.17%       7.232ms      10.511us     949.223us         0.03%     949.223us       1.380us           688  
+(Worker_TP0_EP0 pid=82) void vllm::cvt_fp16_to_fp4<__nv_bfloat16, false>(int...         0.00%       0.000us         0.00%       0.000us       0.000us     949.223us         0.03%     949.223us       1.380us           688  
+(Worker_TP0_EP0 pid=82) void at::native::sbtopk::gatherTopK<float, unsigned ...         0.00%       0.000us         0.00%       0.000us       0.000us     851.847us         0.03%     851.847us       2.704us           315  
+(Worker_TP0_EP0 pid=82)                                               aten::sub         0.08%       3.398ms         0.13%       5.713ms       6.285us     824.808us         0.03%     824.808us       0.907us           909  
+(Worker_TP0_EP0 pid=82)        _fused_kv_compress_norm_rope_insert_indexer_attn         0.00%       0.000us         0.00%       0.000us       0.000us     794.065us         0.03%     794.065us       2.363us           336  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     751.759us         0.02%     751.759us       1.093us           688  
+(Worker_TP0_EP0 pid=82)            _compute_global_topk_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     748.105us         0.02%     748.105us       2.101us           356  
+(Worker_TP0_EP0 pid=82) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us     677.526us         0.02%     677.526us       2.151us           315  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     653.864us         0.02%     653.864us       0.914us           715  
+(Worker_TP0_EP0 pid=82) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us     607.369us         0.02%     607.369us       1.928us           315  
+(Worker_TP0_EP0 pid=82) void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us     600.165us         0.02%     600.165us      14.638us            41  
+(Worker_TP0_EP0 pid=82) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     596.491us         0.02%     596.491us       1.533us           389  
+(Worker_TP0_EP0 pid=82) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us     566.025us         0.02%     566.025us       1.685us           336  
+(Worker_TP0_EP0 pid=82) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     518.792us         0.02%     518.792us       1.647us           315  
+(Worker_TP0_EP0 pid=82)                                               aten::div         0.05%       2.328ms         0.09%       3.711ms      11.781us     484.079us         0.02%     484.079us       1.537us           315  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     484.079us         0.02%     484.079us       1.537us           315  
+(Worker_TP0_EP0 pid=82) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     480.357us         0.02%     480.357us       1.169us           411  
+(Worker_TP0_EP0 pid=82)                                         aten::remainder         0.05%       2.260ms         0.08%       3.590ms      11.398us     446.569us         0.01%     446.569us       1.418us           315  
+(Worker_TP0_EP0 pid=82) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     446.569us         0.01%     446.569us       1.418us           315  
+(Worker_TP0_EP0 pid=82) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us     429.411us         0.01%     429.411us       1.342us           320  
+(Worker_TP0_EP0 pid=82) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_TP0_EP0 pid=82) Self CPU time total: 4.340s
+(Worker_TP0_EP0 pid=82) Self CUDA time total: 3.009s
+(Worker_TP0_EP0 pid=82) 
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:49:19 [wrapper.py:66] Profiler stopped successfully.
+# traces: ['dp0_pp0_tp0_dcp0_ep0_rank0.1783961266959593832.pt.trace.json.gz', 'dp0_pp0_tp1_dcp0_ep1_rank1.1783961266037667996.pt.trace.json.gz', 'dp0_pp0_tp2_dcp0_ep2_rank2.1783961265919403107.pt.trace.json.gz', 'dp0_pp0_tp3_dcp0_ep3_rank3.1783961266306585550.pt.trace.json.gz']
+# === FLOOR DECOMPOSITION (rank0 GPU-kernel us, total=3005.16 ms over 16 decode steps) ===
+#   collective(EP a2a / allreduce)      2729.67 ms   90.8%
+#   norm/elementwise                     139.51 ms    4.6%
+#   gemm/moe                              68.90 ms    2.3%
+#   other                                 46.48 ms    1.5%
+#   attention+DSA                         20.61 ms    0.7%
+# --- top 15 kernels ---
+#    2721.18 ms  90.6%  void vllm::cross_device_reduce_1stage<__nv_bfloat16, 4>(vllm::RankData*, vllm::RankSignals
+#      39.51 ms   1.3%  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+#      17.29 ms   0.6%  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+#      16.17 ms   0.5%  _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalIN4cute5tupleIJiiiiEEENS1_10colle
+#      15.40 ms   0.5%  _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalINS1_17GroupProblemShapeIN4cute5t
+#      15.19 ms   0.5%  void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<float, float, 
+#       9.75 ms   0.3%  void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<float, float, 
+#       9.60 ms   0.3%  void at::native::vectorized_elementwise_kernel<4, at::native::reciprocal_kernel_cuda(at::T
+#       9.48 ms   0.3%  _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalINS1_17GroupProblemShapeIN4cute5t
+#       8.38 ms   0.3%  void flashinfer::sparse_mla_sm120::sparse_mla_decode_dsv4_kernel<(ModelType)1, 16, 128, 64
+#       8.05 ms   0.3%  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::func_wrappe
+#       7.69 ms   0.3%  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv
+#       7.52 ms   0.3%  ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsStorage<4096ul>)
+#       6.93 ms   0.2%  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv
+#       6.11 ms   0.2%  mhc_pre_big_fuse_with_norm_tilelang_kernel
+# floor_profile DONE
+(EngineCore pid=61) INFO 07-13 16:49:34 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=61) INFO 07-13 16:49:34 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=61) INFO 07-13 16:49:34 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=61) INFO 07-13 16:49:34 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:49:34 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(EngineCore pid=61) INFO 07-13 16:49:34 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=4
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:49:34 [wrapper.py:142] Shutting down profiler
+WARNING 07-13 16:49:39 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+Runner terminated.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-zc5RY6UMuniXOVYtkzMpbV
