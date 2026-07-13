@@ -469,6 +469,8 @@ def graph_gate4(
     baseline: str = "",
     c3_skip: str = "",
     compact: bool = False,
+    a_dense: int = 0,
+    a_sparse: int = 0,
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
@@ -481,6 +483,10 @@ def graph_gate4(
         os.environ[f"QB_C3_SKIP_{c3_skip.upper()}"] = "1"
     if compact:
         os.environ["QB_COMPACT_DECODE"] = "1"
+    if a_dense:
+        os.environ["QB_A_DENSE"] = str(a_dense)
+    if a_sparse:
+        os.environ["QB_A_SPARSE"] = str(a_sparse)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)
