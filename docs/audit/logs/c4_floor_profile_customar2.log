@@ -214,3 +214,57 @@ WARNING 07-13 16:35:53 [system_utils.py:157] We must use the `spawn` multiproces
 (Worker_TP1_EP1 pid=83) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
 (Worker_TP0_EP0 pid=82) [qb_sm120] fp8-fallback ACTIVE pid=82 method=nvfp4
 (Worker_TP0_EP0 pid=82) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:38:29 [nvfp4.py:482] Using MoEPrepareAndFinalizeNoDPEPModular
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP0_EP0 pid=82) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP2_EP2 pid=84) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1_EP1 pid=83) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP3_EP3 pid=85) INFO 07-13 16:38:30 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:38:30 [gpu_model_runner.py:5255] Model loading took 40.83 GiB memory and 121.460840 seconds
+(Worker_TP0_EP0 pid=82) INFO 07-13 16:38:30 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP2_EP2 pid=84) INFO 07-13 16:38:30 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP1_EP1 pid=83) INFO 07-13 16:38:30 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:38:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:38:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:38:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 16:38:45  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
