@@ -48,8 +48,11 @@ number of tiny quant kernels drops 8× too (helps both eager and captured).
 
 The remaining waste is **cap=128 per active expert** (128 rows for ~1 real token). Killing that needs a
 decode kernel/layout that processes arbitrary compact rows with per-row expert (the deferred custom path).
-So active-expert compaction is expected to reach a **strict-Pareto** improvement (materially faster + same
-quality, dual-residency memory unchanged), not necessarily the full 48 tok/s. Measured next.
+So active-expert compaction was expected, at design time, to give a materially faster D2 without reaching
+the full 48 tok/s dense baseline. Measured outcome (`verdict.md`, `deepseek_compact_decode.md`): it is
+2.80× faster but is **not** a strict-Pareto point versus dense; dual-residency memory stays +27% and
+downstream quality stays -0.95pt, so dense still dominates speed, memory, and quality. The design-time
+"strict-Pareto" hope did not hold; the honest result is an intra-D2 speedup only.
 
 ## Flags (opt-in, default off — deployed path unchanged)
 

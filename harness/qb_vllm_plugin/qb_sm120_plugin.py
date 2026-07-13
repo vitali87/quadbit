@@ -591,6 +591,7 @@ def _route_compact(sp, assign, e, cap, a_max, valid):
     # active_ids[a_max] = global expert id per active slot). Rows whose expert is not in the top-a_max are
     # dropped deterministically (none at decode: active experts <= a_max by construction).
     import torch
+    a_max = max(1, min(a_max, e))                                # clamp to [1,e]: topk(k>e) or k<1 raises
     a = assign.to(torch.long)
     ac = a.clamp(0, e - 1)
     w1 = valid.to(torch.long)

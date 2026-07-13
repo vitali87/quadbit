@@ -479,6 +479,11 @@ def graph_gate4(
     C3 Task 1A: c3_skip in {moe,dense,sparse} no-ops that component under CAPTURE for differential decode
     attribution (PPL is meaningless for a skip variant — read only decode tok/s)."""
     import os
+    # Clear every C3 flag first so a warm Modal container never inherits a prior invocation's state
+    # (a stale QB_C3_SKIP_*/QB_COMPACT_DECODE/QB_A_* would silently run the wrong benchmark variant).
+    for _k in ("QB_C3_SKIP_MOE", "QB_C3_SKIP_DENSE", "QB_C3_SKIP_SPARSE",
+               "QB_COMPACT_DECODE", "QB_A_DENSE", "QB_A_SPARSE"):
+        os.environ.pop(_k, None)
     if c3_skip:
         os.environ[f"QB_C3_SKIP_{c3_skip.upper()}"] = "1"
     if compact:

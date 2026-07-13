@@ -1,6 +1,6 @@
 # C3 Task 1A: captured-mode differential attribution (DeepSeek-D2, 4 GPU)
 
-CUDA events can't time inside a CUDA graph, and the eager profile (`profile_decode.md`) is confounded by
+CUDA events can't time inside a CUDA graph, and the eager profile ([profile_decode.md](profile_decode.md)) is confounded by
 the dense-anchor Python quant loop's launch overhead (which capture removes). So we attribute the
 **captured** decode cost by differential: run the captured D2 path with one component no-op'd at a time
 (env flags `QB_C3_SKIP_{MOE,DENSE,SPARSE}`, plugin-side, graph stays shape-valid) and read decode-only
