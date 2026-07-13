@@ -1,6 +1,19 @@
 ✓ Initialized. View run at 
-https://modal.com/apps/anterior-ai/main/ap-pazFkzPdk6jjjE7irNXrII
-Building image im-3EufTnwnraestA75LxgNdx
+https://modal.com/apps/anterior-ai/main/ap-sWBEyorbyXzPkntP0zWe1y
+Building image im-jhHWK8nZO6oeelM4mSyU9o
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: COPY . /
+Saving image...
+Image saved, took 2.63s
+
+Built image im-jhHWK8nZO6oeelM4mSyU9o in 3.83s
+
+
+Building image im-isAMYyFjBpMmzRA5LNo3eZ
 
 Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
 
@@ -18,15 +31,15 @@ Processing ./opt/qb_plugin
 Building wheels for collected packages: qb-sm120-plugin
   Building wheel for qb-sm120-plugin (pyproject.toml): started
   Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
-  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=40022 sha256=7dfce1a3ea3af83e430679e208ebe18384b1e2ffcc64fdf8938e42eb2636cd54
-  Stored in directory: /tmp/pip-ephem-wheel-cache-duirgz37/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=40221 sha256=6e99d71837c25d594bf10cfc070e40b1de5934221a3d9dec2d19e1d4a182c538
+  Stored in directory: /tmp/pip-ephem-wheel-cache-hafzuv33/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
 Successfully built qb-sm120-plugin
 Installing collected packages: qb-sm120-plugin
 Successfully installed qb-sm120-plugin-0.9.0
 Saving image...
-Image saved, took 4.45s
+Image saved, took 2.56s
 
-Built image im-3EufTnwnraestA75LxgNdx in 8.48s
+Built image im-isAMYyFjBpMmzRA5LNo3eZ in 8.76s
 
 
 ✓ Created objects.
@@ -34,6 +47,7 @@ Built image im-3EufTnwnraestA75LxgNdx in 8.48s
 │   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
 ├── 🔨 Created mount 
 │   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_dp.
 ├── 🔨 Created function inspect_vllm.
 ├── 🔨 Created function glm_baseline.
 ├── 🔨 Created function unblock.
@@ -79,78 +93,3 @@ https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
 A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
 
 # C5 DP board: dp=4 tp=1 baseline=dense_nvfp4 eager=False (subprocess DP attention)
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 36, in dp_worker
-    llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 38, in dp_worker
-    llm = LLM(**kw)
-          ^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 36, in dp_worker
-    llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 38, in dp_worker
-    llm = LLM(**kw)
-          ^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 36, in dp_worker
-    llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 38, in dp_worker
-    llm = LLM(**kw)
-          ^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 36, in dp_worker
-    llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-  File "/usr/local/lib/python3.12/site-packages/qb_dp_worker.py", line 38, in dp_worker
-    llm = LLM(**kw)
-          ^^^^^^^^^
-  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
-    raise ValueError(
-ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
-# C5 DP board DONE (exit codes: [1, 1, 1, 1])
-✓ App completed. View run at 
-https://modal.com/apps/anterior-ai/main/ap-pazFkzPdk6jjjE7irNXrII
