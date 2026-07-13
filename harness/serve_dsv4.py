@@ -750,6 +750,7 @@ def floor_profile(
     evs = data.get("traceEvents", data) if isinstance(data, dict) else data
     by_cat: dict = {}
     by_name: dict = {}
+    by_name_cnt: dict = {}
     total = 0.0
     for e in evs:
         if not isinstance(e, dict) or e.get("ph") != "X":
@@ -762,6 +763,7 @@ def floor_profile(
         b = bucket(nm)
         by_cat[b] = by_cat.get(b, 0.0) + dur
         by_name[nm] = by_name.get(nm, 0.0) + dur
+        by_name_cnt[nm] = by_name_cnt.get(nm, 0) + 1
         total += dur
     if total <= 0:
         print("# no GPU-kernel events found (cat filter); dumping distinct cats seen:", flush=True)
@@ -771,13 +773,41 @@ def floor_profile(
                 seen[str(e.get("cat", ""))] = seen.get(str(e.get("cat", "")), 0) + 1
         print(f"#   {seen}", flush=True)
         return
-    print(f"# === FLOOR DECOMPOSITION (rank0 GPU-kernel us, total={total/1000:.2f} ms over 16 decode steps) ===",
-          flush=True)
+
+    # count key kernels -> all-reduce COUNT per layer / per decode token. The DSA decode kernel fires once
+    # per layer per decode forward, so ar_per_layer = n_customAR / n_dsa (both scale with forwards*layers),
+    # independent of how many decode steps the trace captured. n_layers from config gives per-token count.
+    def cnt(*subs):
+        return sum(c for k, c in by_name_cnt.items() if any(s in k.lower() for s in subs))
+    n_customar = cnt("cross_device_reduce")
+    n_ring_ar = cnt("allreduce_") + cnt("allreduce ")  # ncclDevKernel_AllReduce_*
+    n_dsa = cnt("sparse_mla_decode", "sparse_mla")
+    n_layers = 0
+    try:
+        from transformers import AutoConfig
+        n_layers = int(getattr(AutoConfig.from_pretrained(MODEL, trust_remote_code=True),
+                               "num_hidden_layers", 0))
+    except Exception:  # noqa: BLE001
+        pass
+    fwd = (n_dsa / n_layers) if (n_dsa and n_layers) else 0.0   # decode forward passes in the trace
+    ar_active = n_customar or n_ring_ar
+    ar_per_layer = (ar_active / n_dsa) if n_dsa else 0.0
+    ar_per_tok = (ar_active / fwd) if fwd else 0.0
+    step_ms = (total / fwd) if fwd else 0.0                     # GPU-busy ms per decode forward
+
+    print(f"# === POST-C4 ROOFLINE (rank0 GPU-kernel time; n_layers={n_layers}, "
+          f"decode_forwards~{fwd:.1f}, per-token GPU-busy~{step_ms/1000:.2f} ms) ===", flush=True)
+    print(f"# all-reduce: custom_1stage={n_customar} ring={n_ring_ar} | DSA-decode={n_dsa} | "
+          f"per-layer={ar_per_layer:.2f} per-token={ar_per_tok:.1f}", flush=True)
+    print(f"# --- category (of {total/1000:.2f} ms GPU-busy total) ---", flush=True)
     for label, us in sorted(by_cat.items(), key=lambda kv: -kv[1]):
-        print(f"#   {label:34s} {us/1000:8.2f} ms  {100*us/total:5.1f}%", flush=True)
-    print("# --- top 15 kernels ---", flush=True)
+        pt = (us / fwd / 1000) if fwd else 0.0
+        print(f"#   {label:34s} {us/1000:8.2f} ms  {100*us/total:5.1f}%  ({pt:.2f} ms/tok)", flush=True)
+    print("# --- top 15 kernels (time, %, count, count/tok) ---", flush=True)
     for nm, us in sorted(by_name.items(), key=lambda kv: -kv[1])[:15]:
-        print(f"#   {us/1000:8.2f} ms  {100*us/total:4.1f}%  {nm[:90]}", flush=True)
+        c = by_name_cnt.get(nm, 0)
+        cpt = (c / fwd) if fwd else 0.0
+        print(f"#   {us/1000:8.2f} ms  {100*us/total:4.1f}%  n={c:5d} ({cpt:4.1f}/tok)  {nm[:78]}", flush=True)
     print("# floor_profile DONE", flush=True)
 
 
