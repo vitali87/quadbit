@@ -272,6 +272,17 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
     src, eblk, dropped = sp.route_fixed_cap(assign, e, cap, valid)
     rp = e * cap
     valid = src >= 0
+    if _PROFILE and li not in _PROFILE_SEEN and rp > 0:
+        _PROFILE_SEEN.add(li)
+        real = int(valid.sum().item())
+        be = (torch.arange(rp, device=dev) // cap)[valid]
+        if be.numel() > 0:
+            h_ = torch.bincount(be, minlength=e)
+            act, mx = int((h_ > 0).sum().item()), int(h_.max().item())
+        else:
+            act, mx = 0, 0
+        print(f"[qb_profile] layer {li} {proj} seg rp(E*cap)={rp} real_rows={real} "
+              f"active_experts={act}/{e} max_tok/expert={mx} waste={rp / max(real, 1):.0f}x", flush=True)
     srcc = src.clamp_min(0)
     xs = (x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None])
     if on_input:
@@ -500,6 +511,10 @@ _DENSE_BACKEND = os.environ.get("QB_DENSE_BACKEND", "dequant").lower()
 # wrong backend while printing the typo. Same import-time-guard style as the _GRAPH_CAP check.
 if _DENSE_BACKEND not in ("dequant", "native_nvfp4"):
     raise ValueError(f"QB_DENSE_BACKEND={_DENSE_BACKEND!r} must be 'dequant' or 'native_nvfp4'")
+# C3 profiling: QB_PROFILE=1 makes _seg_apply_gs log, once per layer, the padded-vs-real row waste at
+# decode (the E*cap fixed-capacity buffer vs the actually-routed slots). Host-syncs, so eager-only.
+_PROFILE = os.environ.get("QB_PROFILE") == "1"
+_PROFILE_SEEN: set = set()
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the

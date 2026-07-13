@@ -508,6 +508,114 @@ def glm_graph_gate(
 
 
 @app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def c3_profile(
+    tp: int = 4,
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    ntok: int = 32,
+) -> None:
+    """C3 Task 1: profile the DeepSeek-D2 native decode path (graph-safe EAGER, config B, so torch.profiler
+    attributes per-kernel time cleanly). Wraps an ntok-token decode in torch.profiler and prints the
+    per-kernel CUDA-time breakdown categorized into {sparse-seg matmul_sp, dense-anchor group_gemm,
+    attention/DSA, NCCL/EP, quant, other}, plus the QB_PROFILE padded-vs-real routing waste per layer.
+    Config B (eager) isolates component compute; capture removes launch overhead ~uniformly."""
+    import math
+    import os
+    from collections import defaultdict
+
+    import torch
+    from torch.profiler import ProfilerActivity, profile
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "sparse"
+    os.environ["QB_SPARSE_PROJ"] = "both"
+    os.environ["QB_ROUTE_SLOT"] = str(route_slot)
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
+    os.environ["QB_GRAPH"] = "1"            # graph-safe code path...
+    os.environ["QB_GRAPH_CAP"] = str(cap)
+    os.environ["QB_DENSE_BACKEND"] = "native_nvfp4"
+    os.environ["QB_PROFILE"] = "1"          # routing-waste logging
+    print(f"# C3 profile: D2 native graph-safe EAGER route_slot={route_slot} cap={cap} "
+          f"dense_layers=[{dense_layers}] ntok={ntok} tp={tp}", flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
+              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+    t0 = time.time()
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception:  # noqa: BLE001
+        llm = LLM(**kw)
+    print(f"  load ok in {time.time() - t0:.0f}s", flush=True)
+
+    tp_prompt = "The history of the Roman empire spans many centuries and"
+    tids = llm.get_tokenizer().encode(tp_prompt)
+    sp1 = SamplingParams(temperature=0.0, max_tokens=ntok)
+    # warm (also lets QB_PROFILE log the per-layer waste on the first real decode steps)
+    llm.generate([{"prompt_token_ids": tids}], sp1)
+    torch.cuda.synchronize()
+
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        llm.generate([{"prompt_token_ids": tids}], sp1)
+        torch.cuda.synchronize()
+
+    evts = prof.key_averages()
+    # categorize by kernel-name substring
+    cats = [
+        ("sparse-seg (matmul_sp)", ["matmul_sp"]),
+        ("dense-anchor (group_gemm/cutlass fp4)", ["group_gemm", "gemm_nvfp4", "cutlass", "Nvfp4", "nvfp4"]),
+        ("attention/DSA-MLA", ["mla", "sparse_mla", "attention", "indexer", "flash", "paged", "rope"]),
+        ("NCCL/EP collective", ["nccl", "AllReduce", "all_reduce", "reduce_kernel"]),
+        ("quant/act", ["quant", "quant_act", "cvt", "convert"]),
+        ("elementwise/copy/other", []),
+    ]
+    tot = 0.0
+    per_kernel = []
+    for e in evts:
+        cu = float(getattr(e, "self_device_time_total", 0.0) or getattr(e, "self_cuda_time_total", 0.0))
+        if cu <= 0:
+            continue
+        tot += cu
+        per_kernel.append((e.key, cu, e.count))
+    per_kernel.sort(key=lambda r: -r[1])
+    catsum = defaultdict(float)
+    for name, cu, _cnt in per_kernel:
+        low = name.lower()
+        placed = False
+        for cname, subs in cats[:-1]:
+            if any(s.lower() in low for s in subs):
+                catsum[cname] += cu
+                placed = True
+                break
+        if not placed:
+            catsum["elementwise/copy/other"] += cu
+    us = 1e-3  # profiler times are microseconds already; keep us
+    print(f"\n# ==== C3 decode kernel breakdown (config B eager, {ntok} tok) total CUDA {tot / 1e3:.1f} ms ====",
+          flush=True)
+    for cname, _subs in cats:
+        s = catsum.get(cname, 0.0)
+        print(f"  {cname:42s} {s / 1e3:9.2f} ms  {100 * s / max(tot, 1):5.1f}%", flush=True)
+    print("\n# top 30 kernels by CUDA self-time:", flush=True)
+    for name, cu, cnt in per_kernel[:30]:
+        print(f"  {cu / 1e3:9.2f} ms  n={cnt:5d}  {name[:90]}", flush=True)
+    print("# C3 profile DONE", flush=True)
+
+
+@app.function(
     gpu="RTX-PRO-6000:2",
     timeout=60 * MIN,
     volumes={"/cache": vol},
