@@ -1,6 +1,6 @@
 # C3 Task 1B: compact fixed-capacity routing (active-expert compaction)
 
-Attribution (`captured_attribution.md`): the captured D2 decode step is 89% MoE-apply, and it is the
+Attribution ([captured_attribution.md](captured_attribution.md)): the captured D2 decode step is 89% MoE-apply, and it is the
 **E·cap = 64×128 = 8192-row padding** in both groups (dense-anchor 64%, sparse 24%), per-row overhead
 (gather / per-group quant / scatter) + padded compute on rows that are ~99.8% padding at decode. The lever
 is to shrink the rows each group processes toward the real decode tokens, **capture-safe**.
@@ -49,7 +49,7 @@ number of tiny quant kernels drops 8× too (helps both eager and captured).
 The remaining waste is **cap=128 per active expert** (128 rows for ~1 real token). Killing that needs a
 decode kernel/layout that processes arbitrary compact rows with per-row expert (the deferred custom path).
 So active-expert compaction was expected, at design time, to give a materially faster D2 without reaching
-the full 48 tok/s dense baseline. Measured outcome (`verdict.md`, `deepseek_compact_decode.md`): it is
+the full 48 tok/s dense baseline. Measured outcome ([verdict.md](verdict.md), [deepseek_compact_decode.md](deepseek_compact_decode.md)): it is
 2.80× faster but is **not** a strict-Pareto point versus dense; dual-residency memory stays +27% and
 downstream quality stays -0.95pt, so dense still dominates speed, memory, and quality. The design-time
 "strict-Pareto" hope did not hold; the honest result is an intra-D2 speedup only.

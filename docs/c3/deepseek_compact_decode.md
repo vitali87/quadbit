@@ -1,6 +1,6 @@
 # C3 Task 1D: DeepSeek-V4-Flash compact-decode serving table (4 GPU, captured)
 
-The C3 lever is **active-expert compaction** (`compact_routing_ab.md`): route only the token-loaded experts
+The C3 lever is **active-expert compaction** ([compact_routing_ab.md](compact_routing_ab.md)): route only the token-loaded experts
 per group (A_max*cap rows) instead of all E=64 (E*cap=8192), capture-safe and bit-correct. This table puts
 the compact D2 path next to the two C2 reference points on the same harness / model / graph-mode /
 PPL-protocol.
@@ -29,7 +29,7 @@ axes (speed, memory, quality). **No SOTA claim, no strict-Pareto claim vs dense.
 
 ## Where the remaining 3.0× lives
 
-Attribution (`captured_attribution.md`) after compaction: the wall is now the **`cap=128`-per-active-expert
+Attribution ([captured_attribution.md](captured_attribution.md)) after compaction: the wall is now the **`cap=128`-per-active-expert
 padding**, each active expert still processes a full 128-row block for ~1 real decode token. Active-expert
 compaction removed the *inactive*-expert padding (E→A_max groups); it cannot remove the *within-active*
 padding without a decode kernel/layout that packs arbitrary compact rows with per-row expert routing (the

@@ -1,6 +1,6 @@
 # C3 Task 1B: compact routing A/B (DeepSeek-D2, 4 GPU, captured)
 
-Active-expert compaction (`compact_routing_design.md`): process only `A_max` token-loaded experts per
+Active-expert compaction ([compact_routing_design.md](compact_routing_design.md)): process only `A_max` token-loaded experts per
 group (A_max*cap rows) instead of all E=64 (E*cap=8192 rows), gathering the matching per-expert weights.
 Capture-safe (fixed A_max shape, device topk/gather), and **bit-identical to the full path when no expert
 drops**, guaranteed at decode by a static guard (`t_rows*route_slot <= A_dense` for the dense group,
@@ -36,7 +36,7 @@ dense-compact + sparse-overhead-no-savings; it validates the sparse gather via P
 | dense compact only (A_dense=8) | 1024 + 8192 | 12.436 | 2.15× | 4.239 |
 | compact both (A_dense=8, A_sparse=24) | 1024 + 3072 | 16.203 | 2.80× | 4.123 |
 
-Dense group is 64% of the step (`captured_attribution.md`): compacting it 8192→1024 rows gives 2.15×.
+Dense group is 64% of the step ([captured_attribution.md](captured_attribution.md)): compacting it 8192→1024 rows gives 2.15×.
 Compacting the sparse group too (8192→3072 rows) reaches **2.80×** (16.203 tok/s), monotone in rows
 removed. All three PPLs sit in / adjacent to the mito80 noise band; all capture FULL.
 
@@ -59,4 +59,4 @@ Active-expert compaction is correct and materially faster (2.80× compacting bot
 measured E*cap padding bottleneck. It does **not** reach the dense NVFP4 fused SOTA (48.248 tok/s), the
 residual is the `cap=128`-per-active-expert padding, which needs a custom compact-row decode kernel
 (deferred). See
-`deepseek_compact_decode.md` for the full serving table and `verdict.md` for the campaign verdict.
+[deepseek_compact_decode.md](deepseek_compact_decode.md) for the full serving table and [verdict.md](verdict.md) for the campaign verdict.

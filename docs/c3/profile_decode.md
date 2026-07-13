@@ -4,7 +4,7 @@ Branch `c3-fused-sparse-grouped-decode`. Goal: before writing any CUDA, measure 
 tok/s (≈167 ms/token) of the C2 D2 native-captured decode goes, and confirm whether a fused sparse grouped
 decode primitive is the right lever. Harness `serve_dsv4.py::c3_profile` (config B: graph-safe **eager**,
 `QB_GRAPH=1` + `enforce_eager=True`, native anchor, `QB_PROFILE=1`), so `torch.profiler` attributes
-per-kernel CUDA time cleanly. Log `docs/audit/logs/c3_profile_decode.log`.
+per-kernel CUDA time cleanly. Log [c3_profile_decode.log](../audit/logs/c3_profile_decode.log).
 
 ## Structural finding (from the code, confirmed before measuring)
 
@@ -30,7 +30,7 @@ the lever).
 
 Driver-side `torch.profiler` sees nothing under vLLM V1 (model runs in worker subprocesses), so the plugin
 times each region with CUDA events **inside the workers**. Cumulative over the run (worker TP0), log
-`docs/audit/logs/c3_profile_decode.log`:
+[c3_profile_decode.log](../audit/logs/c3_profile_decode.log):
 
 | MoE-apply region (route-slot D2 layers) | cumulative ms | share |
 |---|---:|---:|

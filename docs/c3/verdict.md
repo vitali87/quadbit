@@ -1,8 +1,8 @@
 # C3 verdict: beat the SM120 MoE decode SOTA by attacking the measured bottleneck
 
 **Original sparse-kernel premise:** *refuted, and it stays refuted.* The profile
-(`profile_decode.md`) showed the sparse 2:4 `matmul_sp` kernel is **0.4%** of the decode step. The
-captured differential attribution (`captured_attribution.md`) confirmed the sparse *group* is 24% of the
+([profile_decode.md](profile_decode.md)) showed the sparse 2:4 `matmul_sp` kernel is **0.4%** of the decode step. The
+captured differential attribution ([captured_attribution.md](captured_attribution.md)) confirmed the sparse *group* is 24% of the
 step but that its cost is per-row overhead + padded compute on 8192 padded rows, **not** the MMA kernel.
 Building `fused_sparse_grouped_decode_nvfp4_2lvl` would have optimized a 0.4% line. Not built.
 
@@ -13,7 +13,7 @@ rows are pure waste (gather / per-group quant / scatter + padded compute). The n
 (attention/DSA/EP/norms) is a cheap **11%**, removing the whole MoE hits 51 tok/s, above the dense
 baseline, so attention/DSA is not the wall.
 
-**Fix attempted:** *active-expert compaction* (`compact_routing_ab.md`), process only the `A_max` most
+**Fix attempted:** *active-expert compaction* ([compact_routing_ab.md](compact_routing_ab.md)), process only the `A_max` most
 token-loaded experts per group (A_max·cap rows) with gathered per-expert weights, instead of all E=64.
 Capture-safe (fixed A_max shape, device topk/gather, static guard so it only engages on the small decode
 graphs) and **bit-correct**: the A_max=E correctness runs reproduce baseline PPL within the mito80 noise
