@@ -266,3 +266,29 @@ WARNING 07-13 19:43:42 [system_utils.py:157] We must use the `spawn` multiproces
 (Worker_TP0_EP0 pid=82) INFO 07-13 19:46:26 [gpu_model_runner.py:5255] Model loading took 40.83 GiB memory and 125.466878 seconds
 (Worker_TP0_EP0 pid=82) INFO 07-13 19:46:26 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
 (Worker_TP3_EP3 pid=85) INFO 07-13 19:46:26 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:46:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:46:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:46:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:46:41  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(EngineCore pid=61) INFO 07-13 19:47:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:46:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:46:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:46:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=84) 2026-07-13 19:46:41  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:46:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:46:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:46:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1_EP1 pid=83) 2026-07-13 19:46:41  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:46:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:46:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:46:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3_EP3 pid=85) 2026-07-13 19:46:41  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0_EP0 pid=82) [qb_sm120] o_proj bf16 path ACTIVE pid=82 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP2_EP2 pid=84) [qb_sm120] o_proj bf16 path ACTIVE pid=84 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP1_EP1 pid=83) [qb_sm120] o_proj bf16 path ACTIVE pid=83 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP3_EP3 pid=85) [qb_sm120] o_proj bf16 path ACTIVE pid=85 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:47:50  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP0_EP0 pid=82) 2026-07-13 19:47:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(EngineCore pid=61) INFO 07-13 19:48:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 19:49:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-13 19:50:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).

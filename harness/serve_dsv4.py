@@ -602,57 +602,6 @@ def graph_gate2(
     volumes={"/cache": vol},
     secrets=[modal.Secret.from_name("huggingface")],
 )
-def _dp_worker(dp_rank: int, dp: int, port: int, cap: int, max_seqs: int, max_len: int,
-               gpu_mem: float, baseline: str, eager: bool) -> None:
-    # One DP-rank process: DP attention + EP MoE, tp=1. vLLM offline DP requires per-process VLLM_DP_* env
-    # (single-process LLM(data_parallel_size>1) is rejected). Each rank owns 1 GPU (full attention weights
-    # replicated + its EP expert shard) and runs the SAME timing prompt so all ranks step together (the EP
-    # all-to-all needs every rank live); rank 0's decode tok/s is the measurement.
-    import math
-    import os
-    import time as _t
-
-    import torch
-    from vllm import LLM, SamplingParams
-    os.environ["VLLM_DP_RANK"] = str(dp_rank)
-    os.environ["VLLM_DP_RANK_LOCAL"] = str(dp_rank)
-    os.environ["VLLM_DP_SIZE"] = str(dp)
-    os.environ["VLLM_DP_MASTER_IP"] = "127.0.0.1"
-    os.environ["VLLM_DP_MASTER_PORT"] = str(port)
-    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
-    os.environ["QB_DENSE"] = "nvfp4"
-    os.environ["QB_MOE"] = "off" if baseline == "dense_nvfp4" else "sparse"
-    os.environ["QB_GRAPH"] = "0" if eager else "1"
-    os.environ["QB_GRAPH_CAP"] = str(cap)
-    os.environ["QB_DENSE_BACKEND"] = "native_nvfp4"
-    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
-            "beta_fast": 32, "beta_slow": 1}
-    kw = dict(model=MODEL, tensor_parallel_size=1, data_parallel_size=dp, enforce_eager=eager,
-              trust_remote_code=True, max_model_len=max_len, gpu_memory_utilization=gpu_mem,
-              kv_cache_dtype="fp8", max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
-              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
-    try:
-        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
-    except Exception:  # noqa: BLE001
-        llm = LLM(**kw)
-    tids = llm.get_tokenizer().encode("The history of the Roman empire spans many centuries and")
-
-    def _wall(n):
-        torch.cuda.synchronize()
-        t = _t.time()
-        llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=n))
-        torch.cuda.synchronize()
-        return _t.time() - t
-    _wall(4)
-    w1, w64 = _wall(1), _wall(64)
-    dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
-    if dp_rank == 0:
-        pout = llm.generate([{"prompt_token_ids": tids}],
-                            SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
-        print(f"# C5-DP decode tok/s: {dtps:.3f} (wall1={w1:.3f}s wall64={w64:.3f}s) dp={dp} tp=1", flush=True)
-        print(f"# C5-DP graph {'captured' if not eager else 'eager'} PASS dp={dp}", flush=True)
-
-
 @app.function(
     gpu="RTX-PRO-6000:4",
     timeout=90 * MIN,
@@ -673,12 +622,14 @@ def graph_gate_dp(
     all-to-all today, not the dominant cost), so DP removes the ~43 attention all-reduces without adding MoE
     collectives. Spawns dp processes (vLLM offline DP needs per-proc VLLM_DP_* env). Rank 0 reports."""
     import multiprocessing as mp
+
+    from qb_dp_worker import dp_worker  # installed in the plugin package -> picklable across spawn
     print(f"# C5 DP board: dp={dp} tp=1 baseline={baseline} eager={eager} (multi-process DP attention)",
           flush=True)
     ctx = mp.get_context("spawn")
     port = 29591
-    procs = [ctx.Process(target=_dp_worker,
-                         args=(r, dp, port, cap, max_seqs, max_len, gpu_mem, baseline, eager))
+    procs = [ctx.Process(target=dp_worker,
+                         args=(r, dp, port, MODEL, cap, max_seqs, max_len, gpu_mem, baseline, eager))
              for r in range(dp)]
     for p in procs:
         p.start()
