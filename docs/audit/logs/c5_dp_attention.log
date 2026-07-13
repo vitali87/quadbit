@@ -1,0 +1,116 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-ttYLT4zUMszlJAgijc240s
+Building image im-KJugrLrxjiHUI4j8z8YrpF
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=38115 sha256=cbea0424a8ac0065697713d6d9fc14bc1f75d09ee0457cfe901cc8849af92e17
+  Stored in directory: /tmp/pip-ephem-wheel-cache-q1yd46_x/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 4.11s
+
+Built image im-KJugrLrxjiHUI4j8z8YrpF in 7.67s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function graph_gate2.
+├── 🔨 Created function graph_gate_dp.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# C5 DP board: dp=4 tp=1 baseline=dense_nvfp4 eager=False
+# M4 graph_gate cfg=C-captured BASELINE-dense-nvfp4 (QB_MOE=off, native FlashInfer-CUTLASS fused MoE) cap=128 max_seqs=2 QB_GRAPH=1 enforce_eager=False tp=1 model=DeepSeek dense_backend=native_nvfp4
+  C5 DP-attention: tp=1 data_parallel_size=4 (removes the attention TP all-reduce)
+  (deepseek_v4 tokenizer_mode rejected: ValueError; default) 
+Traceback (most recent call last):
+  File "/root/serve_dsv4.py", line 409, in _graph_gate_body
+    llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
+    raise ValueError(
+ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/pkg/modal/_runtime/container_io_manager.py", line 915, in handle_input_exception
+    yield
+  File "/pkg/modal/_container_entrypoint.py", line 189, in run_input_sync
+    values = io_context.call_function_sync()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/pkg/modal/_runtime/container_io_manager.py", line 218, in call_function_sync
+    expected_value_or_values = self.finalized_function.callable(*args, **kwargs)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/serve_dsv4.py", line 624, in graph_gate_dp
+    _graph_gate_body(1, eager, False, "both", 2, "", cap, max_seqs, max_len, gpu_mem,
+  File "/root/serve_dsv4.py", line 412, in _graph_gate_body
+    llm = LLM(**kw)
+          ^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 298, in __init__
+    raise ValueError(
+ValueError: LLM(data_parallel_size=4) is not supported for single-process usage and may hang. Please use the explicit multi-process data-parallel example at 'examples/features/data_parallel/data_parallel_offline.py'.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ LLM(data_parallel_size=4) is not supported for single-process usage and may  │
+│ hang. Please use the explicit multi-process data-parallel example at         │
+│ 'examples/features/data_parallel/data_parallel_offline.py'.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
