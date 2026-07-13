@@ -294,8 +294,14 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
         sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=dev)
         gb = torch.empty((rp,), dtype=torch.float32, device=dev)
         gu = torch.empty((rp, 2 * ii), dtype=torch.bfloat16, device=dev)
+        _q = _prof_start() if _PROFILE else None
         sp.quant_into(xs, bb, sb, gb)
+        if _PROFILE:
+            _prof_end("sparse_quant", _q)
+            _sg = _prof_start()
         sp.seg_into(gu_W, bb, sb, gb, gu, 2 * ii, h, eblk)
+        if _PROFILE:
+            _prof_end("sparse_seg(matmul_sp)", _sg)
     else:  # down-only (down49): gate_up anchored dense
         gu = _anchor_gemm(layer, "_qb_ng_gu", xs, layer.w13_weight, layer.w13_weight_scale,
                           layer.w13_weight_scale_2, 2 * ii, e, cap)
@@ -306,8 +312,14 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
         sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=dev)
         gb2 = torch.empty((rp,), dtype=torch.float32, device=dev)
         dseg = torch.empty((rp, h), dtype=torch.bfloat16, device=dev)
+        _q2 = _prof_start() if _PROFILE else None
         sp.quant_into(hh, bb2, sb2, gb2)
+        if _PROFILE:
+            _prof_end("sparse_quant", _q2)
+            _sg2 = _prof_start()
         sp.seg_into(dn_W, bb2, sb2, gb2, dseg, h, ii, eblk)
+        if _PROFILE:
+            _prof_end("sparse_seg(matmul_sp)", _sg2)
     else:  # gateup-only (gateup49): down anchored dense
         dseg = _anchor_gemm(layer, "_qb_ng_dn", hh, layer.w2_weight, layer.w2_weight_scale,
                             layer.w2_weight_scale_2, h, e, cap)
@@ -328,6 +340,7 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
     import torch.nn.functional as F
 
     li = getattr(layer, "_qb_layer_idx", -1)
+    _pt = _prof_start() if _PROFILE else None
     v_dense = valid & dense_slot
     # DENSE group: both projections dense NVFP4 over the dense-slot rows.
     srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
@@ -344,9 +357,15 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
                       layer.w2_weight_scale_2, h, e, cap)
     rwd = validd.float() if on_input else (w_of[scd] * validd.float())
     y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
+    if _PROFILE:
+        _prof_end("dense_anchor(group_gemm)", _pt)
+        _ps = _prof_start()
     # SPARSE group: low-weight tail through the 2:4 seg path (both projections).
     _seg_apply_gs(sp, x, tok_of, ids_local, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y,
                   valid & (~dense_slot), "both", layer)
+    if _PROFILE:
+        _prof_end("sparse_group(total)", _ps)
+        _prof_flush()
     return drop_d
 
 
@@ -515,6 +534,41 @@ if _DENSE_BACKEND not in ("dequant", "native_nvfp4"):
 # decode (the E*cap fixed-capacity buffer vs the actually-routed slots). Host-syncs, so eager-only.
 _PROFILE = os.environ.get("QB_PROFILE") == "1"
 _PROFILE_SEEN: set = set()
+# C3 Task 1: worker-side CUDA-event component timing (vLLM V1 runs the model in workers, so driver-side
+# torch.profiler sees nothing; these events run where the work is). Accumulate per-named-region ms and
+# flush a cumulative breakdown periodically. elapsed_time needs a sync, so batch it (every ~1500 pairs).
+_PROF_MS: dict = {}
+_PROF_PAIRS: list = []
+
+
+def _prof_start():
+    import torch
+    ev = torch.cuda.Event(enable_timing=True)
+    ev.record()
+    return ev
+
+
+def _prof_end(name, start_ev):
+    import torch
+    end = torch.cuda.Event(enable_timing=True)
+    end.record()
+    _PROF_PAIRS.append((name, start_ev, end))
+    if len(_PROF_PAIRS) >= 1500:
+        _prof_flush()
+
+
+def _prof_flush():
+    import torch
+    if not _PROF_PAIRS:
+        return
+    torch.cuda.synchronize()
+    for name, s, e in _PROF_PAIRS:
+        _PROF_MS[name] = _PROF_MS.get(name, 0.0) + s.elapsed_time(e)
+    _PROF_PAIRS.clear()
+    tot = sum(_PROF_MS.values())
+    summ = "  ".join(f"{k}={v:.1f}ms/{100 * v / max(tot, 1):.0f}%"
+                     for k, v in sorted(_PROF_MS.items(), key=lambda x: -x[1]))
+    print(f"[qb_prof] MoE-apply component cumulative ({tot:.0f}ms total): {summ}", flush=True)
 _QMAP = os.environ.get("QB_QMAP") == "1"
 _QMAP_FWD = int(os.environ.get("QB_QMAP_FWD", "3"))  # probe first N forward calls per layer
 # explicit probe-layer set (few layers -> less code memory kept resident alongside dense NVFP4; the

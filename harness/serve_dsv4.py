@@ -523,17 +523,15 @@ def c3_profile(
     gpu_mem: float = 0.9,
     ntok: int = 32,
 ) -> None:
-    """C3 Task 1: profile the DeepSeek-D2 native decode path (graph-safe EAGER, config B, so torch.profiler
-    attributes per-kernel time cleanly). Wraps an ntok-token decode in torch.profiler and prints the
-    per-kernel CUDA-time breakdown categorized into {sparse-seg matmul_sp, dense-anchor group_gemm,
-    attention/DSA, NCCL/EP, quant, other}, plus the QB_PROFILE padded-vs-real routing waste per layer.
-    Config B (eager) isolates component compute; capture removes launch overhead ~uniformly."""
-    import math
+    """C3 Task 1: profile the DeepSeek-D2 native decode path (graph-safe EAGER, config B). vLLM V1 runs the
+    model in worker subprocesses, so driver-side torch.profiler sees nothing; instead the plugin does
+    worker-side CUDA-event timing (QB_PROFILE) and logs [qb_prof] MoE-component cumulative ms
+    (dense_anchor / sparse_group / sparse_seg(matmul_sp) / sparse_quant) plus [qb_profile] padded-vs-real
+    routing waste per layer. This function drives a long decode so those cumulative ratios ≈ decode ratios,
+    and reports decode-only tok/s (two-run TTFT-subtracted) so the MoE cost can be sized against the step."""
     import os
-    from collections import defaultdict
 
     import torch
-    from torch.profiler import ProfilerActivity, profile
     from vllm import LLM, SamplingParams
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
@@ -564,55 +562,26 @@ def c3_profile(
 
     tp_prompt = "The history of the Roman empire spans many centuries and"
     tids = llm.get_tokenizer().encode(tp_prompt)
-    sp1 = SamplingParams(temperature=0.0, max_tokens=ntok)
-    # warm (also lets QB_PROFILE log the per-layer waste on the first real decode steps)
-    llm.generate([{"prompt_token_ids": tids}], sp1)
+    # warm (JITs DSA kernels, fills caches; also lets QB_PROFILE log per-layer waste on first decode steps)
+    llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=8))
     torch.cuda.synchronize()
 
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        llm.generate([{"prompt_token_ids": tids}], sp1)
+    # decode-only tok/s (same two-run TTFT-subtracted formula as _graph_gate_body) to size the step budget
+    def _wall(n):
         torch.cuda.synchronize()
-
-    evts = prof.key_averages()
-    # categorize by kernel-name substring
-    cats = [
-        ("sparse-seg (matmul_sp)", ["matmul_sp"]),
-        ("dense-anchor (group_gemm/cutlass fp4)", ["group_gemm", "gemm_nvfp4", "cutlass", "Nvfp4", "nvfp4"]),
-        ("attention/DSA-MLA", ["mla", "sparse_mla", "attention", "indexer", "flash", "paged", "rope"]),
-        ("NCCL/EP collective", ["nccl", "AllReduce", "all_reduce", "reduce_kernel"]),
-        ("quant/act", ["quant", "quant_act", "cvt", "convert"]),
-        ("elementwise/copy/other", []),
-    ]
-    tot = 0.0
-    per_kernel = []
-    for e in evts:
-        cu = float(getattr(e, "self_device_time_total", 0.0) or getattr(e, "self_cuda_time_total", 0.0))
-        if cu <= 0:
-            continue
-        tot += cu
-        per_kernel.append((e.key, cu, e.count))
-    per_kernel.sort(key=lambda r: -r[1])
-    catsum = defaultdict(float)
-    for name, cu, _cnt in per_kernel:
-        low = name.lower()
-        placed = False
-        for cname, subs in cats[:-1]:
-            if any(s.lower() in low for s in subs):
-                catsum[cname] += cu
-                placed = True
-                break
-        if not placed:
-            catsum["elementwise/copy/other"] += cu
-    us = 1e-3  # profiler times are microseconds already; keep us
-    print(f"\n# ==== C3 decode kernel breakdown (config B eager, {ntok} tok) total CUDA {tot / 1e3:.1f} ms ====",
+        t = time.time()
+        llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=n))
+        torch.cuda.synchronize()
+        return time.time() - t
+    w1, w64 = _wall(1), _wall(64)
+    dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
+    step_ms = 1000.0 * (w64 - w1) / 63.0
+    # the long (64-tok) decode above dominates the plugin's cumulative [qb_prof]/[qb_profile] logs, so their
+    # ratios ≈ decode ratios. Final flush happens on the worker side as pairs accumulate.
+    print(f"# C3 decode: {dtps:.3f} tok/s  step={step_ms:.1f} ms/token (wall1={w1:.3f}s wall64={w64:.3f}s)",
           flush=True)
-    for cname, _subs in cats:
-        s = catsum.get(cname, 0.0)
-        print(f"  {cname:42s} {s / 1e3:9.2f} ms  {100 * s / max(tot, 1):5.1f}%", flush=True)
-    print("\n# top 30 kernels by CUDA self-time:", flush=True)
-    for name, cu, cnt in per_kernel[:30]:
-        print(f"  {cu / 1e3:9.2f} ms  n={cnt:5d}  {name[:90]}", flush=True)
-    print("# C3 profile DONE", flush=True)
+    print("# C3 profile DONE — see worker [qb_prof] (MoE component ms) + [qb_profile] (routing waste) lines",
+          flush=True)
 
 
 @app.function(
