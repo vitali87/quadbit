@@ -346,6 +346,7 @@ def _graph_gate_body(
     glm: bool = False,
     dense_anchor_backend: str = "dequant",
     baseline: str = "",
+    dp: int = 1,
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -398,6 +399,12 @@ def _graph_gate_body(
                   max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
                   max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
                   enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+        if dp > 1:
+            # C5: DP attention + EP MoE. tp=1 so attention runs replicated per DP rank (NO per-layer TP
+            # all-reduce, the 94.5% floor); experts EP-sharded across all dp ranks (MoE all-to-all only).
+            kw["data_parallel_size"] = dp
+            print(f"  C5 DP-attention: tp={tp} data_parallel_size={dp} (removes the attention TP all-reduce)",
+                  flush=True)
         try:
             llm = LLM(tokenizer_mode="deepseek_v4", **kw)
         except Exception as ex:  # noqa: BLE001
@@ -587,6 +594,35 @@ def graph_gate2(
           flush=True)
     _graph_gate_body(2, False, False, proj, route_slot, dense_layers, cap, max_seqs, max_len, gpu_mem,
                      dense_anchor_backend=dense_anchor_backend, baseline=baseline)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate_dp(
+    dp: int = 4,
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    baseline: str = "dense_nvfp4",
+    force_custom_ar: bool = False,
+    eager: bool = False,
+) -> None:
+    """C5 reduce-count lever: DP attention + EP MoE (tp=1, data_parallel_size=dp). Attention runs replicated
+    per DP rank so there is NO per-layer TP all-reduce (the 94.5% decode floor); only the MoE EP all-to-all
+    remains. If the attention all-reduce was the wall, this removes it. Dense baseline (QB_MOE=off). Captured
+    unless eager. force_custom_ar still available for any residual small collective."""
+    import os
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+    print(f"# C5 DP board: dp={dp} tp=1 baseline={baseline} eager={eager}", flush=True)
+    _graph_gate_body(1, eager, False, "both", 2, "", cap, max_seqs, max_len, gpu_mem,
+                     dense_anchor_backend="native_nvfp4", baseline=baseline, dp=dp)
 
 
 @app.function(
