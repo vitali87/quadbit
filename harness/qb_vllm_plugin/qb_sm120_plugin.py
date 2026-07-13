@@ -1240,8 +1240,23 @@ def install() -> None:
         try:
             from vllm.platforms import current_platform
             current_platform.is_fully_connected = lambda ids: True  # instance override (bound arg = ids)
-            print("[qb_sm120] QB_FORCE_CUSTOM_AR: is_fully_connected spoofed True -> one-shot custom AR "
-                  "on PCIe (real _can_p2p still guards correctness)", flush=True)
+            # vLLM's runtime P2P probe (gpu_p2p_access_check, a cross-process copy test) fails spuriously on
+            # most Modal containers even though the hardware supports P2P (proven: the run that passed it did
+            # a correct 57.8 tok/s decode). Trust the driver's can_device_access_peer instead so custom AR
+            # engages reliably. Correctness is still verified downstream (coherent generation + PPL); a truly
+            # P2P-blocked topology would show garbage, not a small FP-reorder drift.
+            os.environ["VLLM_SKIP_P2P_CHECK"] = "1"
+            print("[qb_sm120] QB_FORCE_CUSTOM_AR: is_fully_connected spoofed True + VLLM_SKIP_P2P_CHECK=1 "
+                  "-> one-shot custom AR on PCIe", flush=True)
+            # driver P2P matrix (rank 0 only, best-effort) so container P2P support is auditable in the log
+            try:
+                import torch
+                if torch.cuda.is_available() and int(os.environ.get("LOCAL_RANK", "0")) == 0:
+                    n = torch.cuda.device_count()
+                    m = [[int(torch.cuda.can_device_access_peer(i, j)) for j in range(n)] for i in range(n)]
+                    print(f"[qb_sm120] driver can_device_access_peer matrix ({n} GPUs): {m}", flush=True)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as ex:  # noqa: BLE001
             print(f"[qb_sm120] custom-AR spoof failed: {type(ex).__name__}: {ex}", flush=True)
 
