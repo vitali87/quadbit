@@ -206,7 +206,7 @@ Branch `c3-compact-routing-decode`. Full docs [verdict](../c3/verdict.md) / [com
 
 ## 13. C4 floor-decode — one-shot all-reduce beats the SM120 decode SOTA (+19%)
 
-Branch `c4-floor-decode`. Full docs [verdict](../c4/verdict.md) / [floor_decomposition](../c4/floor_decomposition.md) / [custom_allreduce](../c4/custom_allreduce.md); logs `docs/audit/logs/c4_*.log`.
+Branch `c4-floor-decode`. Full docs [verdict](c4/verdict.md) / [floor_decomposition](c4/floor_decomposition.md) / [custom_allreduce](c4/custom_allreduce.md); logs `docs/audit/logs/c4_*.log`.
 
 | Claim | Evidence | Status |
 |-------|----------|--------|

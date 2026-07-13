@@ -1233,30 +1233,37 @@ def install() -> None:
     # AllReduce_RING_LL over PCIe (no NVLink); vLLM disables custom AR for >2 PCIe GPUs
     # (custom_all_reduce.py:150 + should_custom_ar:241, both gated on is_fully_connected). For the tiny
     # latency-bound decode all-reduces (batch=1), a one-shot P2P AR beats the 6-hop ring. Spoof
-    # is_fully_connected -> True so the NVLink-gated path activates; vLLM's real _can_p2p test (line 161)
-    # still guards actual P2P support and safely disables if P2P is unavailable. Runs here because
-    # general_plugins load before the TP group builds CustomAllreduce. Opt-in via QB_FORCE_CUSTOM_AR=1.
+    # is_fully_connected -> True so the NVLink-gated path activates, but ONLY after verifying the full
+    # can_device_access_peer matrix here (see below) so a partial topology safely falls back to NCCL. Runs
+    # here because general_plugins load before the TP group builds CustomAllreduce. Opt-in QB_FORCE_CUSTOM_AR=1.
     if os.environ.get("QB_FORCE_CUSTOM_AR") == "1":
         try:
+            import torch
             from vllm.platforms import current_platform
-            current_platform.is_fully_connected = lambda ids: True  # instance override (bound arg = ids)
             # vLLM's runtime P2P probe (gpu_p2p_access_check, a cross-process copy test) fails spuriously on
             # most Modal containers even though the hardware supports P2P (proven: the run that passed it did
-            # a correct 57.8 tok/s decode). Trust the driver's can_device_access_peer instead so custom AR
-            # engages reliably. Correctness is still verified downstream (coherent generation + PPL); a truly
-            # P2P-blocked topology would show garbage, not a small FP-reorder drift.
-            os.environ["VLLM_SKIP_P2P_CHECK"] = "1"
-            print("[qb_sm120] QB_FORCE_CUSTOM_AR: is_fully_connected spoofed True + VLLM_SKIP_P2P_CHECK=1 "
-                  "-> one-shot custom AR on PCIe", flush=True)
-            # driver P2P matrix (rank 0 only, best-effort) so container P2P support is auditable in the log
-            try:
-                import torch
-                if torch.cuda.is_available() and int(os.environ.get("LOCAL_RANK", "0")) == 0:
-                    n = torch.cuda.device_count()
-                    m = [[int(torch.cuda.can_device_access_peer(i, j)) for j in range(n)] for i in range(n)]
-                    print(f"[qb_sm120] driver can_device_access_peer matrix ({n} GPUs): {m}", flush=True)
-            except Exception:  # noqa: BLE001
-                pass
+            # a correct 57.8 tok/s decode). Trust the driver's can_device_access_peer instead. But verify the
+            # FULL matrix here first: setting VLLM_SKIP_P2P_CHECK makes vLLM's own check return after only the
+            # first peer, so on a partial topology (rank 0 reaches rank 1 but not rank 2/3) it would init
+            # custom AR with missing links. Only spoof is_fully_connected + skip the probe when EVERY
+            # off-diagonal entry is reachable; otherwise leave custom AR disabled (safe NCCL fallback).
+            fully = False
+            if torch.cuda.is_available():
+                n = torch.cuda.device_count()
+                m = [[(i == j) or bool(torch.cuda.can_device_access_peer(i, j)) for j in range(n)]
+                     for i in range(n)]
+                fully = all(all(row) for row in m)
+                if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+                    print(f"[qb_sm120] driver can_device_access_peer matrix ({n} GPUs): "
+                          f"{[[int(v) for v in row] for row in m]} fully_connected={fully}", flush=True)
+            if fully:
+                current_platform.is_fully_connected = lambda ids: True  # instance override (bound arg = ids)
+                os.environ["VLLM_SKIP_P2P_CHECK"] = "1"
+                print("[qb_sm120] QB_FORCE_CUSTOM_AR: full P2P verified -> one-shot custom AR enabled "
+                      "(is_fully_connected spoofed True + VLLM_SKIP_P2P_CHECK=1)", flush=True)
+            else:
+                print("[qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled "
+                      "(NCCL fallback)", flush=True)
         except Exception as ex:  # noqa: BLE001
             print(f"[qb_sm120] custom-AR spoof failed: {type(ex).__name__}: {ex}", flush=True)
 
