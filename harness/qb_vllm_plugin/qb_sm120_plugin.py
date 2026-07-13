@@ -244,11 +244,15 @@ def _dense_seg_native(xs, b_w, b_sf, wgsf, out_dim, e, cap):
                                          out_dtype=torch.bfloat16)
 
 
-def _anchor_gemm(layer, which, xs, w, ws, ws2, out_dim, e, cap):
+def _anchor_gemm(layer, which, xs, w, ws, ws2, out_dim, e, cap, act=None):
     # C1 dispatch for an anchored dense projection: the native group_gemm_nvfp4 backend when its weights
     # were prepped at load (_qb_ng_gu / _qb_ng_dn present), else the frozen _dense_seg_gs dequant loop.
+    # C3: act (active-expert ids [A_max]) gathers only those experts' weights -> group_gemm over A_max
+    # groups instead of all E (xs must be the matching A_max*cap buffer).
     ng = getattr(layer, which, None) if layer is not None else None
     if ng is not None:
+        if act is not None:
+            return _dense_seg_native(xs, ng[0][act], ng[1][act], ng[2][act], out_dim, act.shape[0], cap)
         return _dense_seg_native(xs, ng[0], ng[1], ng[2], out_dim, e, cap)
     return _dense_seg_gs(xs, w, ws, ws2, out_dim, e, cap)
 
@@ -345,7 +349,19 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
     drop_d = 0
     # DENSE group: both projections dense NVFP4 over the dense-slot rows. (C3: skippable for attribution.)
     if not _C3_SKIP_DENSE:
-        srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
+        # C3 compact: route only the A_max most-loaded active experts (A_max*cap rows) when the native
+        # anchor weights are prepped; else the full E*cap path. act gathers the matching expert weights.
+        # Guard: compact ONLY when no expert can be dropped, i.e. the max possible dense-active experts
+        # (tokens * dense slots) <= A_max. `t` is static per captured graph, so this branch resolves at
+        # capture (compact for the small decode graphs, full E*cap for large prefill) -> capture-safe and
+        # bit-identical to full (non-active experts carry zero tokens). See docs/c3/compact_routing_design.md.
+        act = None
+        t_rows = x.shape[0]
+        if (_COMPACT_DECODE and getattr(layer, "_qb_ng_gu", None) is not None
+                and t_rows * _ROUTE_SLOT <= _A_DENSE):
+            srcd, _eb, drop_d, act = _route_compact(sp, ids_local, e, cap, _A_DENSE, v_dense)
+        else:
+            srcd, _eb, drop_d = sp.route_fixed_cap(ids_local, e, cap, v_dense)
         validd = srcd >= 0
         scd = srcd.clamp_min(0)
         xd = (x[tok_of[scd]].to(torch.bfloat16) * validd[:, None])
@@ -353,10 +369,10 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
             xd = xd * w_of[scd][:, None].to(torch.bfloat16)
         xd = _sanitize(xd.contiguous(), li, "x_in")
         gud = _anchor_gemm(layer, "_qb_ng_gu", xd, layer.w13_weight, layer.w13_weight_scale,
-                           layer.w13_weight_scale_2, 2 * ii, e, cap)
+                           layer.w13_weight_scale_2, 2 * ii, e, cap, act)
         hhd = _sanitize((F.silu(gud[:, :ii].float()) * gud[:, ii:].float()).to(torch.bfloat16), li, "swiglu")
         dd = _anchor_gemm(layer, "_qb_ng_dn", hhd, layer.w2_weight, layer.w2_weight_scale,
-                          layer.w2_weight_scale_2, h, e, cap)
+                          layer.w2_weight_scale_2, h, e, cap, act)
         rwd = validd.float() if on_input else (w_of[scd] * validd.float())
         y.index_add_(0, tok_of[scd], (dd.float() * rwd[:, None]).to(y.dtype))
     if _PROFILE:
@@ -545,6 +561,31 @@ _PROFILE_SEEN: set = set()
 _C3_SKIP_MOE = os.environ.get("QB_C3_SKIP_MOE") == "1"
 _C3_SKIP_DENSE = os.environ.get("QB_C3_SKIP_DENSE") == "1"
 _C3_SKIP_SPARSE = os.environ.get("QB_C3_SKIP_SPARSE") == "1"
+# C3 Task 1B: compact fixed-capacity routing. Instead of processing all E=64 local experts (E*cap=8192
+# padded rows), process only the A_max most-loaded ACTIVE experts (A_max*cap rows), capture-safe. Kills
+# ~99% padding at decode where <=B*top_k experts are active. See docs/c3/compact_routing_design.md.
+_COMPACT_DECODE = os.environ.get("QB_COMPACT_DECODE") == "1"
+_A_DENSE = int(os.environ.get("QB_A_DENSE", "8"))
+_A_SPARSE = int(os.environ.get("QB_A_SPARSE", "24"))
+
+
+def _route_compact(sp, assign, e, cap, a_max, valid):
+    # Active-expert compaction: route only the a_max most token-loaded experts into an a_max*cap buffer.
+    # All device-side / fixed-shape -> CUDA-graph-capturable. Returns (src[a_max*cap], eblk, dropped,
+    # active_ids[a_max] = global expert id per active slot). Rows whose expert is not in the top-a_max are
+    # dropped deterministically (none at decode: active experts <= a_max by construction).
+    import torch
+    a = assign.to(torch.long)
+    ac = a.clamp(0, e - 1)
+    w1 = valid.to(torch.long)
+    counts = torch.zeros(e, dtype=torch.long, device=a.device).scatter_add_(0, ac, w1)
+    active_ids = counts.topk(a_max).indices                      # [a_max], device, fixed size
+    slot_of = torch.full((e,), -1, dtype=torch.long, device=a.device)
+    slot_of[active_ids] = torch.arange(a_max, device=a.device)
+    a_slot = slot_of[ac]                                          # active slot per row, -1 if not active
+    v2 = valid & (a_slot >= 0)
+    src, eblk, dropped = sp.route_fixed_cap(a_slot.clamp_min(0), a_max, cap, v2)
+    return src, eblk, dropped, active_ids
 # C3 Task 1: worker-side CUDA-event component timing (vLLM V1 runs the model in workers, so driver-side
 # torch.profiler sees nothing; these events run where the work is). Accumulate per-named-region ms and
 # flush a cumulative breakdown periodically. elapsed_time needs a sync, so batch it (every ~1500 pairs).
