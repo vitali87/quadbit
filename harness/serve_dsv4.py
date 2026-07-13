@@ -57,37 +57,29 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 @app.function(timeout=10 * MIN)
 def inspect_dp() -> None:
     """C5: find the correct vLLM offline data-parallel launch API (LLM(data_parallel_size>1) is rejected)."""
-    import glob
     import os
+    import subprocess
 
     import vllm
     root = os.path.dirname(vllm.__file__)
-    # find the DP offline example and the LLM/EngineArgs DP handling
-    cands = glob.glob(f"{root}/../**/data_parallel*.py", recursive=True) + \
-        glob.glob(f"{root}/../examples/**/*data_parallel*", recursive=True)
-    print(f"# example candidates: {cands}", flush=True)
-    for c in cands[:2]:
-        print(f"# ===== {c} =====", flush=True)
-        try:
-            for i, ln in enumerate(open(c).read().split("\n"), 1):
-                low = ln.lower()
-                if any(k in low for k in ("llm(", "data_parallel", "dp_size", "dp_rank", "vllm_dp",
-                                          "engineargs", "async", "def main", "get_open_port", "spawn",
-                                          "os.environ", "tensor_parallel", "enable_expert")):
-                    print(f"{i:4d}: {ln}", flush=True)
-        except Exception as ex:  # noqa: BLE001
-            print(f"  (read failed: {ex})", flush=True)
-    # how EngineArgs validates data_parallel for offline
-    import inspect as _ins
-    try:
-        from vllm.engine.arg_utils import EngineArgs
-        s = _ins.getsource(EngineArgs)
-        for ln in s.split("\n"):
-            if "data_parallel" in ln.lower() and ("not supported" in ln.lower() or "single-process" in ln.lower()
-                                                  or "may hang" in ln.lower() or "raise" in ln.lower()):
-                print(f"# EngineArgs DP guard: {ln.strip()}", flush=True)
-    except Exception as ex:  # noqa: BLE001
-        print(f"  (EngineArgs introspect failed: {ex})", flush=True)
+    # locate the exact guard that raises "single-process usage" and dump surrounding code for a bypass
+    r = subprocess.run(["grep", "-rn", "single-process usage", root], capture_output=True, text=True)
+    print(f"# guard hits:\n{r.stdout}", flush=True)
+    for line in r.stdout.strip().split("\n"):
+        if ":" not in line:
+            continue
+        fp = line.split(":")[0]
+        ln = int(line.split(":")[1])
+        print(f"# ===== {fp} around {ln} =====", flush=True)
+        src = open(fp).read().split("\n")
+        for i in range(max(0, ln - 22), min(len(src), ln + 3)):
+            print(f"{i+1:4d}: {src[i]}", flush=True)
+        break
+    # also: does data_parallel_rank / a bypass flag exist on LLM/EngineArgs?
+    r2 = subprocess.run(["grep", "-rn", "data_parallel_rank\\|_data_parallel_master\\|dp_rank",
+                         f"{root}/entrypoints/llm.py", f"{root}/engine/arg_utils.py"],
+                        capture_output=True, text=True)
+    print(f"# dp_rank/bypass refs:\n{r2.stdout[:2000]}", flush=True)
 
 
 @app.function(timeout=10 * MIN)
