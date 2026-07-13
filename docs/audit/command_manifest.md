@@ -198,7 +198,7 @@ The sparse-kernel premise stays refuted (`matmul_sp` 0.4%); the residual is `cap
 padding. GLM skipped (structurally identical, cannot flip the verdict). Next lever: a variable-`m_indptr`
 compact-row kernel. No custom CUDA started in C3.
 
-## C4 floor-decode (branch `c4-floor-decode`) — one-shot all-reduce beats the SM120 decode SOTA (+19%)
+## C4 floor-decode (branch `c4-floor-decode`) — one-shot all-reduce beats the SM120 decode SOTA (+20.5%)
 
 The decode step is 94.5% non-MoE floor, and the floor is 90.8% `ncclDevKernel_AllReduce_Sum_bf16_RING_LL`
 (per-layer TP all-reduce over PCIe, no NVLink, latency-bound at batch=1). `floor_profile` decomposes it via
@@ -211,10 +211,12 @@ the vLLM worker profiler; `--force-custom-ar` (plugin `QB_FORCE_CUSTOM_AR=1`) sp
 | floor decomposition | `::floor_profile --tp 4 --max-seqs 2 --baseline dense_nvfp4` | 4 | 90.8% RING_LL all-reduce, 0.7% attn/DSA, 2.2% gemm |
 | baseline RING_LL (control) | `::graph_gate4 --cap 128 --max-seqs 2 --baseline dense_nvfp4` | 4 | 48.248 (C2) / 49.263 tok/s, PPL 4.1222 |
 | NCCL tree all-reduce | `::graph_gate4 ... --baseline dense_nvfp4 --nccl-algo allreduce:tree` | 4 | 48.983 tok/s (+1.5%), PPL 4.0102 |
-| **custom one-shot AR** | `::graph_gate4 ... --baseline dense_nvfp4 --force-custom-ar` | 4 | **~58.1 tok/s (+19%)** (4 runs 57.783/58.545/58.126/58.126), PPL 4.2514, FULL capture |
+| **custom one-shot AR** | `::graph_gate4 ... --baseline dense_nvfp4 --force-custom-ar` | 4 | median **58.126 tok/s (+20.5% vs 48.248)** (4 runs 57.783/58.545/58.126/58.126; +18.0% vs 49.263 control), PPL 4.2514, FULL capture |
 
 Verdict: the SM120 decode wall is a disabled fast-path (vLLM refuses one-shot custom AR on >2 PCIe GPUs; its
-runtime P2P probe is flaky though the driver reports full P2P). Re-enabling it lifts the whole quadbit stack
-**+19% past the prior SOTA** (48.248 -> 58.1), reproducibly, capture FULL, coherent. Serving-infra win
-(collective-algo swap), applies to dense and sparse D2 alike (shared floor). mito80 PPL is reduction-order
-noise (tree 4.01 / ring 4.12 / one-shot 4.25, both directions), not a regression; downstream is future work.
+runtime P2P probe is flaky though the driver reports full P2P). Re-enabling it (after full-P2P-matrix
+verification) lifts the whole quadbit stack **+20.5% past the prior SOTA row** (48.248 -> 58.126 median;
++18.0% vs a 49.263 fresh control), reproducibly, capture FULL. Serving-infra win (collective-algo swap),
+applies to dense and sparse D2 alike (shared floor), NOT a sparse-kernel speedup. Speed is validated; quality
+is NOT claimed neutral: mito80 PPL is reduction-order-dependent (tree 4.01 / ring 4.12 / one-shot 4.25, both
+directions), judge with the downstream / fixed quality protocol (bit-identical fibonacci is a smoke check).

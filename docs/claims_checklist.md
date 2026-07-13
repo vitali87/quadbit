@@ -204,7 +204,7 @@ Branch `c3-compact-routing-decode`. Full docs [verdict](../c3/verdict.md) / [com
 | Compact D2 creates a strict Pareto point vs dense | NOT claimed: memory unchanged (D2 weights +27% dual residency), downstream quality −0.95pt (P1); dense dominates speed+memory+quality | not claimed (disproven) |
 | GLM compact decode run | skipped: structurally identical to DeepSeek (own dense fused baseline far faster, same dual-residency memory + quality tax), cannot flip the verdict; 8-GPU cost avoided | n/a (skipped, reasoned) |
 
-## 13. C4 floor-decode — one-shot all-reduce beats the SM120 decode SOTA (+19%)
+## 13. C4 floor-decode — one-shot all-reduce beats the SM120 decode SOTA (+20.5%)
 
 Branch `c4-floor-decode`. Full docs [verdict](c4/verdict.md) / [floor_decomposition](c4/floor_decomposition.md) / [custom_allreduce](c4/custom_allreduce.md); logs `docs/audit/logs/c4_*.log`.
 
@@ -212,7 +212,8 @@ Branch `c4-floor-decode`. Full docs [verdict](c4/verdict.md) / [floor_decomposit
 |-------|----------|--------|
 | SM120 decode is 94.5% non-MoE floor / 5.5% MoE apply | dense step 20.73 ms/tok, skip-MoE floor 19.60 ms/tok (51.033 tok/s); MoE apply 1.13 ms; roofline from C2/C3 | backed |
 | The floor is 90.8% one NCCL RING_LL all-reduce (not attention/DSA/EP-a2a) | vLLM worker profiler, dense baseline: AllReduce_RING_LL 90.8%, norm 4.6%, gemm 2.2%, attn+DSA 0.7%; `c4_floor_profile.log` | backed |
-| Custom one-shot all-reduce beats the dense NVFP4 decode SOTA | ~58.1 tok/s (4 runs) vs 48.248/49.263 baseline = +19%, FULL capture, coherent (bit-identical fibonacci); `c4_custom_ar*.log` | backed |
+| Custom one-shot all-reduce beats the dense NVFP4 decode SOTA row | median 58.126 tok/s (4 runs; mean 58.145) vs the 48.248 prior SOTA row = +20.5% (+18.0% vs a 49.263 fresh control), FULL capture; `c4_custom_ar*.log` | backed (speed) |
+| C4 is quality-neutral | NOT claimed: mito80 PPL is reduction-order-dependent (tree 4.01 / ring 4.12 / one-shot 4.25, both directions); bit-identical fibonacci is a smoke check, not a quality proof; judge with the downstream / fixed quality protocol | guarded (not claimed) |
 | The win is a disabled fast-path, not new hardware capability | vLLM disables custom AR on >2 PCIe GPUs; driver `can_device_access_peer` all-connected; `VLLM_SKIP_P2P_CHECK=1` makes it engage (0 disable warnings across skip-check runs) | backed |
 | NCCL tree all-reduce alone matches the win | NO (disproven): scoped `allreduce:tree` = 48.983 tok/s (+1.5% only); the one-shot AR is the lever | not claimed (disproven) |
 | C4 is a sparse-MoE or custom-kernel contribution | NOT claimed: it is a serving-infra collective-algorithm swap, applies to dense and sparse alike (shared floor) | guarded (not claimed) |
