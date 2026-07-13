@@ -17,26 +17,41 @@ max_seqs=2, captured). Logs `docs/audit/logs/c3_diff_*.log`.
 | B skip-sparse | `QB_C3_SKIP_SPARSE` | dense-anchor group + routing, sparse tail no-op | dense-anchor captured cost |
 | C skip-dense | `QB_C3_SKIP_DENSE` | sparse tail + routing, dense-anchor no-op | sparse-group captured cost |
 
-## Results
+## Results (all captured, DeepSeek-D2, 4 GPU, same C2 config)
 
-_PENDING (4 captured runs in flight)._ 
+| variant | decode tok/s | ms/step | isolates |
+|---|---:|---:|---|
+| A baseline | 5.782 | 172.9 | full captured D2 (≈ C2 5.972) |
+| D skip-moe | **51.033** | 19.6 | non-MoE floor (attention/DSA/EP/norms) |
+| C skip-dense | 16.067 | 62.3 | sparse group + routing + floor |
+| B skip-sparse | 7.642 | 130.9 | dense-anchor + routing + floor |
 
-| variant | decode tok/s | vs baseline | reading |
-|---|---:|---|---|
-| A baseline | PENDING | — | |
-| D skip-moe | PENDING | | if ≈48 → MoE is the whole gap; if ≈6 → attention/DSA/EP is the wall (MoE not the lever) |
-| B skip-sparse | PENDING | | dense-anchor's share of the MoE cost |
-| C skip-dense | PENDING | | sparse-group's share |
+## Attribution (step budget, ms/token — additive and self-consistent)
 
-## Attribution logic
+| component | ms/step | share | source |
+|---|---:|---:|---|
+| non-MoE floor (attention/DSA/EP/norms) | 19.6 | 11% | D directly |
+| **dense-anchor group** (C1 `group_gemm` + 64 per-group quant kernels, E·cap=8192 rows) | **110.7** | **64%** | A − B |
+| **sparse group** (2:4 tail, E·cap=8192 rows) | **42.0** | **24%** | A − C |
+| routing/plumbing (shared) | ~0.6 | <1% | residual |
+| **total (baseline step)** | **172.9** | 100% | A |
 
-- **step budget** ≈ 1/decode_tok_s. Non-MoE floor = 1/D. MoE cost = (1/A − 1/D). Dense-anchor ≈ (1/A − 1/B).
-  Sparse ≈ (1/A − 1/C). Routing/plumbing ≈ MoE − dense − sparse.
-- **Gate for Task 1B:** only pursue compact routing if the MoE (specifically the E·cap padding on the
-  dense-anchor and/or sparse group) is a large share of the captured step. If skip-moe already runs near
-  the dense baseline's 48 tok/s, the padding is the lever; if skip-moe is still ~6, the wall is
-  attention/DSA/EP and compaction cannot help (stop condition).
+Cross-check: dense 110.7 + sparse 42.0 + floor 19.6 + routing 0.6 = 172.9 ✓. Removing the whole MoE (D)
+gives 51 tok/s — **above** the dense NVFP4 fused baseline's 48.248 — so the attention/DSA/EP path is not
+the wall; the MoE apply is **89% of the captured decode step**.
 
-## Verdict
+Note: the sparse group is 24% of the step, yet the sparse `matmul_sp` **kernel** is only 0.4% (eager
+profile). So the sparse group's 42 ms is almost entirely **per-row overhead** (gather `x[tok]`, per-group
+quant, `index_add` scatter) on the 8192 padded rows — **not** the kernel. Same character for the
+dense-anchor group. **The cost is the E·cap padding, in both groups, and it is overhead + padded compute
+that capture does not remove — exactly what compact routing attacks.**
 
-_PENDING._
+## Verdict (Task 1A): compact routing is the right lever; proceed to Task 1B.
+
+- The refuted sparse-decode-kernel premise stays refuted (`matmul_sp` 0.4%).
+- The captured bottleneck is the **MoE apply's E·cap=8192-row padding** (dense-anchor 64% + sparse 24%),
+  dominated by per-row overhead + padded compute, not by any mma kernel.
+- Attention/DSA/EP is a cheap 11% floor (51 tok/s ceiling if MoE were free) — large headroom.
+- Next (Task 1B): shrink the row count both groups process from E·cap toward the real decode tokens via
+  **active-expert compaction** (fixed A_max active experts × cap instead of all E=64), capture-safe, plus a
+  single batched quant replacing the 64-iteration Python loop. Attack the dense-anchor group (64%) first.
