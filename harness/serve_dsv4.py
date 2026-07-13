@@ -55,6 +55,42 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
 @app.function(timeout=10 * MIN)
+def inspect_dp() -> None:
+    """C5: find the correct vLLM offline data-parallel launch API (LLM(data_parallel_size>1) is rejected)."""
+    import glob
+    import os
+
+    import vllm
+    root = os.path.dirname(vllm.__file__)
+    # find the DP offline example and the LLM/EngineArgs DP handling
+    cands = glob.glob(f"{root}/../**/data_parallel*.py", recursive=True) + \
+        glob.glob(f"{root}/../examples/**/*data_parallel*", recursive=True)
+    print(f"# example candidates: {cands}", flush=True)
+    for c in cands[:2]:
+        print(f"# ===== {c} =====", flush=True)
+        try:
+            for i, ln in enumerate(open(c).read().split("\n"), 1):
+                low = ln.lower()
+                if any(k in low for k in ("llm(", "data_parallel", "dp_size", "dp_rank", "vllm_dp",
+                                          "engineargs", "async", "def main", "get_open_port", "spawn",
+                                          "os.environ", "tensor_parallel", "enable_expert")):
+                    print(f"{i:4d}: {ln}", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"  (read failed: {ex})", flush=True)
+    # how EngineArgs validates data_parallel for offline
+    import inspect as _ins
+    try:
+        from vllm.engine.arg_utils import EngineArgs
+        s = _ins.getsource(EngineArgs)
+        for ln in s.split("\n"):
+            if "data_parallel" in ln.lower() and ("not supported" in ln.lower() or "single-process" in ln.lower()
+                                                  or "may hang" in ln.lower() or "raise" in ln.lower()):
+                print(f"# EngineArgs DP guard: {ln.strip()}", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  (EngineArgs introspect failed: {ex})", flush=True)
+
+
+@app.function(timeout=10 * MIN)
 def inspect_vllm() -> None:
     """C4: dump vLLM's custom_all_reduce guard so the enable-on-4-PCIe patch is exact (the ncclDevKernel
     RING_LL all-reduce is 90.8% of decode; custom AR is disabled by a >2-PCIe policy check)."""
