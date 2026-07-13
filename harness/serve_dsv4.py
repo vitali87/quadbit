@@ -666,6 +666,7 @@ def floor_profile(
     max_len: int = 2048,
     gpu_mem: float = 0.9,
     baseline: str = "dense_nvfp4",
+    force_custom_ar: bool = False,
 ) -> None:
     """C4 gating: the decode step is 94.5% non-MoE floor (19.6 ms) and 5.5% MoE apply (1.13 ms), so the
     only decode headroom worth chasing is the floor. Profile the DENSE baseline (QB_MOE=off, the 48.248
@@ -684,6 +685,9 @@ def floor_profile(
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ["QB_DENSE"] = "nvfp4"
     os.environ["QB_MOE"] = "off" if baseline == "dense_nvfp4" else "sparse"
+    os.environ.pop("QB_FORCE_CUSTOM_AR", None)
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
     prof_dir = "/cache/floorprof"
     os.environ["VLLM_TORCH_PROFILER_DIR"] = prof_dir
     os.makedirs(prof_dir, exist_ok=True)
