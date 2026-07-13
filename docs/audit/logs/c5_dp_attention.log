@@ -1,15 +1,65 @@
-╭───────────────────── Traceback (most recent call last) ──────────────────────╮
-│ /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py:599 in <module> │
-│                                                                              │
-│    598                                                                       │
-│ ❱  599 @app.function(                                                        │
-│    600 │   gpu="RTX-PRO-6000:4",                                             │
-│                                                                              │
-│ /Users/vitaliavagyan/Documents/quadbit/.venv/lib/python3.12/site-packages/mo │
-│ dal/app.py:938 in wrapped                                                    │
-│                                                                              │
-│    937 │   │   │   else:                                                     │
-│ ❱  938 │   │   │   │   if not is_global_object(f.__qualname__) and not seria │
-│    939 │   │   │   │   │   raise InvalidError(                               │
-╰──────────────────────────────────────────────────────────────────────────────╯
-AttributeError: '_Function' object has no attribute '__qualname__'
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-pazFkzPdk6jjjE7irNXrII
+Building image im-3EufTnwnraestA75LxgNdx
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=40022 sha256=7dfce1a3ea3af83e430679e208ebe18384b1e2ffcc64fdf8938e42eb2636cd54
+  Stored in directory: /tmp/pip-ephem-wheel-cache-duirgz37/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 4.45s
+
+Built image im-3EufTnwnraestA75LxgNdx in 8.48s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function graph_gate2.
+├── 🔨 Created function graph_gate_dp.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
