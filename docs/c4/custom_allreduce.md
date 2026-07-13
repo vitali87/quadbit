@@ -56,7 +56,7 @@ is the one-shot's lower **latency per all-reduce** (1 hop vs 6), which shows in 
 and hides the per-op latency). So the win is real but the collective remains the wall (see verdict's next
 lever).
 
-## Quality note (speed validated; quality NOT proven neutral)
+## Quality note (speed validated; quality NOT claimed neutral)
 
 **What is validated: speed.** The +20.5% decode is measured, reproducible, and capture-FULL.
 

@@ -20,7 +20,7 @@ the driver reports full P2P. Re-enable it: spoof `is_fully_connected -> True` + 
   control, so **~+18-20%** across baseline container variance. Reproducible (identical 4.2514 PPL across all
   4 runs = the deterministic one-shot reduction), capture FULL.
 
-**Quality (speed validated; quality NOT proven neutral):** mito80 PPL swings with reduction order (tree 4.01
+**Quality (speed validated; quality NOT claimed neutral):** mito80 PPL swings with reduction order (tree 4.01
 / ring 4.12 / one-shot 4.25, **both** directions) = bf16-summation-order noise on an 80-token greedy passage,
 so mito80 cannot rank AR algorithms for quality. We do **not** claim quality-neutral; quality is not
 considered regressed **only because the shift is reduction-order-dependent**, and it must be judged with the
