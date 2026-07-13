@@ -174,3 +174,18 @@ Removes the P4 dense-anchor decode bottleneck by delegation, no custom CUDA. Bra
 | GLM-5.2 route-slot D2 native-delegated graph path transfers | PPL 4.0705 (P4 band), decode 5.296 tok/s = 2.5x eager reference 2.10, PIECEWISE 3/3 + FULL 2/2, DSA `sparse_mla_sm120_decode_dsv3_2` native, coherent; `docs/audit/logs/c1_glm_d2_native_C.log` | backed |
 | Custom dense grouped-GEMM required | Disproven for this stack: FlashInfer's `group_gemm_nvfp4_nt_groupwise` expresses the dense-anchor branch; `grouped_dense_nvfp4_moe_mm_2lvl` not built | not claimed (disproven) |
 | Production-wide decode SOTA | NOT claimed: C1 measures native-delegate vs our own dequant-loop and eager paths (same model/policy), no production-serving-stack baseline table; phrased as a model/policy speed/quality/memory Pareto result | guarded (not claimed) |
+
+## 11. C2 SOTA board — dense NVFP4 fused MoE is the SM120 MoE decode SOTA (measured)
+
+Direct same-harness board (branch `c2-sota-board`) vs the strongest dense/NVFP4 baseline that runs on
+SM120. Full docs [sota_board](../c2/sota_board.md) / [deepseek_sota](../c2/deepseek_sota.md) / [glm_sota](../c2/glm_sota.md) / [verdict](../c2/verdict.md); logs `docs/audit/logs/c2_*.log`.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| Dense NVFP4 fused MoE (vLLM native FlashInfer-CUTLASS, QB_MOE=off) beats quadbit sparse D2 on decode | DeepSeek captured 48.248 vs 5.972 tok/s (8.1x); GLM captured 33.810 vs 5.367 tok/s (6.3x); same harness/passage/graph; `c2_ds_*`/`c2_glm_*` logs | backed |
+| quadbit sparse D2 is NOT a decode-speed SOTA on SM120 MoE | above board; C1's 11.3x was vs the dequant loop (0.514), not the dense path | backed (negative) |
+| Route-slot D2 dual residency INCREASES memory vs dense | weights +27% DeepSeek (51.7 vs 40.83) / +26% GLM (68.98 vs 54.62); GLM KV 236,672 vs 629,760 tok (-62%); pool 1.10/0.80 vs 0.18/0.10 GiB | backed (negative) |
+| C2 quality: mito80 PPL is protocol-noise, excluded from ranking; downstream is the metric | D2 vs dense mito80 wash; downstream -0.79pt DeepSeek / -0.95pt GLM (paper §10, glm_results) | backed |
+| Vanilla vLLM (no plugin) runs DeepSeek-V4-Flash NVFP4 on SM120 | fails to init (ue8m0 FP8 attention); the plugin's attention/DSA unblock is what lets the dense MoE baseline run at all | not claimed (disproven) |
+| SGLang NVFP4 MoE baseline for these models on SM120 | unavailable (not in serve image; no SM120 DSA path); reported, not hidden | n/a (recorded) |
+| quadbit MoE value = decode SOTA | NOT claimed. Value = only deployed 2:4-sparse FP4 MoE + training-free quality-preserving structural sparsity + graph-enabled cross-arch transfer (DeepSeek->GLM, DSA native) + prefill/large-M kernel Pareto (§5). Decode SOTA belongs to the dense fused MoE. | guarded (not claimed) |
