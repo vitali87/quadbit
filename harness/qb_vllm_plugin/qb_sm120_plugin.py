@@ -258,7 +258,7 @@ def _anchor_gemm(layer, which, xs, w, ws, ws2, out_dim, e, cap, act=None):
 
 
 def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y, valid=None,
-                  proj="both", layer=None):
+                  proj="both", layer=None, compact_amax=None):
     # Graph-safe sparse-FP4 MoE seg apply for proj in {both, down, gateup}. Fixed-capacity DEVICE
     # routing + current-stream launches into compile-time-constant (E*cap) buffers, so the whole body
     # is CUDA-graph-capturable: no .item(), no host loop, no data-dependent shape. Mirrors the frozen
@@ -273,8 +273,16 @@ def _seg_apply_gs(sp, x, tok_of, assign, w_of, gu_W, dn_W, ii, h, e, cap, on_inp
 
     dev = x.device
     li = getattr(layer, "_qb_layer_idx", -1) if layer is not None else -1
-    src, eblk, dropped = sp.route_fixed_cap(assign, e, cap, valid)
-    rp = e * cap
+    # C3 compact: route only the A_max most-loaded active experts (A_max*cap rows) and gather the seg
+    # weights to match; else the full E*cap path. Caller guards compact_amax so no expert can drop.
+    if compact_amax is not None:
+        src, eblk, dropped, _act = _route_compact(sp, assign, e, cap, compact_amax, valid)
+        gu_W = _gather_sp_w(gu_W, _act, e)
+        dn_W = _gather_sp_w(dn_W, _act, e)
+        rp = compact_amax * cap
+    else:
+        src, eblk, dropped = sp.route_fixed_cap(assign, e, cap, valid)
+        rp = e * cap
     valid = src >= 0
     if _PROFILE and li not in _PROFILE_SEEN and rp > 0:
         _PROFILE_SEEN.add(li)
@@ -380,8 +388,16 @@ def _route_slot_apply_gs(sp, x, ids_local, tok_of, w_of, dense_slot, valid, gu_W
         _ps = _prof_start()
     # SPARSE group: low-weight tail through the 2:4 seg path (both projections). (C3: skippable.)
     if not _C3_SKIP_SPARSE:
+        # C3 compact: gather the A_max most-loaded sparse experts when no expert can drop, i.e. the max
+        # possible sparse-active experts (routed slots minus the dense slots) <= A_max. R and t_rows are
+        # static per captured graph, so this resolves at capture -> capture-safe and bit-identical to full.
+        sp_amax = None
+        if _COMPACT_DECODE and getattr(layer, "_qb_ng_gu", None) is not None:
+            sparse_slots = ids_local.shape[0] - x.shape[0] * _ROUTE_SLOT
+            if sparse_slots <= _A_SPARSE:
+                sp_amax = _A_SPARSE
         _seg_apply_gs(sp, x, tok_of, ids_local, w_of, gu_W, dn_W, ii, h, e, cap, on_input, y,
-                      valid & (~dense_slot), "both", layer)
+                      valid & (~dense_slot), "both", layer, sp_amax)
     if _PROFILE:
         _prof_end("sparse_group(total)", _ps)
         _prof_flush()
@@ -586,6 +602,23 @@ def _route_compact(sp, assign, e, cap, a_max, valid):
     v2 = valid & (a_slot >= 0)
     src, eblk, dropped = sp.route_fixed_cap(a_slot.clamp_min(0), a_max, cap, v2)
     return src, eblk, dropped, active_ids
+
+
+def _gather_sp_w(w, active, e):
+    # Gather the 2:4 seg weight 4-tuple (ac, meta, scale_a, ga) down to the `active` experts, matching
+    # the sp.stack() layout: ac/ga concatenate per-expert on dim 0, meta/scale_a on dim 1. The seg kernel
+    # offsets each block by eblk*mpe (mpe=out_f), so an A_max-expert gather + eblk in [0,A_max) is
+    # bit-identical to the full E path when no expert drops. index_select on a fixed-size `active` [A_max]
+    # is capture-safe. See docs/c3/compact_routing_design.md.
+    ac, meta, scale_a, ga = w
+    of = ac.shape[0] // e
+    aca = ac.view(e, of, ac.shape[1]).index_select(0, active).reshape(active.shape[0] * of, ac.shape[1])
+    mta = meta.view(meta.shape[0], e, of, meta.shape[2]).index_select(1, active).reshape(
+        meta.shape[0], active.shape[0] * of, meta.shape[2])
+    sca = scale_a.view(scale_a.shape[0], e, of, scale_a.shape[2]).index_select(1, active).reshape(
+        scale_a.shape[0], active.shape[0] * of, scale_a.shape[2])
+    gaa = ga.view(e, of).index_select(0, active).reshape(active.shape[0] * of)
+    return (aca.contiguous(), mta.contiguous(), sca.contiguous(), gaa.contiguous())
 # C3 Task 1: worker-side CUDA-event component timing (vLLM V1 runs the model in workers, so driver-side
 # torch.profiler sees nothing; these events run where the work is). Accumulate per-named-region ms and
 # flush a cumulative breakdown periodically. elapsed_time needs a sync, so batch it (every ~1500 pairs).
