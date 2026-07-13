@@ -467,11 +467,35 @@ def graph_gate4(
     gpu_mem: float = 0.9,
     dense_anchor_backend: str = "dequant",
     baseline: str = "",
+    c3_skip: str = "",
+    compact: bool = False,
+    a_dense: int = 0,
+    a_sparse: int = 0,
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
     C1: dense_anchor_backend=native_nvfp4 routes the dense group through group_gemm_nvfp4.
-    C2: baseline=dense_nvfp4 runs vLLM's native NVFP4 fused MoE (QB_MOE=off) through the same board."""
+    C2: baseline=dense_nvfp4 runs vLLM's native NVFP4 fused MoE (QB_MOE=off) through the same board.
+    C3 Task 1A: c3_skip in {moe,dense,sparse} no-ops that component under CAPTURE for differential decode
+    attribution (PPL is meaningless for a skip variant — read only decode tok/s)."""
+    import os
+    if c3_skip and c3_skip.lower() not in ("moe", "dense", "sparse"):
+        raise ValueError(f"c3_skip must be one of moe/dense/sparse (or empty), got {c3_skip!r}: "
+                         "the plugin only reads QB_C3_SKIP_{MOE,DENSE,SPARSE}, so a typo would "
+                         "silently record attribution for the unskipped baseline.")
+    # Clear every C3 flag first so a warm Modal container never inherits a prior invocation's state
+    # (a stale QB_C3_SKIP_*/QB_COMPACT_DECODE/QB_A_* would silently run the wrong benchmark variant).
+    for _k in ("QB_C3_SKIP_MOE", "QB_C3_SKIP_DENSE", "QB_C3_SKIP_SPARSE",
+               "QB_COMPACT_DECODE", "QB_A_DENSE", "QB_A_SPARSE"):
+        os.environ.pop(_k, None)
+    if c3_skip:
+        os.environ[f"QB_C3_SKIP_{c3_skip.upper()}"] = "1"
+    if compact:
+        os.environ["QB_COMPACT_DECODE"] = "1"
+    if a_dense:
+        os.environ["QB_A_DENSE"] = str(a_dense)
+    if a_sparse:
+        os.environ["QB_A_SPARSE"] = str(a_sparse)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
                      baseline=baseline)
@@ -505,6 +529,83 @@ def glm_graph_gate(
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, glm=True,
                      dense_anchor_backend=dense_anchor_backend, baseline=baseline)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def c3_profile(
+    tp: int = 4,
+    route_slot: int = 2,
+    dense_layers: str = "",
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    ntok: int = 32,
+) -> None:
+    """C3 Task 1: profile the DeepSeek-D2 native decode path (graph-safe EAGER, config B). vLLM V1 runs the
+    model in worker subprocesses, so driver-side torch.profiler sees nothing; instead the plugin does
+    worker-side CUDA-event timing (QB_PROFILE) and logs [qb_prof] MoE-component cumulative ms
+    (dense_anchor / sparse_group / sparse_seg(matmul_sp) / sparse_quant) plus [qb_profile] padded-vs-real
+    routing waste per layer. This function drives a long decode so those cumulative ratios ≈ decode ratios,
+    and reports decode-only tok/s (two-run TTFT-subtracted) so the MoE cost can be sized against the step."""
+    import os
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "sparse"
+    os.environ["QB_SPARSE_PROJ"] = "both"
+    os.environ["QB_ROUTE_SLOT"] = str(route_slot)
+    os.environ["QB_DENSE_LAYERS"] = dense_layers
+    os.environ["QB_GRAPH"] = "1"            # graph-safe code path...
+    os.environ["QB_GRAPH_CAP"] = str(cap)
+    os.environ["QB_DENSE_BACKEND"] = "native_nvfp4"
+    os.environ["QB_PROFILE"] = "1"          # routing-waste logging
+    print(f"# C3 profile: D2 native graph-safe EAGER route_slot={route_slot} cap={cap} "
+          f"dense_layers=[{dense_layers}] ntok={ntok} tp={tp}", flush=True)
+
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=tp, enforce_eager=True, trust_remote_code=True,
+              max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
+              max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
+              enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+    t0 = time.time()
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception:  # noqa: BLE001
+        llm = LLM(**kw)
+    print(f"  load ok in {time.time() - t0:.0f}s", flush=True)
+
+    tp_prompt = "The history of the Roman empire spans many centuries and"
+    tids = llm.get_tokenizer().encode(tp_prompt)
+    # warm (JITs DSA kernels, fills caches; also lets QB_PROFILE log per-layer waste on first decode steps)
+    llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=8))
+    torch.cuda.synchronize()
+
+    # decode-only tok/s (same two-run TTFT-subtracted formula as _graph_gate_body) to size the step budget
+    def _wall(n):
+        torch.cuda.synchronize()
+        t = time.time()
+        llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=n))
+        torch.cuda.synchronize()
+        return time.time() - t
+    w1, w64 = _wall(1), _wall(64)
+    dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
+    step_ms = 1000.0 * (w64 - w1) / 63.0
+    # the long (64-tok) decode above dominates the plugin's cumulative [qb_prof]/[qb_profile] logs, so their
+    # ratios ≈ decode ratios. Final flush happens on the worker side as pairs accumulate.
+    print(f"# C3 decode: {dtps:.3f} tok/s  step={step_ms:.1f} ms/token (wall1={w1:.3f}s wall64={w64:.3f}s)",
+          flush=True)
+    print("# C3 profile DONE — see worker [qb_prof] (MoE component ms) + [qb_profile] (routing waste) lines",
+          flush=True)
 
 
 @app.function(

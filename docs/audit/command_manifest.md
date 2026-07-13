@@ -174,3 +174,26 @@ in memory than quadbit sparse D2. quadbit sparse MoE is **not** a decode SOTA; i
 structural sparsity + graph-enabled cross-arch transfer + the prefill/large-M kernel Pareto (§5). Absent
 baselines recorded: vanilla vLLM init-fails on SM120 (the plugin unblock is what lets A1/B1 run), SGLang
 unavailable for these models. No custom CUDA started (the decode gap is identified as a kernel problem).
+
+## C3 compact-routing decode (branch `c3-compact-routing-decode`) — attack the E·cap padding
+
+Same harness/passage/graph/formula as C1/C2. `--compact` sets `QB_COMPACT_DECODE=1`; `--a-dense`/`--a-sparse`
+set the active-expert caps (default 8/24). Compaction is opt-in, deployed path unchanged. Profiling toggles
+`--c3-skip {moe,dense,sparse}` no-op a component under capture for differential attribution (timing only, PPL
+meaningless). Full result [docs/c3/verdict.md](../c3/verdict.md); logs `docs/audit/logs/c3_*.log`.
+
+| row | command (prefix `uv run modal run --detach harness/serve_dsv4.py::graph_gate4 --cap 128 --max-seqs 2 --dense-layers 0,1,..,21 --dense-anchor-backend native_nvfp4`) | GPU | result |
+|---|---|---|---|
+| baseline (non-compact) | (no `--compact`) | 4 | PPL 4.001, 5.782 tok/s |
+| dense compact only | `--compact --a-dense 8` (a-sparse 0 → sparse full) | 4 | PPL 4.239, 12.436 tok/s (2.15×) |
+| **compact both** | `--compact --a-dense 8 --a-sparse 24` | 4 | PPL 4.123, **16.203 tok/s (2.80×)** |
+| dense-gather correctness | `--compact --a-dense 64` | 4 | PPL 4.096 (noise band; all 64 experts, no drop) |
+| sparse-gather correctness | `--compact --a-sparse 64` | 4 | PPL 4.045 (noise band; all 64 sparse experts, no drop) |
+| attribution: skip-moe / skip-dense / skip-sparse | `--c3-skip {moe,dense,sparse}` | 4 | 51.033 / 16.067 / 7.642 tok/s (floor / sparse+floor / dense+floor) |
+
+Verdict: compaction is capture-safe, bit-correct, and **2.80× faster** than non-compact D2 (5.8→16.2 tok/s),
+closing the D2→dense decode gap from 8.1× to **3.0×**. It does **not** beat the dense NVFP4 fused SOTA
+(48.248) and does **not** create a strict Pareto point (D2 memory +27%, downstream quality −0.95pt unchanged).
+The sparse-kernel premise stays refuted (`matmul_sp` 0.4%); the residual is `cap=128`-per-active-expert
+padding. GLM skipped (structurally identical, cannot flip the verdict). Next lever: a variable-`m_indptr`
+compact-row kernel. No custom CUDA started in C3.
