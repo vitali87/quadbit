@@ -219,3 +219,18 @@ Branch `c4-floor-decode`. Full docs [verdict](c4/verdict.md) / [floor_decomposit
 | C4 is a sparse-MoE or custom-kernel contribution | NOT claimed: it is a serving-infra collective-algorithm swap, applies to dense and sparse alike (shared floor) | guarded (not claimed) |
 | C4 is a general multi-GPU all-reduce improvement | NOT claimed: targets small latency-bound decode all-reduces on PCIe-only topologies with driver P2P; vLLM's disable is correct for bandwidth-bound large-tensor cases | guarded (not claimed) |
 | mito80 PPL 4.2514 (vs 4.1222) is a quality regression | NOT claimed: reduction-order noise (tree 4.01 / ring 4.12 / one-shot 4.25, both directions); AR is a correct sum; downstream 4-task eval is the real check (future work) | guarded (not claimed) |
+
+## 14. C5 collective-floor — ceiling reached (C4 one-shot AR remains the SM120 decode SOTA)
+
+Branch `c5-collective-floor`. Full docs [verdict](c5/verdict.md) / [post_c4_roofline](c5/post_c4_roofline.md) / [reduce_count_ab](c5/reduce_count_ab.md) / [hierarchical_ar](c5/hierarchical_ar.md) / [final_board](c5/final_board.md); logs `docs/audit/logs/c5_*.log`.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| Decode floor is 91-94% one collective, ~1 all-reduce per layer | `floor_profile` count: 1392 AR / 32 forwards = 43.5/tok, DSA 1376 = 43/forward, AR/layer=1.01; NCCL 94.5% + custom-AR 91.2% | backed |
+| Each one-shot all-reduce is ~374 us = PCIe sync latency, not transfer | 58.126 captured step 17.20 ms x 94% / 43.5 = 374 us for a ~14 KB payload | backed |
+| All-reduce count is reducible by a safe algebraic transform at batch=1 | NOT true (disproven): the ~1 AR/layer is structural (RMSNorm needs the reduce; no slice/delay/fuse at batch=1) | not claimed (disproven) |
+| Reduce ranks (TP=2) improves decode | NO (disproven): 40.565 < 48.248; 2x weight bytes/GPU outweighs the faster 2-GPU AR | not claimed (disproven) |
+| A hierarchical all-reduce beats the one-shot for full-P2P 4-GPU | NO: one-shot is single-sync (optimal for tiny payloads); tree adds a stage (+1.5% only); no variant built | not claimed |
+| DP attention removes the attention all-reduce (the lever) | correct structurally but BLOCKED: offline `LLM` rejects data_parallel_size>1 in all modes; needs vllm serve/AsyncLLM | n/a (blocked, next lever) |
+| C5 beats C4's 58.126 tok/s | NO: no C5 row beats it; C4 +20.5% stands; success condition not met | not claimed (honest negative) |
+| Modal 4-GPU P2P topology is uniform | NOT true: full-P2P and partial-P2P (`[1<->2]` only) containers both observed; C4 win conditional on full-P2P, safety guard falls back otherwise | backed (caveat) |

@@ -37,7 +37,7 @@ TP=2 is **slower** by +3.9 ms/step. The decode is not purely AR-latency-bound: h
 
 The one structural way to drop the ~43 attention all-reduces: run attention **data-parallel** (tp=1,
 data_parallel_size=4) so each rank has replicated attention (no reduction) while experts stay EP-sharded (the
-MoE all-to-all is unchanged and was already cheap). This does not add MoE collectives — it removes the
+MoE all-to-all is unchanged and was already cheap). This does not add MoE collectives, it removes the
 attention AR.
 
 **Launch:** vLLM offline DP rejects single-process `LLM(data_parallel_size>1)`; the self-launched path needs
@@ -45,10 +45,21 @@ each rank as its own process with `data_parallel_rank=r, data_parallel_size_loca
 data_parallel_external_lb=True` + `VLLM_DP_MASTER_IP/PORT`. Implemented as `graph_gate_dp` (subprocess per
 rank, worker in the installed `qb_dp_worker` module). Result: _see below / final_board.md_.
 
-<!-- DP_RESULT -->
+**Result: BLOCKED (not measured).** vLLM's offline `LLM` class hard-rejects `data_parallel_size>1` in every
+mode tried (single-process; external-LB with `data_parallel_rank` + `data_parallel_size_local=1` +
+`data_parallel_external_lb=True`; and env-driven `VLLM_DP_RANK/SIZE` per subprocess). All raise
+`ValueError: LLM(data_parallel_size=4) is not supported for single-process usage`. DP is only reachable via
+the `vllm serve` API server / `AsyncLLM` multi-process launcher (the `examples/features/data_parallel/
+data_parallel_offline.py` path), which is a different harness than this offline two-run-decode measurement.
+Logs `docs/audit/logs/c5_dp_attention.log` (exit codes [1,1,1,1]).
+
+So DP attention is the **correct and only structural lever** to remove the 94.5% attention all-reduce, but it
+is **not measurable in this offline `LLM`-based harness**; it needs an AsyncLLM/`vllm serve` decode-latency
+harness (named next lever, `verdict.md`).
 
 ## Task 2 summary
 
-Safe algebraic count reduction: **none** at batch=1 decode (structural). Reduce-ranks (TP=2): **negative**.
-The only count lever is **DP attention** (removes the attention AR); its measured decode is the deciding
-number for the C5 verdict.
+Safe algebraic count reduction: **none** at batch=1 decode (the ~1 all-reduce/layer is structural for TP
+attention). Reduce-ranks (TP=2): **negative** (weight-bandwidth outweighs the faster AR). DP attention (the
+only count lever): **blocked** by the offline-`LLM` DP limitation. No count reduction achieved in C5;
+the deciding lever (DP) requires a harness change to reach.

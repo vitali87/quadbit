@@ -44,7 +44,7 @@ hide the collective behind).
 A retry landed a fully-connected container, so custom AR engaged (`custom_1stage=1392, ring=0`). Same count
 (43.5 AR/token, 1.01/layer), collective **91.2%** of GPU-busy. Total eager GPU-busy dropped 166 -> 100
 ms/tok vs the NCCL path (consistent with the +20% captured win), but **the one-shot AR is still 91% of the
-step** — replacing ring with one-shot made each all-reduce cheaper, it did not remove the collective as the
+step**, replacing ring with one-shot made each all-reduce cheaper, it did not remove the collective as the
 floor. Log `docs/audit/logs/c5_post_c4_roofline_customar.log`.
 
 ## Estimated remaining floor on the C4 custom-AR path
