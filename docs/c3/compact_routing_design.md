@@ -1,7 +1,7 @@
 # C3 Task 1B: compact fixed-capacity routing (active-expert compaction)
 
 Attribution (`captured_attribution.md`): the captured D2 decode step is 89% MoE-apply, and it is the
-**E·cap = 64×128 = 8192-row padding** in both groups (dense-anchor 64%, sparse 24%) — per-row overhead
+**E·cap = 64×128 = 8192-row padding** in both groups (dense-anchor 64%, sparse 24%), per-row overhead
 (gather / per-group quant / scatter) + padded compute on rows that are ~99.8% padding at decode. The lever
 is to shrink the rows each group processes toward the real decode tokens, **capture-safe**.
 
@@ -36,7 +36,7 @@ whole thing captures.
 
 **Row reduction:** E·cap = 8192 → A_max·cap. For the dense group A_max=8 covers B≤4 (8×128=1024, 8×
 fewer rows + 8× fewer per-group quant kernels). For the sparse group A_max=24 covers B≤4 (24×128=3072,
-2.7×). Deterministic overflow: experts beyond the top-A_max by token-count are dropped — none at decode
+2.7×). Deterministic overflow: experts beyond the top-A_max by token-count are dropped, none at decode
 (active ≤ A_max by construction), a graceful degradation only if a batch is unexpectedly wide.
 
 ## Also removes the eager quant-loop artifact

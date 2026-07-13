@@ -17,7 +17,7 @@ Route-slot D2 runs **two** groups per MoE layer, both under fixed-capacity routi
 - **Dense group** (top-2 slots): `_anchor_gemm` → FlashInfer `group_gemm_nvfp4` over the 8192-row buffer.
 - **Sparse group** (tail-6): `_seg_apply_gs` → `sp.seg_into` → the `matmul_sp` kernel
   (`cuda/sparse_fp4_lib.cu`, BM=BN=128, 2-warpgroup pingpong, grid `(N/BN, M/2BM)` with N = 8192 tokens),
-  which tiles N in 128-row blocks, **one expert per block** — so it computes the full 8192×out_f grouped
+  which tiles N in 128-row blocks, **one expert per block**, so it computes the full 8192×out_f grouped
   GEMM every layer regardless of how few rows are real.
 
 So the *fixed-capacity padding* (E·cap = 8192 vs ~12 real) is the suspected root cause, and it inflates
@@ -43,7 +43,7 @@ times each region with CUDA events **inside the workers**. Cumulative over the r
 
 1. **The sparse 2:4 decode kernel is NOT the bottleneck.** `matmul_sp` is **0.4%** of MoE-apply even in
    eager. Capture only removes launch overhead (helping launch-bound paths), so under capture `matmul_sp`
-   stays negligible. **The C3 core hypothesis — "sparse decode at tiny M lacks a fused grouped GEMM" — is
+   stays negligible. **The C3 core hypothesis, "sparse decode at tiny M lacks a fused grouped GEMM", is
    refuted.** A `fused_sparse_grouped_decode_nvfp4_2lvl` would optimize a 0.4% path.
 2. **The eager 98% dense_anchor is ~97% a Python launch-overhead artifact, not compute.** `_dense_seg_native`
    (the C1 native path) runs a **64-iteration `for le in range(e)` loop** of per-group `amax` +
@@ -59,7 +59,7 @@ times each region with CUDA events **inside the workers**. Cumulative over the r
 - **Can:** rule the sparse 2:4 kernel out as the lever (robust).
 - **Cannot:** localize the *captured* bottleneck. The eager profile is confounded by the launch-overhead of
   the dense-anchor Python quant loop, which capture removes. The genuine *captured* costs are the ones
-  capture does NOT remove — chiefly the **E·cap = 8192-row padding compute** through `group_gemm`
+  capture does NOT remove, chiefly the **E·cap = 8192-row padding compute** through `group_gemm`
   (dense group) and `matmul_sp` (sparse group), and the attention/DSA/EP path. These need a captured-mode
   measurement (differential decode-tok/s, or nsys timeline) that CUDA events cannot provide inside a graph.
 
@@ -67,7 +67,7 @@ times each region with CUDA events **inside the workers**. Cumulative over the r
 
 Task 1 **refutes** the premise the kernel was to address (sparse decode is 0.4%, not the bottleneck). The
 real lever is the **fixed-capacity E·cap padding** (8192 padded rows vs a real handful) that inflates the
-*dense-anchor* `group_gemm` and its per-group quant loop, and equally the sparse group's padded rows — a
+*dense-anchor* `group_gemm` and its per-group quant loop, and equally the sparse group's padded rows, a
 **routing/plumbing** fix (compact-route to real token count + batch the per-group quant into one call),
 graph-capturable, **no new sparse mma kernel**. Exact captured attribution of that padding vs
 attention/DSA/EP needs a captured-mode differential, which is the recommended next measurement. Reported to

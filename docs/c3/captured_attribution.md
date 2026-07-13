@@ -4,7 +4,7 @@ CUDA events can't time inside a CUDA graph, and the eager profile (`profile_deco
 the dense-anchor Python quant loop's launch overhead (which capture removes). So we attribute the
 **captured** decode cost by differential: run the captured D2 path with one component no-op'd at a time
 (env flags `QB_C3_SKIP_{MOE,DENSE,SPARSE}`, plugin-side, graph stays shape-valid) and read decode-only
-tok/s. PPL is meaningless when a component is skipped — **timing only**. Harness
+tok/s. PPL is meaningless when a component is skipped, **timing only**. Harness
 `graph_gate4 ... --c3-skip {moe,dense,sparse}`; same D2 config as C2 (route_slot=2, native anchor, cap=128,
 max_seqs=2, captured). Logs `docs/audit/logs/c3_diff_*.log`.
 
@@ -37,21 +37,21 @@ max_seqs=2, captured). Logs `docs/audit/logs/c3_diff_*.log`.
 | **total (baseline step)** | **172.9** | 100% | A |
 
 Cross-check: dense 110.7 + sparse 42.0 + floor 19.6 + routing 0.6 = 172.9 ✓. Removing the whole MoE (D)
-gives 51 tok/s — **above** the dense NVFP4 fused baseline's 48.248 — so the attention/DSA/EP path is not
+gives 51 tok/s, **above** the dense NVFP4 fused baseline's 48.248, so the attention/DSA/EP path is not
 the wall; the MoE apply is **89% of the captured decode step**.
 
 Note: the sparse group is 24% of the step, yet the sparse `matmul_sp` **kernel** is only 0.4% (eager
 profile). So the sparse group's 42 ms is almost entirely **per-row overhead** (gather `x[tok]`, per-group
-quant, `index_add` scatter) on the 8192 padded rows — **not** the kernel. Same character for the
+quant, `index_add` scatter) on the 8192 padded rows, **not** the kernel. Same character for the
 dense-anchor group. **The cost is the E·cap padding, in both groups, and it is overhead + padded compute
-that capture does not remove — exactly what compact routing attacks.**
+that capture does not remove, exactly what compact routing attacks.**
 
 ## Verdict (Task 1A): compact routing is the right lever; proceed to Task 1B.
 
 - The refuted sparse-decode-kernel premise stays refuted (`matmul_sp` 0.4%).
 - The captured bottleneck is the **MoE apply's E·cap=8192-row padding** (dense-anchor 64% + sparse 24%),
   dominated by per-row overhead + padded compute, not by any mma kernel.
-- Attention/DSA/EP is a cheap 11% floor (51 tok/s ceiling if MoE were free) — large headroom.
+- Attention/DSA/EP is a cheap 11% floor (51 tok/s ceiling if MoE were free), large headroom.
 - Next (Task 1B): shrink the row count both groups process from E·cap toward the real decode tokens via
   **active-expert compaction** (fixed A_max active experts × cap instead of all E=64), capture-safe, plus a
   single batched quant replacing the 64-iteration Python loop. Attack the dense-anchor group (64%) first.

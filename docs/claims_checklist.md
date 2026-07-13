@@ -189,3 +189,17 @@ SM120. Full docs [sota_board](../c2/sota_board.md) / [deepseek_sota](../c2/deeps
 | Vanilla vLLM (no plugin) runs DeepSeek-V4-Flash NVFP4 on SM120 | fails to init (ue8m0 FP8 attention); the plugin's attention/DSA unblock is what lets the dense MoE baseline run at all | not claimed (disproven) |
 | SGLang NVFP4 MoE baseline for these models on SM120 | unavailable (not in serve image; no SM120 DSA path); reported, not hidden | n/a (recorded) |
 | quadbit MoE value = decode SOTA | NOT claimed. Value = only deployed 2:4-sparse FP4 MoE + training-free quality-preserving structural sparsity + graph-enabled cross-arch transfer (DeepSeek->GLM, DSA native) + prefill/large-M kernel Pareto (§5). Decode SOTA belongs to the dense fused MoE. | guarded (not claimed) |
+
+## 12. C3 compact-routing decode — active-expert compaction speeds D2, dense fused MoE stays the decode SOTA
+
+Branch `c3-compact-routing-decode`. Full docs [verdict](../c3/verdict.md) / [compact_routing_ab](../c3/compact_routing_ab.md) / [deepseek_compact_decode](../c3/deepseek_compact_decode.md) / [captured_attribution](../c3/captured_attribution.md); logs `docs/audit/logs/c3_*.log`.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| The sparse 2:4 decode kernel is NOT the bottleneck (sparse-kernel premise refuted) | `matmul_sp` = 0.4% of the step (`profile_decode.md`); sparse *group* 24% is per-row overhead + E·cap padding, not the MMA; `fused_sparse_grouped_decode` not built | backed (negative) |
+| The captured decode bottleneck is the E·cap=8192-row padding (MoE = 89% of step) | differential attribution: dense-anchor 64% (A−B), sparse 24% (A−C), non-MoE floor 11%, additive to 172.9 ms; `captured_attribution.md` | backed |
+| Active-expert compaction is capture-safe and bit-correct | A_max=E correctness runs reproduce baseline PPL in the mito80 noise band, dense gather 4.096, sparse 4-tuple gather 4.045 (vs baseline 4.001, band 3.95–4.09); FULL capture; `compact_routing_ab.md` | backed |
+| Compaction makes quadbit D2 decode 2.80× faster | compact-both 16.203 vs same-build non-compact 5.782 tok/s (2.80×); closes D2→dense gap 8.1×→3.0×; cross-run tok/s variance noted, direction monotone in rows removed | backed |
+| Compact D2 beats the dense NVFP4 fused decode SOTA | NOT claimed (disproven): 16.203 < 48.248, still 3.0× slower | not claimed (disproven) |
+| Compact D2 creates a strict Pareto point vs dense | NOT claimed: memory unchanged (D2 weights +27% dual residency), downstream quality −0.95pt (P1); dense dominates speed+memory+quality | not claimed (disproven) |
+| GLM compact decode run | skipped: structurally identical to DeepSeek (own dense fused baseline far faster, same dual-residency memory + quality tax), cannot flip the verdict; 8-GPU cost avoided | n/a (skipped, reasoned) |
