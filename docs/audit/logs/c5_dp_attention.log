@@ -1,111 +1,15 @@
-✓ Initialized. View run at 
-https://modal.com/apps/anterior-ai/main/ap-anhASUuMzHpJzVSBv6kkQp
-Building image im-vFTPvc5iKrhiVE8GAeXR3W
-
-Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
-
-=> Step 0: FROM base
-
-=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
-Looking in indexes: http://pypi-mirror.modal.local:5555/simple
-Processing ./opt/qb_plugin
-  Installing build dependencies: started
-  Installing build dependencies: finished with status 'done'
-  Getting requirements to build wheel: started
-  Getting requirements to build wheel: finished with status 'done'
-  Preparing metadata (pyproject.toml): started
-  Preparing metadata (pyproject.toml): finished with status 'done'
-Building wheels for collected packages: qb-sm120-plugin
-  Building wheel for qb-sm120-plugin (pyproject.toml): started
-  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
-  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=38115 sha256=cbea0424a8ac0065697713d6d9fc14bc1f75d09ee0457cfe901cc8849af92e17
-  Stored in directory: /tmp/pip-ephem-wheel-cache-l3h_87hu/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
-Successfully built qb-sm120-plugin
-Installing collected packages: qb-sm120-plugin
-Successfully installed qb-sm120-plugin-0.9.0
-Saving image...
-Image saved, took 2.13s
-
-Built image im-vFTPvc5iKrhiVE8GAeXR3W in 6.67s
-
-
-✓ Created objects.
-├── 🔨 Created mount 
-│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
-├── 🔨 Created mount 
-│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
-├── 🔨 Created function inspect_vllm.
-├── 🔨 Created function glm_baseline.
-├── 🔨 Created function unblock.
-├── 🔨 Created function graph_gate.
-├── 🔨 Created function graph_gate4.
-├── 🔨 Created function graph_gate2.
-├── 🔨 Created function _dp_worker.
-├── 🔨 Created function graph_gate_dp.
-├── 🔨 Created function glm_graph_gate.
-├── 🔨 Created function c3_profile.
-├── 🔨 Created function floor_profile.
-├── 🔨 Created function baseline.
-├── 🔨 Created function inspect_moe.
-├── 🔨 Created function test_so.
-├── 🔨 Created function quadbit.
-├── 🔨 Created function versions.
-├── 🔨 Created function glm_inspect.
-├── 🔨 Created function dumpsrc.
-├── 🔨 Created function c1_recon.
-├── 🔨 Created function c1_recon2.
-├── 🔨 Created function c1_dense_anchor.
-├── 🔨 Created function probe.
-├── 🔨 Created function sweep2.
-├── 🔨 Created function sweep4.
-├── 🔨 Created function downstream.
-├── 🔨 Created function downstream4.
-├── 🔨 Created function glm_downstream.
-├── 🔨 Created function recon.
-├── 🔨 Created function qmap.
-└── 🔨 Created function calib.
-
-==========
-== CUDA ==
-==========
-
-CUDA Version 13.0.0
-
-Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-
-This container image and its contents are governed by the NVIDIA Deep Learning Container License.
-By pulling and using the container, you accept the terms and conditions of this license:
-https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
-
-A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
-
-# C5 DP board: dp=4 tp=1 baseline=dense_nvfp4 eager=False (multi-process DP attention)
-Traceback (most recent call last):
-  File "/pkg/modal/_runtime/container_io_manager.py", line 915, in handle_input_exception
-    yield
-  File "/pkg/modal/_container_entrypoint.py", line 189, in run_input_sync
-    values = io_context.call_function_sync()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/pkg/modal/_runtime/container_io_manager.py", line 218, in call_function_sync
-    expected_value_or_values = self.finalized_function.callable(*args, **kwargs)
-                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/serve_dsv4.py", line 684, in graph_gate_dp
-    p.start()
-  File "/usr/local/lib/python3.12/multiprocessing/process.py", line 121, in start
-    self._popen = self._Popen(self)
-                  ^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/multiprocessing/context.py", line 289, in _Popen
-    return Popen(process_obj)
-           ^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/multiprocessing/popen_spawn_posix.py", line 32, in __init__
-    super().__init__(process_obj)
-  File "/usr/local/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
-    self._launch(process_obj)
-  File "/usr/local/lib/python3.12/multiprocessing/popen_spawn_posix.py", line 47, in _launch
-    reduction.dump(process_obj, fp)
-  File "/usr/local/lib/python3.12/multiprocessing/reduction.py", line 60, in dump
-    ForkingPickler(file, protocol).dump(obj)
-AttributeError: Can't pickle local object '_Function.from_local.<locals>._load'
-╭─ Error ──────────────────────────────────────────────────────────────────────╮
-│ Can't pickle local object '_Function.from_local.<locals>._load'              │
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py:599 in <module> │
+│                                                                              │
+│    598                                                                       │
+│ ❱  599 @app.function(                                                        │
+│    600 │   gpu="RTX-PRO-6000:4",                                             │
+│                                                                              │
+│ /Users/vitaliavagyan/Documents/quadbit/.venv/lib/python3.12/site-packages/mo │
+│ dal/app.py:938 in wrapped                                                    │
+│                                                                              │
+│    937 │   │   │   else:                                                     │
+│ ❱  938 │   │   │   │   if not is_global_object(f.__qualname__) and not seria │
+│    939 │   │   │   │   │   raise InvalidError(                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+AttributeError: '_Function' object has no attribute '__qualname__'

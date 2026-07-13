@@ -621,21 +621,22 @@ def graph_gate_dp(
     per DP rank so there is NO per-layer TP all-reduce (the 94.5% decode floor); the MoE stays EP (already
     all-to-all today, not the dominant cost), so DP removes the ~43 attention all-reduces without adding MoE
     collectives. Spawns dp processes (vLLM offline DP needs per-proc VLLM_DP_* env). Rank 0 reports."""
-    import multiprocessing as mp
+    import subprocess
+    import sys
 
-    from qb_dp_worker import dp_worker  # installed in the plugin package -> picklable across spawn
-    print(f"# C5 DP board: dp={dp} tp=1 baseline={baseline} eager={eager} (multi-process DP attention)",
+    # Launch each DP rank as a FRESH python interpreter (subprocess), not multiprocessing.spawn: spawn
+    # re-imports this Modal-decorated __main__ in the child and chokes on the @app.function decorators.
+    # A fresh interpreter importing the installed qb_dp_worker module avoids both re-import and pickling.
+    print(f"# C5 DP board: dp={dp} tp=1 baseline={baseline} eager={eager} (subprocess DP attention)",
           flush=True)
-    ctx = mp.get_context("spawn")
     port = 29591
-    procs = [ctx.Process(target=dp_worker,
-                         args=(r, dp, port, MODEL, cap, max_seqs, max_len, gpu_mem, baseline, eager))
-             for r in range(dp)]
-    for p in procs:
-        p.start()
-    for p in procs:
-        p.join()
-    print(f"# C5 DP board DONE (exit codes: {[p.exitcode for p in procs]})", flush=True)
+    procs = []
+    for r in range(dp):
+        code = (f"import qb_dp_worker; qb_dp_worker.dp_worker({r},{dp},{port},{MODEL!r},{cap},"
+                f"{max_seqs},{max_len},{gpu_mem},{baseline!r},{eager})")
+        procs.append(subprocess.Popen([sys.executable, "-c", code]))
+    codes = [p.wait() for p in procs]
+    print(f"# C5 DP board DONE (exit codes: {codes})", flush=True)
 
 
 @app.function(
