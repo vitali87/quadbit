@@ -83,22 +83,15 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
         torch.cuda.synchronize()
         return time.time() - t
 
-    # ALL ranks run identical work (lockstep for the EP all-to-all). Only rank 0 profiles/prints.
+    # ORDER MATTERS. All lockstep collectives (warm, measurement, coherence, PPL) run FIRST while
+    # the DP ranks are tightly synced. The profiled pass runs DEAD LAST: stop_profile() blocks each
+    # rank ~10s+ writing a different-sized trace, desyncing the DP group past its skew budget, so a
+    # collective generate() after it deadlocks (rank 0 opens a DP wave while a peer still flushes
+    # its trace). Nothing collective follows the profiled pass, so that skew is harmless.
+    # All ranks run identical work (lockstep for the EP all-to-all); only rank 0 keeps/prints.
     _wall(4)                          # warm
     w1, w64 = _wall(1), _wall(64)     # measurement: batch=1, TTFT-subtracted decode
     dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
-
-    # Profiled pass (all ranks step together; only rank 0's trace is parsed for the AR/a2a count).
-    if profile:
-        torch.cuda.synchronize()
-        try:
-            llm.start_profile()
-            _wall(16)
-            llm.stop_profile()
-        except Exception as ex:  # noqa: BLE001
-            print(f"[dp{dp_rank}] profiling skipped: {type(ex).__name__}: {ex}", flush=True)
-            profile = False
-        torch.cuda.synchronize()
 
     # Coherence + PPL are collective: EVERY rank must run them in lockstep or rank 0 deadlocks on
     # the EP all-to-all. All ranks run identical inputs; only rank 0 keeps/prints the results.
@@ -120,6 +113,19 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
     pids = llm.get_tokenizer().encode(passage)
     pout = llm.generate([{"prompt_token_ids": pids}],
                         SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+
+    # Profiled pass LAST: the only lockstep generate is _wall(16); the trace-write skew after
+    # stop_profile() precedes nothing collective (rank 0 parses its own file; peers just return).
+    if profile:
+        torch.cuda.synchronize()
+        try:
+            llm.start_profile()
+            _wall(16)
+            llm.stop_profile()
+        except Exception as ex:  # noqa: BLE001
+            print(f"[dp{dp_rank}] profiling skipped: {type(ex).__name__}: {ex}", flush=True)
+            profile = False
+        torch.cuda.synchronize()
 
     if dp_rank != 0:
         return
