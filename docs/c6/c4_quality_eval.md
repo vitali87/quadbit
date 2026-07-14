@@ -44,7 +44,7 @@ that op is direct evidence for the dense case as well. Six dense attempts were m
 retries `c6_dense_customar_r2`..`_r6`) to catch a fully-connected container and obtain the dense
 custom-AR point directly; Modal never handed out a fully-P2P dense set, so all six fell back to NCCL.
 The dense-engaged point is therefore blocked by container luck, not by any quality issue, and R5
-plus the policy-independence argument carry the verdict; see `verdict.md`.
+plus the policy-independence argument carry the verdict; see [verdict.md](verdict.md).
 
 ## Custom-AR engagement scope (honest)
 
@@ -101,6 +101,10 @@ NCCL run once it fell back); the decisive line above is captured for each.
 
 ## Raw logs
 
-`docs/audit/logs/c6_dense_nccl_a.log`, `c6_dense_nccl_b.log`, `c6_dense_customar.log`,
-`c6_d2_nccl.log`, `c6_d2_customar.log`, and dense custom-AR retries
-`c6_dense_customar_r2.log`..`c6_dense_customar_r6.log` (all fell back to NCCL).
+[c6_dense_nccl_a.log](../audit/logs/c6_dense_nccl_a.log),
+[c6_dense_nccl_b.log](../audit/logs/c6_dense_nccl_b.log),
+[c6_dense_customar.log](../audit/logs/c6_dense_customar.log),
+[c6_d2_nccl.log](../audit/logs/c6_d2_nccl.log),
+[c6_d2_customar.log](../audit/logs/c6_d2_customar.log). The dense custom-AR retries
+`c6_dense_customar_r2.log`..`c6_dense_customar_r6.log` (all fell back to NCCL) are kept out of the
+repo as redundant NCCL runs; their decisive P2P-fallback lines are quoted above.
