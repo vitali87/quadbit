@@ -269,3 +269,24 @@ engaged custom-AR row is +0.40 pt AVG / lower PPL vs its NCCL twin, inside the d
 no task collapse. Dense custom-AR never engaged across 6 attempts (Modal handed out only partial-P2P
 dense containers); the collective is the MoE-policy-independent attention-TP reduce, so the engaged
 sparse row transfers to dense. Quality claim: C4 upgraded from speed-only to quality-safe, scoped.
+
+## C7 DP-attention serve-latency lever (branch `c7-dp-attention-serve`)
+
+Tests whether data-parallel attention (tp=1, dp=4, EP experts) removes the per-layer attention TP
+all-reduce floor and beats C4's 58.126. Env-driven SPMD (VLLM_DP_* + CUDA_VISIBLE_DEVICES per rank, no
+`data_parallel_*` LLM kwargs — the fix for the C5 offline `LLM(data_parallel_size>1)` raise). One
+subprocess per DP rank; rank 0 profiles/reports; all ranks lockstep for the EP collective. 4x RTX PRO
+6000 (SM120), no NVLink.
+
+```
+uv run modal run --detach harness/serve_dsv4.py::graph_gate_dp --dp 4 --eager   # eager  (log c7_dp_eager_smoke.log)
+uv run modal run --detach harness/serve_dsv4.py::graph_gate_dp --dp 4           # captured (log c7_dp_captured.log)
+```
+
+Results (logs `docs/audit/logs/c7_dp_*.log`): mode activates (tp=1/dp=4/EP engines, attention
+all-reduce custom=0 ring=0 both modes; EP path = 1376 allgather + 1376 reduce-scatter = 2 collectives
+per layer vs C4's 1). Captured DP-attention decode **20.450 tok/s** (wall1=1.558s wall64=4.638s) vs C4
+captured 58.126 = **2.84x slower**; eager 4.578 tok/s. Quality unchanged: ppl 4.2640, coherence probes
+correct (Paris / fibonacci / RGB). **Verdict D**: AR count drops to 0 but a worse EP allgather+
+reduce-scatter floor dominates; C4 58.126 SOTA stands. Sparse D2 not run (gate "only if dense improves"
+not met). Speed only; no quality claim changed; no README/paper headline change.

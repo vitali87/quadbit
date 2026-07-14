@@ -201,13 +201,45 @@
 (Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.028ms         0.24%       8.028ms       1.063us          7552  
 (Worker_DP2_EP2WARNING: Logs may not be continuous
 WARNING: Logs may not be continuous
-  0.00%       0.000us         0.00%       0.000us       0.000us       7.736ms         0.23%       7.736ms       1.325us          5840  
-(Worker_DP2_EP2 pid=273)                                cudaEventRecordWithFlags         0.15%      15.299ms         0.15%      15.299ms       1.323us       7.473ms         0.23%       7.473ms       0.646us         11568  
-(Worker_DP2_EP2 pid=273)                                             aten::index         0.32%      31.916ms         0.52%      51.906ms      25.270us       7.065ms         0.21%       7.090ms       3.452us          2054  
-(Worker_DP2_EP2 pid=273)                                    cudaFuncSetAttribute         0.70%      70.112ms         0.70%      70.112ms       3.520us       6.828ms         0.21%       6.828ms       0.343us         19920  
-(Worker_DP2_EP2 pid=273)                              _moe_C::topk_softplus_sqrt         0.14%      14.375ms         0.26%      25.565ms      18.579us       5.823ms         0.18%       5.823ms       4.232us          1376  
-(Worker_DP2_EP2 pid=273)                                     cudaLaunchKernelExC         2.06%     205.269ms         2.07%     207.049ms       7.246us       5.652ms         0.17%       5.652ms       0.198us         28574  
-(Worker_DP2_EP2 pid=273) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       5.473ms         0.17%       5.473ms       3.978us          1376  
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+0.00%       0.000us       0.000us       5.473ms         0.17%       5.473ms       3.978us          1376  
 (Worker_DP2_EP2 pid=273) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       5.378ms         0.16%       5.378ms       4.201us          1280  
 (Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::finaliz...         0.00%       0.000us         0.00%       0.000us       0.000us       4.994ms         0.15%       4.994ms       3.629us          1376  
 (Worker_DP2_EP2 pid=273) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.567ms         0.14%       4.567ms       7.015us           651  

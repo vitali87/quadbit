@@ -66,19 +66,30 @@ reported "0 collectives" for C7. vLLM does EP for this MoE **not via all-to-all*
 the corrected totals from the eager validation trace (`dp0_..rank0` trace, `n_layers=43`,
 `decode_fwd~32`, each collective kernel firing 1376 times = 1376/32 = **43 = once per layer**).
 
-| config | attention all-reduce / token | EP allgather / token | EP reduce-scatter / token | **total collectives / token** |
-|--------|------------------------------|----------------------|---------------------------|-------------------------------|
-| C4/C5 baseline (tp=4) | ~43.5 (measured C5) | 0 | 0 | **~43.5** |
-| C7 DP-attention (tp=1, dp=4, EP) | **0** (removed) | 43.0 | 43.0 | **~86** |
+The mode-invariant unit is **collectives per layer per forward** (each fires once per layer per decode
+forward). Per-*token* normalization divides by `n_dsa / n_layers`, but `sparse_mla_decode` is emitted
+1×/layer under eager and 2×/layer under captured (kernel split), so the per-token figure is 86 (eager)
+or 43 (captured) for the *same* 1376 allgather + 1376 reduce-scatter kernels. Per-layer is unambiguous:
+
+| config | attention all-reduce / layer | EP allgather / layer | EP reduce-scatter / layer | **collectives / layer** |
+|--------|------------------------------|----------------------|---------------------------|-------------------------|
+| C4/C5 baseline (tp=4) | 1 (measured C5, ~43.5/tok) | 0 | 0 | **1** |
+| C7 DP-attention (tp=1, dp=4, EP) | **0** (removed) | 1 | 1 | **2** |
+
+Absolute kernel counts are identical across graph modes: attention all-reduce = 0, allgather = 1376,
+reduce-scatter = 1376 in **both** the eager and captured profiled windows.
 
 **Gate result — DP-attention activates but is NOT the lever.** The attention TP all-reduce *is* removed
 (custom=0, ring=0). But the per-layer cross-GPU collective floor did **not** drop toward 0 — it *moved*
-to the EP path and roughly **doubled** (43.5 → ~86), and those collectives are costlier: AllGather alone
-is 39–76% of decode CUDA time (956µs–5.3ms per call, PCIe-bound, no NVLink). Eager decode is 4.578 tok/s
-(ppl 4.264, output coherent: "Paris", correct fibonacci, RGB). The eager number is not comparable to
-C4's *captured* 58.126; a captured DP run measures the real speed (Task 2/3), but since the collective
-floor grew rather than shrank, the C4 ceiling is expected to hold. Not verdict C (mode did activate);
-trending to **verdict D** (AR count "drops" to 0 but a worse EP-collective floor dominates).
+to the EP path and **doubled** (1 → 2 collectives per layer), and those collectives are costlier:
+AllGather alone is 39–76% of decode CUDA time (956µs–5.3ms per call, PCIe-bound, no NVLink). Confirmed
+on wall-clock in both modes (ppl 4.264, output coherent: "Paris", correct fibonacci, RGB):
+
+- **eager** DP-attention decode: 4.578 tok/s
+- **captured** DP-attention decode: **20.450 tok/s** — vs C4's captured **58.126 → 2.84x slower**
+
+Not verdict C (mode did activate); **verdict D** — the AR count drops to 0 but a worse EP allgather +
+reduce-scatter floor dominates, and DP-attention decode is 2.84x slower than the C4 SOTA it aimed to beat.
 
 ## Raw log
 
