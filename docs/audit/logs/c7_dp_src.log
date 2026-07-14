@@ -1,0 +1,427 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-ANWlczCS7xufzoRHRQwwKU
+Building image im-KL8lGTyIPCUM205KWUQEFS
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=40221 sha256=6e99d71837c25d594bf10cfc070e40b1de5934221a3d9dec2d19e1d4a182c538
+  Stored in directory: /tmp/pip-ephem-wheel-cache-7qhuizph/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 1.81s
+
+Built image im-KL8lGTyIPCUM205KWUQEFS in 4.85s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_dp.
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function graph_gate2.
+├── 🔨 Created function graph_gate_dp.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dp_src.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+
+===== llm.py DP raise  (/usr/local/lib/python3.12/site-packages/vllm/entrypoints/llm.py) =====
+  --- 'data_parallel_size' @ line 291 ---
+ 289 
+ 290         # warn about single-process data parallel usage.
+ 291         _dp_size = int(kwargs.get("data_parallel_size", 1))
+ 292         _distributed_executor_backend = kwargs.get("distributed_executor_backend")
+ 293         if (
+ 294             _dp_size > 1
+ 295             and not _distributed_executor_backend == "external_launcher"
+ 296             and not current_platform.is_tpu()
+ 297         ):
+ 298             raise ValueError(
+ 299                 f"LLM(data_parallel_size={_dp_size}) is not supported for single-"
+ 300                 "process usage and may hang. Please use "
+ 301                 "the explicit multi-process data-parallel example at "
+ 302                 "'examples/features/data_parallel/data_parallel_offline.py'."
+ 303             )
+ 304 
+ 305         engine_args = EngineArgs(
+ 306             model=model,
+ 307             runner=runner,
+ 308             convert=convert,
+ 309             tokenizer=tokenizer,
+ 310             tokenizer_mode=tokenizer_mode,
+ 311             skip_tokenizer_init=skip_tokenizer_init,
+ 312             trust_remote_code=trust_remote_code,
+ 313             allowed_local_media_path=allowed_local_media_path,
+ 314             allowed_media_domains=allowed_media_domains,
+ 315             tensor_parallel_size=tensor_parallel_size,
+ 316             dtype=dtype,
+ 317             quantization=quantization,
+ 318             revision=revision,
+ 319             tokenizer_revision=tokenizer_revision,
+ 320             seed=seed,
+
+===== engine/arg_utils.py DP  (/usr/local/lib/python3.12/site-packages/vllm/engine/arg_utils.py) =====
+  --- 'data_parallel_size' @ line 476 ---
+ 474     dcp_kv_cache_interleave_size: int = ParallelConfig.dcp_kv_cache_interleave_size
+ 475     cp_kv_cache_interleave_size: int = ParallelConfig.cp_kv_cache_interleave_size
+ 476     data_parallel_size: int = ParallelConfig.data_parallel_size
+ 477     data_parallel_rank: int | None = None
+ 478     data_parallel_start_rank: int | None = None
+ 479     data_parallel_size_local: int | None = None
+ 480     data_parallel_address: str | None = None
+ 481     data_parallel_rpc_port: int | None = None
+ 482     data_parallel_hybrid_lb: bool = False
+ 483     data_parallel_external_lb: bool = False
+ 484     data_parallel_multi_port_external_lb: bool = False
+ 485     data_parallel_backend: DataParallelBackend = ParallelConfig.data_parallel_backend
+ 486     enable_expert_parallel: bool = ParallelConfig.enable_expert_parallel
+ 487     enable_ep_weight_filter: bool = ParallelConfig.enable_ep_weight_filter
+ 488     moe_backend: MoEBackend = KernelConfig.moe_backend
+ 489     linear_backend: LinearBackend = KernelConfig.linear_backend
+ 490     all2all_backend: All2AllBackend = ParallelConfig.all2all_backend
+ 491     enable_elastic_ep: bool = ParallelConfig.enable_elastic_ep
+ 492     enable_dbo: bool = ParallelConfig.enable_dbo
+ 493     ubatch_size: int = ParallelConfig.ubatch_size
+ 494     dbo_decode_token_threshold: int = ParallelConfig.dbo_decode_token_threshold
+ 495     dbo_prefill_token_threshold: int = ParallelConfig.dbo_prefill_token_threshold
+ 496     disable_nccl_for_dp_synchronization: bool | None = (
+ 497         ParallelConfig.disable_nccl_for_dp_synchronization
+ 498     )
+ 499     eplb_config: EPLBConfig = get_field(ParallelConfig, "eplb_config")
+ 500     enable_eplb: bool = ParallelConfig.enable_eplb
+ 501     expert_placement_strategy: ExpertPlacementStrategy = (
+ 502         ParallelConfig.expert_placement_strategy
+ 503     )
+ 504     _api_process_count: int = ParallelConfig._api_process_count
+ 505     _api_process_rank: int = ParallelConfig._api_process_rank
+  --- 'data_parallel_external_lb' @ line 483 ---
+ 481     data_parallel_rpc_port: int | None = None
+ 482     data_parallel_hybrid_lb: bool = False
+ 483     data_parallel_external_lb: bool = False
+ 484     data_parallel_multi_port_external_lb: bool = False
+ 485     data_parallel_backend: DataParallelBackend = ParallelConfig.data_parallel_backend
+ 486     enable_expert_parallel: bool = ParallelConfig.enable_expert_parallel
+ 487     enable_ep_weight_filter: bool = ParallelConfig.enable_ep_weight_filter
+ 488     moe_backend: MoEBackend = KernelConfig.moe_backend
+ 489     linear_backend: LinearBackend = KernelConfig.linear_backend
+ 490     all2all_backend: All2AllBackend = ParallelConfig.all2all_backend
+ 491     enable_elastic_ep: bool = ParallelConfig.enable_elastic_ep
+ 492     enable_dbo: bool = ParallelConfig.enable_dbo
+ 493     ubatch_size: int = ParallelConfig.ubatch_size
+ 494     dbo_decode_token_threshold: int = ParallelConfig.dbo_decode_token_threshold
+ 495     dbo_prefill_token_threshold: int = ParallelConfig.dbo_prefill_token_threshold
+ 496     disable_nccl_for_dp_synchronization: bool | None = (
+ 497         ParallelConfig.disable_nccl_for_dp_synchronization
+ 498     )
+ 499     eplb_config: EPLBConfig = get_field(ParallelConfig, "eplb_config")
+ 500     enable_eplb: bool = ParallelConfig.enable_eplb
+ 501     expert_placement_strategy: ExpertPlacementStrategy = (
+ 502         ParallelConfig.expert_placement_strategy
+ 503     )
+ 504     _api_process_count: int = ParallelConfig._api_process_count
+ 505     _api_process_rank: int = ParallelConfig._api_process_rank
+ 506     max_parallel_loading_workers: int | None = (
+ 507         ParallelConfig.max_parallel_loading_workers
+ 508     )
+ 509     block_size: int | None = None
+ 510     enable_prefix_caching: bool | None = None
+ 511     prefix_caching_hash_algo: PrefixCachingHashAlgo = (
+ 512         CacheConfig.prefix_caching_hash_algo
+  --- 'data_parallel_rank' @ line 477 ---
+ 475     cp_kv_cache_interleave_size: int = ParallelConfig.cp_kv_cache_interleave_size
+ 476     data_parallel_size: int = ParallelConfig.data_parallel_size
+ 477     data_parallel_rank: int | None = None
+ 478     data_parallel_start_rank: int | None = None
+ 479     data_parallel_size_local: int | None = None
+ 480     data_parallel_address: str | None = None
+ 481     data_parallel_rpc_port: int | None = None
+ 482     data_parallel_hybrid_lb: bool = False
+ 483     data_parallel_external_lb: bool = False
+ 484     data_parallel_multi_port_external_lb: bool = False
+ 485     data_parallel_backend: DataParallelBackend = ParallelConfig.data_parallel_backend
+ 486     enable_expert_parallel: bool = ParallelConfig.enable_expert_parallel
+ 487     enable_ep_weight_filter: bool = ParallelConfig.enable_ep_weight_filter
+ 488     moe_backend: MoEBackend = KernelConfig.moe_backend
+ 489     linear_backend: LinearBackend = KernelConfig.linear_backend
+ 490     all2all_backend: All2AllBackend = ParallelConfig.all2all_backend
+ 491     enable_elastic_ep: bool = ParallelConfig.enable_elastic_ep
+ 492     enable_dbo: bool = ParallelConfig.enable_dbo
+ 493     ubatch_size: int = ParallelConfig.ubatch_size
+ 494     dbo_decode_token_threshold: int = ParallelConfig.dbo_decode_token_threshold
+ 495     dbo_prefill_token_threshold: int = ParallelConfig.dbo_prefill_token_threshold
+ 496     disable_nccl_for_dp_synchronization: bool | None = (
+ 497         ParallelConfig.disable_nccl_for_dp_synchronization
+ 498     )
+ 499     eplb_config: EPLBConfig = get_field(ParallelConfig, "eplb_config")
+ 500     enable_eplb: bool = ParallelConfig.enable_eplb
+ 501     expert_placement_strategy: ExpertPlacementStrategy = (
+ 502         ParallelConfig.expert_placement_strategy
+ 503     )
+ 504     _api_process_count: int = ParallelConfig._api_process_count
+ 505     _api_process_rank: int = ParallelConfig._api_process_rank
+ 506     max_parallel_loading_workers: int | None = (
+
+===== config/parallel.py DP  (/usr/local/lib/python3.12/site-packages/vllm/config/parallel.py) =====
+  --- 'data_parallel_external_lb' @ line 146 ---
+ 144     data_parallel_backend: DataParallelBackend = "mp"
+ 145     """Backend to use for data parallel, either "mp" or "ray"."""
+ 146     data_parallel_external_lb: bool = False
+ 147     """Whether to use "external" DP LB mode. Applies only to online serving
+ 148     and when data_parallel_size > 0. This is useful for a "one-pod-per-rank"
+ 149     wide-EP setup in Kubernetes. Supported only for MoE deployments; non-MoE
+ 150     models should use independent vLLM instances without --data-parallel-*
+ 151     arguments. Set implicitly when --data-parallel-rank is provided explicitly
+ 152     to vllm serve."""
+ 153     data_parallel_hybrid_lb: bool = False
+ 154     """Whether to use "hybrid" DP LB mode. Applies only to online serving
+ 155     and when data_parallel_size > 0. Enables running an AsyncLLM
+ 156     and API server on a "per-node" basis where vLLM load balances
+ 157     between local data parallel ranks, but an external LB balances
+ 158     between vLLM nodes/replicas. Set explicitly in conjunction with
+ 159     --data-parallel-start-rank."""
+ 160     is_moe_model: bool | None = None
+ 161     """Whether the deployed model is MoE (if known)."""
+ 162     enable_expert_parallel: bool = False
+ 163     """Use expert parallelism instead of tensor parallelism for MoE layers."""
+ 164     enable_ep_weight_filter: bool = False
+ 165     """Skip non-local expert weights during model loading when expert
+ 166     parallelism is active.  Each rank only reads its own expert shard from
+ 167     disk, which can drastically reduce storage I/O for MoE models with
+ 168     per-expert weight tensors (e.g. DeepSeek, Mixtral, Kimi-K2.5).  Has no
+ 169     effect on 3D fused-expert checkpoints (e.g. GPT-OSS) or non-MoE
+ 170     models."""
+ 171     enable_eplb: bool = False
+ 172     """Enable expert parallelism load balancing for MoE layers."""
+ 173     eplb_config: EPLBConfig = Field(default_factory=EPLBConfig)
+ 174     """Expert parallelism configuration."""
+ 175     expert_placement_strategy: ExpertPlacementStrategy = "linear"
+  --- '_data_parallel_master' @ line 330 ---
+ 328     """Global rank in distributed setup."""
+ 329 
+ 330     _data_parallel_master_port_list: list[int] = Field(default_factory=list)
+ 331     """List of open port auto-queried for data parallel messaging.
+ 332     Set to be private as it's not intended to be configured by users.
+ 333     """
+ 334 
+ 335     _coord_store_port: int = 0
+ 336     """Port of the coordination TCPStore. Can be set by the API server; workers
+ 337     connect as clients to exchange self-picked group ports at runtime."""
+ 338 
+ 339     decode_context_parallel_size: int = Field(default=1, ge=1)
+ 340     """Number of decode context parallel groups, because the world size does
+ 341     not change by dcp, it simply reuse the GPUs of TP group, and tp_size
+ 342     needs to be divisible by dcp_size."""
+ 343 
+ 344     dcp_kv_cache_interleave_size: int = 1
+ 345     """
+ 346     Interleave size of kv_cache storage while using DCP.
+ 347     dcp_kv_cache_interleave_size has been replaced by cp_kv_cache_interleave_size,
+ 348     and will be deprecated when PCP is fully supported.
+ 349 
+ 350     """
+ 351     dcp_comm_backend: DCPCommBackend = "ag_rs"
+ 352     """Communication backend for Decode Context Parallel (DCP).
+ 353     - "ag_rs": AllGather + ReduceScatter (default, existing behavior)
+ 354     - "a2a": All-to-All exchange of partial outputs + LSE, then
+ 355       combine with Triton kernel. Reduces NCCL calls from 3 to 2
+ 356       per layer for MLA models.
+ 357     """
+ 358 
+ 359     cp_kv_cache_interleave_size: int = 1
+  --- 'VLLM_DP_RANK' @ line 854 ---
+ 852             # Otherwise fall back to env vars (e.g. for offline SPMD case).
+ 853             self.data_parallel_size = envs.VLLM_DP_SIZE
+ 854             self.data_parallel_rank = envs.VLLM_DP_RANK
+ 855             self.data_parallel_rank_local = envs.VLLM_DP_RANK_LOCAL
+ 856             self.data_parallel_master_ip = envs.VLLM_DP_MASTER_IP
+ 857             self.data_parallel_master_port = envs.VLLM_DP_MASTER_PORT
+ 858 
+ 859             if self.data_parallel_size > 1 and self.is_moe_model is False:
+ 860                 raise ValueError(
+ 861                     "Offline data parallel mode is not supported/useful"
+ 862                     " for dense models."
+ 863                 )
+ 864 
+ 865         self.data_parallel_index = self.data_parallel_rank
+ 866 
+ 867         if self.distributed_executor_backend == "external_launcher":
+ 868             os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+ 869             logger.info("Disabling V1 multiprocessing for external launcher.")
+ 870 
+ 871         if self.distributed_executor_backend is None and self.world_size_across_dp > 1:
+ 872             # We use multiprocessing by default if world_size fits on the
+ 873             # current node and we aren't in a ray placement group.
+ 874 
+ 875             from vllm.v1.executor import ray_utils
+ 876 
+ 877             backend: DistributedExecutorBackend = "mp"
+ 878             ray_found = ray_utils.ray_is_available()
+ 879             if current_platform.is_tpu() and envs.VLLM_XLA_USE_SPMD:
+ 880                 backend = "uni"
+ 881             elif current_platform.is_cuda() and self.nnodes > 1:
+ 882                 backend = "mp"
+ 883             elif (
+  --- 'world_size_across_dp' @ line 517 ---
+ 515 
+ 516     @property
+ 517     def world_size_across_dp(self) -> int:
+ 518         """world_size_across_dp is TPxPPxDP, it is the size of the world
+ 519         including data parallelism."""
+ 520         return self.world_size * self.data_parallel_size
+ 521 
+ 522     @property
+ 523     def use_ubatching(self) -> bool:
+ 524         return self.enable_dbo or self.ubatch_size > 1
+ 525 
+ 526     @property
+ 527     def num_ubatches(self) -> int:
+ 528         return 2 if self.enable_dbo else self.ubatch_size
+ 529 
+ 530     @property
+ 531     def local_engines_only(self) -> bool:
+ 532         """
+ 533         Client manages local+remote EngineCores in pure internal LB case.
+ 534         Client manages local EngineCores in hybrid and external LB case.
+ 535         """
+ 536         return self.data_parallel_external_lb or self.data_parallel_hybrid_lb
+ 537 
+ 538     def get_next_dp_init_port(self) -> int:
+ 539         """
+ 540         We might need to initialize process groups in multiple
+ 541         processes that is related to data parallelism,
+ 542         e.g. both in the worker and in the engine, which
+ 543         can live in different processes. To avoid port conflicts, we
+ 544         pop a new port from the prepared port list each time we need to
+ 545         initialize a new process group related to data parallelism.
+ 546         """
+
+===== envs.py DP  (/usr/local/lib/python3.12/site-packages/vllm/envs.py) =====
+  --- 'VLLM_DP_RANK' @ line 154 ---
+ 152     VLLM_RAY_BUNDLE_INDICES: str = ""
+ 153     VLLM_CUDART_SO_PATH: str | None = None
+ 154     VLLM_DP_RANK: int = 0
+ 155     VLLM_DP_RANK_LOCAL: int = -1
+ 156     VLLM_DP_SIZE: int = 1
+ 157     VLLM_USE_STANDALONE_COMPILE: bool = True
+ 158     VLLM_ENABLE_PREGRAD_PASSES: bool = True
+ 159     VLLM_USE_BREAKABLE_CUDAGRAPH: bool = False
+ 160     VLLM_DP_MASTER_IP: str = ""
+ 161     VLLM_DP_MASTER_PORT: int = 0
+ 162     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: bool = False
+ 163     VLLM_RAY_DP_PACK_STRATEGY: Literal["strict", "fill", "span"] = "strict"
+ 164     VLLM_RAY_DP_PLACEMENT_NODE_IPS: str = ""
+ 165     VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY: str = ""
+ 166     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
+ 167     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
+ 168     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
+ 169     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
+ 170     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
+ 171     VLLM_HUMMING_USE_F16_ACCUM: bool = False
+ 172     VLLM_HUMMING_MOE_GEMM_TYPE: Literal["indexed", "grouped", "auto"] | None = None
+ 173     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
+ 174     VLLM_V1_USE_OUTLINES_CACHE: bool = False
+ 175     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
+ 176     VLLM_TPU_MOST_MODEL_LEN: int | None = None
+ 177     VLLM_TPU_USING_PATHWAYS: bool = False
+ 178     VLLM_USE_DEEP_GEMM: bool = True
+ 179     VLLM_MOE_USE_DEEP_GEMM: bool = True
+ 180     VLLM_USE_DEEP_GEMM_E8M0: bool = True
+ 181     VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES: bool = True
+ 182     VLLM_DEEP_GEMM_WARMUP: Literal[
+ 183         "skip",
+  --- 'VLLM_DP_MASTER' @ line 160 ---
+ 158     VLLM_ENABLE_PREGRAD_PASSES: bool = True
+ 159     VLLM_USE_BREAKABLE_CUDAGRAPH: bool = False
+ 160     VLLM_DP_MASTER_IP: str = ""
+ 161     VLLM_DP_MASTER_PORT: int = 0
+ 162     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: bool = False
+ 163     VLLM_RAY_DP_PACK_STRATEGY: Literal["strict", "fill", "span"] = "strict"
+ 164     VLLM_RAY_DP_PLACEMENT_NODE_IPS: str = ""
+ 165     VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY: str = ""
+ 166     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
+ 167     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
+ 168     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
+ 169     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
+ 170     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
+ 171     VLLM_HUMMING_USE_F16_ACCUM: bool = False
+ 172     VLLM_HUMMING_MOE_GEMM_TYPE: Literal["indexed", "grouped", "auto"] | None = None
+ 173     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
+ 174     VLLM_V1_USE_OUTLINES_CACHE: bool = False
+ 175     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
+ 176     VLLM_TPU_MOST_MODEL_LEN: int | None = None
+ 177     VLLM_TPU_USING_PATHWAYS: bool = False
+ 178     VLLM_USE_DEEP_GEMM: bool = True
+ 179     VLLM_MOE_USE_DEEP_GEMM: bool = True
+ 180     VLLM_USE_DEEP_GEMM_E8M0: bool = True
+ 181     VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES: bool = True
+ 182     VLLM_DEEP_GEMM_WARMUP: Literal[
+ 183         "skip",
+ 184         "full",
+ 185         "relax",
+ 186     ] = "relax"
+ 187     VLLM_USE_FUSED_MOE_GROUPED_TOPK: bool = True
+ 188     VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER: bool = True
+ 189     VLLM_USE_FLASHINFER_MOE_INT4: bool = False
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-ANWlczCS7xufzoRHRQwwKU

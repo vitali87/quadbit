@@ -246,3 +246,18 @@ Branch `c6-c4-quality-validation`, commit `5b6b9e5`. Full docs [c4_quality_eval]
 | The dense custom-AR row engaged custom AR | NO: 6 dense attempts (R3 + 5 retries) all hit partial-P2P Modal containers and fell back to NCCL; dense-engaged direct point not obtained | not obtained (Modal P2P-container luck; R5 + policy-independence carry it) |
 | C4 is a quality-safe decode SOTA (not speed-only) | verdict A: +20.5% decode with a stable downstream envelope; PPL shift is reduction-order-sensitive, not a regression | backed (verdict) |
 | C6 reproduces the frozen reference AVGs | dense NCCL band 0.7344-0.7382 vs `deepseek_final.csv` dense 0.7383; sparse D2 NCCL 0.7301 vs d2_slot2 0.7304 | backed |
+
+## 16. C7 DP-attention serve-latency lever — verdict D, C4 ceiling stands
+
+Branch `c7-dp-attention-serve`. Full docs [verdict](c7/verdict.md) / [mode_validation](c7/mode_validation.md) / [serve_baseline](c7/serve_baseline.md) / [dp_attention_ab](c7/dp_attention_ab.md) / [quality_guardrail](c7/quality_guardrail.md) / [sparse_d2_transfer](c7/sparse_d2_transfer.md); logs `docs/audit/logs/c7_dp_*.log`. 4x RTX PRO 6000 (SM120), no NVLink.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| DP-attention activates offline (breaks the C5 blocker) | env-driven SPMD (VLLM_DP_* per rank, no data_parallel_* kwargs) constructs tp=1/dp=4/EP engines `Worker_DP0_EP0..DP3_EP3`; both graph modes exit [0,0,0,0] | backed |
+| DP-attention removes the attention TP all-reduce | trace custom=0 ring=0 per-token in both eager and captured | backed |
+| The collective floor drops toward 0 (the C7 hope) | NO (disproven): floor moves to EP path — 1376 allgather + 1376 reduce-scatter = 2 collectives/layer vs C4's 1; AllGather 39-76% of decode CUDA time, 956us-5.3ms/call, PCIe-bound | not claimed (disproven) |
+| Captured DP-attention beats C4 58.126 | NO (honest negative): 20.450 tok/s = 2.84x slower, same single-request metric, same 4 GPUs | not claimed |
+| DP-attention changes model quality | NO: ppl 4.2640 (= C4 4.264), coherence probes correct (Paris / fibonacci / RGB) — pure execution-mode change | backed (quality-safe) |
+| Aggregate serving throughput of the 4 DP replicas is a decode SOTA | NO: 4x20.450 = 81.8 tok/s exists but at 2.84x-worse per-request latency; labeled aggregate per the guardrail, not a single-request decode win | not claimed (guardrail honored) |
+| Sparse D2 transfer under DP-attention | not run: spec gate "only if dense improves" not met (dense regressed 2.84x) | not obtained (gate not met) |
+| C7 verdict | D — AR count drops to 0 but a worse EP allgather+reduce-scatter floor dominates; C4 58.126 SOTA unchanged | verdict |

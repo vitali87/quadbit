@@ -1,0 +1,588 @@
+
+
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 2898.62it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 2811.20it/s]
+
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 3015.32it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.77s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.77s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.77s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.77s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.77s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.77s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.78s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:06<00:00,  6.78s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:12<00:00, 12.48s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+
+[1AProcessed prompts: 100%|██████████| 1/1 [00:12<00:00, 12.48s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+
+[1AProcessed prompts: 100%|██████████| 1/1 [00:12<00:00, 12.48s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+
+[1AProcessed prompts: 100%|██████████| 1/1 [00:12<00:00, 12.48s/it, est. speed input: 1.48 toks/s, output: 2.36 toks/s]
+(EngineCore_DP0 pid=181) INFO 07-14 12:55:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP2 pid=164) INFO 07-14 12:55:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP1 pid=174) INFO 07-14 12:55:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP3 pid=188) INFO 07-14 12:55:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP0 pid=181) INFO 07-14 12:56:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP2 pid=164) INFO 07-14 12:56:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP3 pid=188) INFO 07-14 12:56:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP1 pid=174) INFO 07-14 12:56:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP0 pid=181) INFO 07-14 12:57:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP2 pid=164) INFO 07-14 12:57:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP1 pid=174) INFO 07-14 12:57:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP3 pid=188) INFO 07-14 12:57:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP0 pid=181) INFO 07-14 12:58:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP3 pid=188) INFO 07-14 12:58:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP2 pid=164) INFO 07-14 12:58:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP1 pid=174) INFO 07-14 12:58:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_DP0_EP0 pid=276) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP0_EP0 pid=276)                                                    Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+(Worker_DP0_EP0 pid=276) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP0_EP0 pid=276)                    execute_context_0(0)_generation_1(1)         0.00%       0.000us         0.00%       0.000us       0.000us       29.722s       308.66%       29.722s     396.296ms            75  
+(Worker_DP0_EP0 pid=276)                                vllm::moe_forward_shared        28.83%        2.847s        41.10%        4.059s       2.950ms        8.375s        86.97%        8.433s       6.129ms          1376  
+(Worker_DP0_EP0 pid=276) ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us        7.377s        76.61%        7.377s       5.361ms          1376  
+(Worker_DP0_EP0 pid=276)                   execute_context_1(10)_generation_0(0)         0.00%       0.000us         0.00%       0.000us       0.000us        1.973s        20.49%        1.973s     394.640ms             5  
+(Worker_DP0_EP0 pid=276) ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDev...         0.00%       0.000us         0.00%       0.000us       0.000us     839.397ms         8.72%     839.397ms     610.027us          1376  
+(Worker_DP0_EP0 pid=276)                                             aten::copy_         2.00%     197.130ms         4.23%     417.316ms      11.404us     525.794ms         5.46%     525.919ms      14.372us         36594  
+(Worker_DP0_EP0 pid=276)                                               aten::mul         2.02%     199.148ms         3.62%     357.402ms      11.964us     412.550ms         4.28%     412.553ms      13.811us         29872  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     385.874ms         4.01%     385.874ms      43.221us          8928  
+(Worker_DP0_EP0 pid=276) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     206.304ms         2.14%     206.304ms      15.010us         13744  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     189.944ms         1.97%     189.944ms      69.020us          2752  
+(Worker_DP0_EP0 pid=276)                                                 INVALID         0.29%      28.833ms         0.29%      28.833ms       0.304us     155.477ms         1.61%     155.477ms       1.640us         94784  
+(Worker_DP0_EP0 pid=276)                                    cudaDriverGetVersion         0.08%       7.529ms         0.08%       7.529ms       0.082us     128.918ms         1.34%     128.918ms       1.401us         92032  
+(Worker_DP0_EP0 pid=276) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     117.846ms         1.22%     117.846ms      17.129us          6880  
+(Worker_DP0_EP0 pid=276) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      81.280ms         0.84%      81.280ms      11.888us          6837  
+(Worker_DP0_EP0 pid=276)                                   cudaStreamIsCapturing         0.12%      11.668ms         0.12%      11.668ms       0.456us      74.416ms         0.77%      74.416ms       2.907us         25596  
+(Worker_DP0_EP0 pid=276) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      64.894ms         0.67%      64.894ms      47.162us          1376  
+(Worker_DP0_EP0 pid=276)                                                aten::mm         1.18%     116.052ms         1.64%     162.420ms      37.048us      63.129ms         0.66%      63.129ms      14.400us          4384  
+(Worker_DP0_EP0 pid=276)                                  cudaDeviceGetAttribute         0.12%      12.334ms         0.12%      12.334ms       0.516us      45.947ms         0.48%      45.947ms       1.924us         23883  
+(Worker_DP0_EP0 pid=276) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      45.569ms         0.47%      45.569ms      33.117us          1376  
+(Worker_DP0_EP0 pid=276)                                               aten::bmm         0.59%      58.244ms         0.69%      68.398ms      39.952us      44.091ms         0.46%      44.091ms      25.754us          1712  
+(Worker_DP0_EP0 pid=276) void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us      43.683ms         0.45%      43.683ms      30.336us          1440  
+(Worker_DP0_EP0 pid=276)                                    cudaFuncSetAttribute         0.72%      71.348ms         0.72%      71.348ms       3.582us      30.664ms         0.32%      30.664ms       1.539us         19920  
+(Worker_DP0_EP0 pid=276)                                cudaEventRecordWithFlags         0.15%      14.755ms         0.15%      14.755ms       1.275us      25.407ms         0.26%      25.407ms       2.196us         11568  
+(Worker_DP0_EP0 pid=276)                                        cuLaunchKernelEx         0.73%      71.596ms         0.74%      73.116ms       6.325us      24.424ms         0.25%      24.424ms       2.113us         11559  
+(Worker_DP0_EP0 pid=276)                                     cudaStreamWaitEvent         0.24%      23.501ms         0.24%      23.501ms       1.244us      24.111ms         0.25%      24.111ms       1.276us         18896  
+(Worker_DP0_EP0 pid=276) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      20.517ms         0.21%      20.517ms      16.143us          1271  
+(Worker_DP0_EP0 pid=276)                                        cudaLaunchKernel         6.86%     677.201ms         6.92%     683.214ms       5.600us      19.276ms         0.20%      19.281ms       0.158us        121992  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      18.837ms         0.20%      18.837ms       1.247us         15104  
+(Worker_DP0_EP0 pid=276)                                        aten::reciprocal         0.94%      92.699ms         1.71%     168.626ms      11.164us      18.426ms         0.19%      18.426ms       1.220us         15104  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      18.426ms         0.19%      18.426ms       1.220us         15104  
+(Worker_DP0_EP0 pid=276)                                               aten::max         0.94%      93.161ms         1.69%     167.191ms      21.212us      17.289ms         0.18%      17.291ms       2.194us          7882  
+(Worker_DP0_EP0 pid=276) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us      16.648ms         0.17%      16.648ms       2.204us          7552  
+(Worker_DP0_EP0 pid=276) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us      15.583ms         0.16%      15.583ms      23.937us           651  
+(Worker_DP0_EP0 pid=276)                                     cudaLaunchKernelExC         2.06%     202.947ms         2.07%     204.479ms       7.156us      15.451ms         0.16%      15.451ms       0.541us         28574  
+(Worker_DP0_EP0 pid=276) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      13.180ms         0.14%      13.180ms       6.643us          1984  
+(Worker_DP0_EP0 pid=276)              mhc_pre_big_fuse_with_norm_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      12.131ms         0.13%      12.131ms       4.408us          2752  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::quantize_with_block_size...         0.00%       0.000us         0.00%       0.000us       0.000us      11.916ms         0.12%      11.916ms       1.578us          7552  
+(Worker_DP0_EP0 pid=276) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      11.906ms         0.12%      11.906ms     744.107us            16  
+(Worker_DP0_EP0 pid=276)                               mhc_fused_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      11.313ms         0.12%      11.313ms       4.159us          2720  
+(Worker_DP0_EP0 pid=276)                                               aten::abs         0.85%      83.578ms         3.10%     305.919ms      20.254us      10.061ms         0.10%      20.126ms       1.333us         15104  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      10.061ms         0.10%      10.061ms       1.332us          7552  
+(Worker_DP0_EP0 pid=276)                                         aten::clamp_min         0.62%      61.318ms         1.07%     105.925ms      14.026us       8.817ms         0.09%       8.819ms       1.168us          7552  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.817ms         0.09%       8.817ms       1.168us          7552  
+(Worker_DP0_EP0 pid=276) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       8.615ms         0.09%       8.615ms      12.521us           688  
+(Worker_DP0_EP0 pid=276)                                        aten::nan_to_num         0.65%      64.265ms         2.27%     224.392ms      14.856us       8.592ms         0.09%      17.185ms       1.138us         15104  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.592ms         0.09%       8.592ms       1.138us          7552  
+(Worker_DP0_EP0 pid=276) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       7.839ms         0.08%       7.839ms       1.342us          5840  
+(Worker_DP0_EP0 pid=276)                                             aten::index         0.32%      31.706ms         0.52%      51.732ms      25.186us       6.920ms         0.07%       6.944ms       3.381us          2054  
+(Worker_DP0_EP0 pid=276)                              _moe_C::topk_softplus_sqrt         0.15%      14.731ms         0.26%      26.059ms      18.938us       6.147ms         0.06%       6.147ms       4.467us          1376  
+(Worker_DP0_EP0 pid=276) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       5.708ms         0.06%       5.708ms       4.460us          1280  
+(Worker_DP0_EP0 pid=276) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       5.271ms         0.05%       5.271ms       3.830us          1376  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::cutlass_kernels::finaliz...         0.00%       0.000us         0.00%       0.000us       0.000us       5.165ms         0.05%       5.165ms       3.754us          1376  
+(Worker_DP0_EP0 pid=276) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.804ms         0.05%       4.804ms       7.379us           651  
+(Worker_DP0_EP0 pid=276) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.450ms         0.05%       4.450ms       2.674us          1664  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::cutlass_kernels::doActiv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.445ms         0.05%       4.445ms       3.230us          1376  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::cutlass_kernels::expandI...         0.00%       0.000us         0.00%       0.000us       0.000us       4.392ms         0.05%       4.392ms       3.192us          1376  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::cutlass_kernels::compute...         0.00%       0.000us         0.00%       0.000us       0.000us       4.183ms         0.04%       4.183ms       3.040us          1376  
+(Worker_DP0_EP0 pid=276)                          Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us       3.912ms         0.04%       3.912ms       1.111us          3523  
+(Worker_DP0_EP0 pid=276)                                               aten::add         0.36%      35.957ms         0.65%      63.873ms      15.179us       3.040ms         0.03%       3.040ms       0.723us          4208  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.840ms         0.03%       2.840ms       1.032us          2752  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::cutlass_kernels::fusedBu...         0.00%       0.000us         0.00%       0.000us       0.000us       2.354ms         0.02%       2.354ms       1.766us          1333  
+(Worker_DP0_EP0 pid=276)                              _fused_q_kv_rmsnorm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.234ms         0.02%       2.234ms       1.624us          1376  
+(Worker_DP0_EP0 pid=276) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.200ms         0.02%       2.200ms       6.983us           315  
+(Worker_DP0_EP0 pid=276)                             _save_partial_states_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.178ms         0.02%       2.178ms       2.195us           992  
+(Worker_DP0_EP0 pid=276)                             _C::silu_and_mul_with_clamp         0.14%      14.034ms         0.24%      23.630ms      17.173us       2.018ms         0.02%       2.018ms       1.467us          1376  
+(Worker_DP0_EP0 pid=276) void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us       2.018ms         0.02%       2.018ms       1.467us          1376  
+(Worker_DP0_EP0 pid=276)                                              aten::topk         0.06%       5.578ms         0.12%      11.557ms      36.689us       1.971ms         0.02%       1.971ms       6.257us           315  
+(Worker_DP0_EP0 pid=276)                                     cudaPeekAtLastError         0.01%     846.228us         0.01%     846.228us       0.152us       1.929ms         0.02%       1.929ms       0.346us          5572  
+(Worker_DP0_EP0 pid=276) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       1.873ms         0.02%       1.873ms       2.723us           688  
+(Worker_DP0_EP0 pid=276) void tensorrt_llm::kernels::block_scale_interleave_k...         0.00%       0.000us         0.00%       0.000us       0.000us       1.767ms         0.02%       1.767ms       1.284us          1376  
+(Worker_DP0_EP0 pid=276)                                    _C::scaled_fp4_quant         0.12%      11.911ms         0.23%      22.917ms      16.655us       1.760ms         0.02%       1.760ms       1.279us          1376  
+(Worker_DP0_EP0 pid=276) void vllm::cvt_fp16_to_fp4_sf_major<__nv_bfloat16, f...         0.00%       0.000us         0.00%       0.000us       0.000us       1.760ms         0.02%       1.760ms       1.279us          1376  
+(Worker_DP0_EP0 pid=276) _C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_inser...         0.13%      12.884ms         0.23%      23.066ms      33.526us       1.716ms         0.02%       1.716ms       2.493us           688  
+(Worker_DP0_EP0 pid=276) void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us       1.716ms         0.02%       1.716ms       2.493us           688  
+(Worker_DP0_EP0 pid=276)                                             aten::fill_         0.14%      14.206ms         0.30%      29.175ms      12.713us       1.711ms         0.02%       1.711ms       0.746us          2295  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.550ms         0.02%       1.550ms       1.126us          1376  
+(Worker_DP0_EP0 pid=276)                                            Buffer Flush         0.01%     922.382us         0.01%       1.071ms      42.837us       1.536ms         0.02%       1.540ms      61.596us            25  
+(Worker_DP0_EP0 pid=276)                                               aten::sub         0.13%      13.119ms         0.25%      24.932ms       8.386us       1.426ms         0.01%       1.426ms       0.480us          2973  
+(Worker_DP0_EP0 pid=276) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.275ms         0.01%       1.275ms       1.898us           672  
+(Worker_DP0_EP0 pid=276) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.260ms         0.01%       1.260ms       3.750us           336  
+(Worker_DP0_EP0 pid=276) void at::native::bitonicSortKVInPlace<-2, -1, 16, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       1.132ms         0.01%       1.132ms       3.595us           315  
+(Worker_DP0_EP0 pid=276) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     954.577us         0.01%     954.577us       1.515us           630  
+(Worker_DP0_EP0 pid=276)                                         cudaEventRecord         0.09%       9.174ms         0.09%       9.174ms       1.324us     868.866us         0.01%     868.866us       0.125us          6930  
+(Worker_DP0_EP0 pid=276) void at::native::sbtopk::gatherTopK<float, unsigned ...         0.00%       0.000us         0.00%       0.000us       0.000us     838.598us         0.01%     838.598us       2.662us           315  
+(Worker_DP0_EP0 pid=276)        _fused_kv_compress_norm_rope_insert_indexer_attn         0.00%       0.000us         0.00%       0.000us       0.000us     775.773us         0.01%     775.773us       2.309us           336  
+(Worker_DP0_EP0 pid=276)            _compute_global_topk_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     753.927us         0.01%     753.927us       2.118us           356  
+(Worker_DP0_EP0 pid=276) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us     672.197us         0.01%     672.197us       2.134us           315  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     660.328us         0.01%     660.328us       0.924us           715  
+(Worker_DP0_EP0 pid=276) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     645.727us         0.01%     645.727us       1.534us           421  
+(Worker_DP0_EP0 pid=276) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us     640.900us         0.01%     640.900us       2.035us           315  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     594.303us         0.01%     594.303us       0.864us           688  
+(Worker_DP0_EP0 pid=276) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     517.220us         0.01%     517.220us       1.642us           315  
+(Worker_DP0_EP0 pid=276) void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us     508.834us         0.01%     508.834us      12.411us            41  
+(Worker_DP0_EP0 pid=276) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     485.314us         0.01%     485.314us       1.181us           411  
+(Worker_DP0_EP0 pid=276)                                               aten::div         0.03%       3.355ms         0.05%       5.258ms      16.691us     480.065us         0.00%     480.065us       1.524us           315  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     480.065us         0.00%     480.065us       1.524us           315  
+(Worker_DP0_EP0 pid=276) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us     453.346us         0.00%     453.346us       7.084us            64  
+(Worker_DP0_EP0 pid=276)                                         aten::remainder         0.04%       3.606ms         0.05%       5.395ms      17.127us     448.422us         0.00%     448.422us       1.424us           315  
+(Worker_DP0_EP0 pid=276) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     448.422us         0.00%     448.422us       1.424us           315  
+(Worker_DP0_EP0 pid=276) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us     438.982us         0.00%     438.982us       4.573us            96  
+(Worker_DP0_EP0 pid=276) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP0_EP0 pid=276) Self CPU time total: 9.875s
+(Worker_DP0_EP0 pid=276) Self CUDA time total: 9.629s
+(Worker_DP0_EP0 pid=276) 
+(Worker_DP0_EP0 pid=276) INFO 07-14 12:58:58 [wrapper.py:66] Profiler stopped successfully.
+(EngineCore_DP1 pid=174) INFO 07-14 12:59:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP2 pid=164) INFO 07-14 12:59:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore_DP3 pid=188) INFO 07-14 12:59:01 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_DP2_EP2 pid=273) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP2_EP2 pid=273)                                                    Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+(Worker_DP2_EP2 pid=273) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP2_EP2 pid=273)                    execute_context_0(0)_generation_1(1)         0.00%       0.000us         0.00%       0.000us       0.000us       29.850s       902.61%       29.850s     398.005ms            75  
+(Worker_DP2_EP2 pid=273)                                vllm::moe_forward_shared        31.02%        3.097s        43.09%        4.302s       3.126ms        2.075s        62.73%        2.132s       1.550ms          1376  
+(Worker_DP2_EP2 pid=273)                   execute_context_1(10)_generation_0(0)         0.00%       0.000us         0.00%       0.000us       0.000us        2.005s        60.63%        2.005s     401.054ms             5  
+(Worker_DP2_EP2 pid=273) ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us        1.409s        42.61%        1.409s       1.024ms          1376  
+(Worker_DP2_EP2 pid=273)                                             aten::copy_         1.99%     198.331ms         4.20%     419.651ms      11.468us     522.492ms        15.80%     522.613ms      14.281us         36594  
+(Worker_DP2_EP2 pid=273) ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDev...         0.00%       0.000us         0.00%       0.000us       0.000us     513.912ms        15.54%     513.912ms     373.482us          1376  
+(Worker_DP2_EP2 pid=273)                                               aten::mul         1.97%     196.812ms         3.54%     352.885ms      11.813us     411.505ms        12.44%     411.506ms      13.776us         29872  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     385.907ms        11.67%     385.907ms      43.224us          8928  
+(Worker_DP2_EP2 pid=273) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     205.555ms         6.22%     205.555ms      14.956us         13744  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     188.881ms         5.71%     188.881ms      68.634us          2752  
+(Worker_DP2_EP2 pid=273) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     116.127ms         3.51%     116.127ms      16.879us          6880  
+(Worker_DP2_EP2 pid=273) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      84.264ms         2.55%      84.264ms      12.325us          6837  
+(Worker_DP2_EP2 pid=273) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      57.389ms         1.74%      57.389ms      41.707us          1376  
+(Worker_DP2_EP2 pid=273)                                                 INVALID         0.28%      28.431ms         0.28%      28.431ms       0.300us      56.020ms         1.69%      56.020ms       0.591us         94784  
+(Worker_DP2_EP2 pid=273)                                                aten::mm         1.15%     114.524ms         1.57%     156.509ms      35.700us      47.821ms         1.45%      47.821ms      10.908us          4384  
+(Worker_DP2_EP2 pid=273)                                               aten::bmm         0.58%      58.150ms         0.69%      68.594ms      40.067us      44.854ms         1.36%      44.854ms      26.200us          1712  
+(Worker_DP2_EP2 pid=273) void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us      44.371ms         1.34%      44.371ms      30.813us          1440  
+(Worker_DP2_EP2 pid=273) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      43.137ms         1.30%      43.137ms      31.349us          1376  
+(Worker_DP2_EP2 pid=273)                                    cudaDriverGetVersion         0.07%       7.036ms         0.07%       7.036ms       0.076us      37.998ms         1.15%      37.998ms       0.413us         92032  
+(Worker_DP2_EP2 pid=273)                                   cudaStreamIsCapturing         0.12%      11.561ms         0.12%      11.561ms       0.452us      22.884ms         0.69%      22.884ms       0.894us         25596  
+(Worker_DP2_EP2 pid=273)                                        cuLaunchKernelEx         0.70%      70.215ms         0.72%      71.805ms       6.212us      19.313ms         0.58%      19.313ms       1.671us         11559  
+(Worker_DP2_EP2 pid=273)                                        aten::reciprocal         0.93%      92.916ms         1.69%     169.134ms      11.198us      18.489ms         0.56%      18.493ms       1.224us         15104  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      18.489ms         0.56%      18.489ms       1.224us         15104  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      17.861ms         0.54%      17.861ms       1.183us         15104  
+(Worker_DP2_EP2 pid=273)                                               aten::max         0.93%      92.779ms         1.70%     170.133ms      21.585us      17.253ms         0.52%      17.260ms       2.190us          7882  
+(Worker_DP2_EP2 pid=273)                                     cudaStreamWaitEvent         0.24%      23.554ms         0.24%      23.554ms       1.247us      17.101ms         0.52%      17.101ms       0.905us         18896  
+(Worker_DP2_EP2 pid=273) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us      16.604ms         0.50%      16.604ms       2.199us          7552  
+(Worker_DP2_EP2 pid=273)                                  cudaDeviceGetAttribute         0.12%      12.224ms         0.12%      12.224ms       0.512us      13.322ms         0.40%      13.322ms       0.558us         23883  
+(Worker_DP2_EP2 pid=273) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us      13.202ms         0.40%      13.202ms      20.280us           651  
+(Worker_DP2_EP2 pid=273)                                     cudaPeekAtLastError         0.01%     821.531us         0.01%     821.531us       0.147us      12.761ms         0.39%      12.761ms       2.290us          5572  
+(Worker_DP2_EP2 pid=273)              mhc_pre_big_fuse_with_norm_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      12.230ms         0.37%      12.230ms       4.444us          2752  
+(Worker_DP2_EP2 pid=273) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      12.147ms         0.37%      12.147ms       9.557us          1271  
+(Worker_DP2_EP2 pid=273) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      11.894ms         0.36%      11.894ms     743.347us            16  
+(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::quantize_with_block_size...         0.00%       0.000us         0.00%       0.000us       0.000us      11.887ms         0.36%      11.887ms       1.574us          7552  
+(Worker_DP2_EP2 pid=273)                               mhc_fused_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      11.662ms         0.35%      11.662ms       4.288us          2720  
+(Worker_DP2_EP2 pid=273) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       8.938ms         0.27%       8.938ms       4.505us          1984  
+(Worker_DP2_EP2 pid=273)                                         aten::clamp_min         0.61%      61.295ms         1.08%     108.289ms      14.339us       8.812ms         0.27%       8.815ms       1.167us          7552  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.812ms         0.27%       8.812ms       1.167us          7552  
+(Worker_DP2_EP2 pid=273) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       8.658ms         0.26%       8.658ms      12.585us           688  
+(Worker_DP2_EP2 pid=273)                                        aten::nan_to_num         0.66%      65.874ms         2.29%     228.605ms      15.135us       8.171ms         0.25%      16.343ms       1.082us         15104  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.171ms         0.25%       8.171ms       1.082us          7552  
+(Worker_DP2_EP2 pid=273)                                               aten::abs         0.85%      85.167ms         2.98%     297.221ms      19.678us       8.028ms         0.24%      16.058ms       1.063us         15104  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.028ms         0.24%       8.028ms       1.063us          7552  
+(Worker_DP2_EP2WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+.00%       0.000us       0.000us       4.386ms         0.13%       4.386ms       3.188us          1376  
+(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::expandI...         0.00%       0.000us         0.00%       0.000us       0.000us       4.355ms         0.13%       4.355ms       3.165us          1376  
+(Worker_DP2_EP2 pid=273)                          Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us       3.959ms         0.12%       3.959ms       1.124us          3523  
+(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::compute...         0.00%       0.000us         0.00%       0.000us       0.000us       3.786ms         0.11%       3.786ms       2.751us          1376  
+(Worker_DP2_EP2 pid=273)                                               aten::add         0.37%      36.574ms         0.65%      64.606ms      15.353us       3.000ms         0.09%       3.000ms       0.713us          4208  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.867ms         0.09%       2.867ms       1.042us          2752  
+(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::fusedBu...         0.00%       0.000us         0.00%       0.000us       0.000us       2.371ms         0.07%       2.371ms       1.778us          1333  
+(Worker_DP2_EP2 pid=273) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.271ms         0.07%       2.271ms       7.211us           315  
+(Worker_DP2_EP2 pid=273)                              _fused_q_kv_rmsnorm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.227ms         0.07%       2.227ms       1.619us          1376  
+(Worker_DP2_EP2 pid=273)                             _C::silu_and_mul_with_clamp         0.14%      14.274ms         0.24%      23.980ms      17.427us       2.052ms         0.06%       2.052ms       1.491us          1376  
+(Worker_DP2_EP2 pid=273) void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us       2.052ms         0.06%       2.052ms       1.491us          1376  
+(Worker_DP2_EP2 pid=273)                             _save_partial_states_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.031ms         0.06%       2.031ms       2.047us           992  
+(Worker_DP2_EP2 pid=273)                                              aten::topk         0.06%       5.630ms         0.12%      11.505ms      36.525us       2.001ms         0.06%       2.001ms       6.353us           315  
+(Worker_DP2_EP2 pid=273) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       1.879ms         0.06%       1.879ms       2.731us           688  
+(Worker_DP2_EP2 pid=273) _C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_inser...         0.13%      13.006ms         0.23%      23.088ms      33.558us       1.783ms         0.05%       1.783ms       2.592us           688  
+(Worker_DP2_EP2 pid=273) void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us       1.783ms         0.05%       1.783ms       2.592us           688  
+(Worker_DP2_EP2 pid=273)                                             aten::fill_         0.14%      14.276ms         0.29%      28.493ms      12.415us       1.703ms         0.05%       1.703ms       0.742us          2295  
+(Worker_DP2_EP2 pid=273)                                    _C::scaled_fp4_quant         0.12%      11.924ms         0.23%      22.784ms      16.558us       1.696ms         0.05%       1.696ms       1.233us          1376  
+(Worker_DP2_EP2 pid=273) void vllm::cvt_fp16_to_fp4_sf_major<__nv_bfloat16, f...         0.00%       0.000us         0.00%       0.000us       0.000us       1.696ms         0.05%       1.696ms       1.233us          1376  
+(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::block_scale_interleave_k...         0.00%       0.000us         0.00%       0.000us       0.000us       1.602ms         0.05%       1.602ms       1.164us          1376  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.500ms         0.05%       1.500ms       1.090us          1376  
+(Worker_DP2_EP2 pid=273)                                               aten::sub         0.13%      13.330ms         0.27%      26.745ms       8.996us       1.442ms         0.04%       1.443ms       0.486us          2973  
+(Worker_DP2_EP2 pid=273) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.322ms         0.04%       1.322ms       1.967us           672  
+(Worker_DP2_EP2 pid=273) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.248ms         0.04%       1.248ms       3.714us           336  
+(Worker_DP2_EP2 pid=273) void at::native::bitonicSortKVInPlace<-2, -1, 16, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       1.149ms         0.03%       1.149ms       3.647us           315  
+(Worker_DP2_EP2 pid=273) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     963.840us         0.03%     963.840us       1.530us           630  
+(Worker_DP2_EP2 pid=273) void at::native::sbtopk::gatherTopK<float, unsigned ...         0.00%       0.000us         0.00%       0.000us       0.000us     852.382us         0.03%     852.382us       2.706us           315  
+(Worker_DP2_EP2 pid=273)        _fused_kv_compress_norm_rope_insert_indexer_attn         0.00%       0.000us         0.00%       0.000us       0.000us     763.521us         0.02%     763.521us       2.272us           336  
+(Worker_DP2_EP2 pid=273)            _compute_global_topk_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     759.353us         0.02%     759.353us       2.133us           356  
+(Worker_DP2_EP2 pid=273)                                         cudaEventRecord         0.09%       9.355ms         0.09%       9.355ms       1.350us     678.853us         0.02%     678.853us       0.098us          6930  
+(Worker_DP2_EP2 pid=273) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us     675.936us         0.02%     675.936us       2.146us           315  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     656.896us         0.02%     656.896us       0.919us           715  
+(Worker_DP2_EP2 pid=273) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us     648.461us         0.02%     648.461us       2.059us           315  
+(Worker_DP2_EP2 pid=273) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     645.798us         0.02%     645.798us       1.534us           421  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     589.221us         0.02%     589.221us       0.856us           688  
+(Worker_DP2_EP2 pid=273)                                        cudaLaunchKernel         6.78%     677.086ms         6.91%     689.987ms       5.656us     547.869us         0.02%     560.540us       0.005us        121992  
+(Worker_DP2_EP2 pid=273) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     523.745us         0.02%     523.745us       1.663us           315  
+(Worker_DP2_EP2 pid=273) void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us     496.547us         0.02%     496.547us      12.111us            41  
+(Worker_DP2_EP2 pid=273)                                               aten::div         0.03%       3.124ms         0.05%       4.877ms      15.484us     483.590us         0.01%     483.590us       1.535us           315  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     483.590us         0.01%     483.590us       1.535us           315  
+(Worker_DP2_EP2 pid=273) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us     479.138us         0.01%     479.138us       7.487us            64  
+(Worker_DP2_EP2 pid=273) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     478.623us         0.01%     478.623us       1.165us           411  
+(Worker_DP2_EP2 pid=273)                                         aten::remainder         0.04%       3.592ms         0.06%       5.491ms      17.432us     455.111us         0.01%     455.111us       1.445us           315  
+(Worker_DP2_EP2 pid=273) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     455.111us         0.01%     455.111us       1.445us           315  
+(Worker_DP2_EP2 pid=273) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us     445.633us         0.01%     445.633us       4.642us            96  
+(Worker_DP2_EP2 pid=273) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us     432.499us         0.01%     432.499us       1.352us           320  
+(Worker_DP2_EP2 pid=273) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP2_EP2 pid=273) Self CPU time total: 9.982s
+(Worker_DP2_EP2 pid=273) Self CUDA time total: 3.307s
+(Worker_DP2_EP2 pid=273) 
+(Worker_DP2_EP2 pid=273) INFO 07-14 12:59:03 [wrapper.py:66] Profiler stopped successfully.
+(EngineCore_DP2 pid=164) INFO 07-14 12:59:03 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore_DP2 pid=164) INFO 07-14 12:59:03 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore_DP2 pid=164) INFO 07-14 12:59:03 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore_DP2 pid=164) INFO 07-14 12:59:03 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore_DP2 pid=164) INFO 07-14 12:59:03 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=1
+(Worker_DP2_EP2 pid=273) INFO 07-14 12:59:03 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(Worker_DP2_EP2 pid=273) INFO 07-14 12:59:03 [wrapper.py:142] Shutting down profiler
+(Worker_DP1_EP1 pid=279) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP1_EP1 pid=279)                                                    Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+(Worker_DP1_EP1 pid=279) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP1_EP1 pid=279)                    execute_context_0(0)_generation_1(1)         0.00%       0.000us         0.00%       0.000us       0.000us       29.891s       907.98%       29.891s     398.546ms            75  
+(Worker_DP1_EP1 pid=279)                                vllm::moe_forward_shared        31.05%        3.101s        43.14%        4.308s       3.131ms        2.062s        62.64%        2.120s       1.541ms          1376  
+(Worker_DP1_EP1 pid=279)                   execute_context_1(10)_generation_0(0)         0.00%       0.000us         0.00%       0.000us       0.000us        2.003s        60.84%        2.003s     400.583ms             5  
+(Worker_DP1_EP1 pid=279) ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us        1.316s        39.98%        1.316s     956.412us          1376  
+(Worker_DP1_EP1 pid=279) ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDev...         0.00%       0.000us         0.00%       0.000us       0.000us     593.111ms        18.02%     593.111ms     431.040us          1376  
+(Worker_DP1_EP1 pid=279)                                             aten::copy_         2.02%     202.127ms         4.22%     421.467ms      11.517us     521.659ms        15.85%     521.780ms      14.259us         36594  
+(Worker_DP1_EP1 pid=279)                                               aten::mul         2.00%     199.591ms         3.56%     355.551ms      11.902us     411.404ms        12.50%     411.405ms      13.772us         29872  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     385.984ms        11.72%     385.984ms      43.233us          8928  
+(Worker_DP1_EP1 pid=279) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     205.092ms         6.23%     205.092ms      14.922us         13744  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     188.846ms         5.74%     188.846ms      68.621us          2752  
+(Worker_DP1_EP1 pid=279) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     115.879ms         3.52%     115.879ms      16.843us          6880  
+(Worker_DP1_EP1 pid=279) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      84.280ms         2.56%      84.280ms      12.327us          6837  
+(Worker_DP1_EP1 pid=279) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      58.179ms         1.77%      58.179ms      42.282us          1376  
+(Worker_DP1_EP1 pid=279)                                                 INVALID         0.28%      27.982ms         0.28%      27.982ms       0.295us      52.688ms         1.60%      52.688ms       0.556us         94784  
+(Worker_DP1_EP1 pid=279)                                                aten::mm         1.17%     117.150ms         1.60%     159.759ms      36.441us      47.323ms         1.44%      47.323ms      10.794us          4384  
+(Worker_DP1_EP1 pid=279)                                               aten::bmm         0.59%      58.580ms         0.69%      68.580ms      40.059us      44.621ms         1.36%      44.621ms      26.064us          1712  
+(Worker_DP1_EP1 pid=279) void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us      44.145ms         1.34%      44.145ms      30.656us          1440  
+(Worker_DP1_EP1 pid=279) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      43.356ms         1.32%      43.356ms      31.509us          1376  
+(Worker_DP1_EP1 pid=279)                                    cudaDriverGetVersion         0.07%       7.185ms         0.07%       7.185ms       0.078us      36.274ms         1.10%      36.274ms       0.394us         92032  
+(Worker_DP1_EP1 pid=279)                                   cudaStreamIsCapturing         0.12%      11.817ms         0.12%      11.817ms       0.462us      27.173ms         0.83%      27.173ms       1.062us         25596  
+(Worker_DP1_EP1 pid=279)                                        aten::reciprocal         0.94%      94.051ms         1.72%     171.292ms      11.341us      18.465ms         0.56%      18.468ms       1.223us         15104  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      18.465ms         0.56%      18.465ms       1.223us         15104  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      17.739ms         0.54%      17.739ms       1.174us         15104  
+(Worker_DP1_EP1 pid=279)                                               aten::max         0.94%      93.873ms         1.72%     171.829ms      21.800us      17.209ms         0.52%      17.216ms       2.184us          7882  
+(Worker_DP1_EP1 pid=279) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us      16.562ms         0.50%      16.562ms       2.193us          7552  
+(Worker_DP1_EP1 pid=279)                                        cuLaunchKernelEx         0.70%      70.230ms         0.72%      71.901ms       6.220us      14.285ms         0.43%      14.285ms       1.236us         11559  
+(Worker_DP1_EP1 pid=279)                                  cudaDeviceGetAttribute         0.12%      12.040ms         0.12%      12.040ms       0.504us      13.725ms         0.42%      13.725ms       0.575us         23883  
+(Worker_DP1_EP1 pid=279) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us      13.406ms         0.41%      13.406ms      20.593us           651  
+(Worker_DP1_EP1 pid=279)                                    cudaFuncSetAttribute         0.70%      70.356ms         0.70%      70.356ms       3.532us      13.238ms         0.40%      13.238ms       0.665us         19920  
+(Worker_DP1_EP1 pid=279)                                     cudaStreamWaitEvent         0.23%      23.187ms         0.23%      23.187ms       1.227us      13.074ms         0.40%      13.074ms       0.692us         18896  
+(Worker_DP1_EP1 pid=279)              mhc_pre_big_fuse_with_norm_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      12.094ms         0.37%      12.094ms       4.395us          2752  
+(Worker_DP1_EP1 pid=279) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      11.910ms         0.36%      11.910ms       9.371us          1271  
+(Worker_DP1_EP1 pid=279) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      11.883ms         0.36%      11.883ms     742.682us            16  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::quantize_with_block_size...         0.00%       0.000us         0.00%       0.000us       0.000us      11.756ms         0.36%      11.756ms       1.557us          7552  
+(Worker_DP1_EP1 pid=279)                               mhc_fused_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      11.605ms         0.35%      11.605ms       4.267us          2720  
+(Worker_DP1_EP1 pid=279)                                cudaEventRecordWithFlags         0.15%      14.663ms         0.15%      14.663ms       1.268us      11.106ms         0.34%      11.106ms       0.960us         11568  
+(Worker_DP1_EP1 pid=279)                                     cudaPeekAtLastError         0.01%     877.174us         0.01%     877.174us       0.157us      10.434ms         0.32%      10.434ms       1.873us          5572  
+(Worker_DP1_EP1 pid=279)                                         aten::clamp_min         0.63%      62.614ms         1.10%     110.107ms      14.580us       8.788ms         0.27%       8.792ms       1.164us          7552  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.788ms         0.27%       8.788ms       1.164us          7552  
+(Worker_DP1_EP1 pid=279) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       8.582ms         0.26%       8.582ms      12.474us           688  
+(Worker_DP1_EP1 pid=279) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       8.514ms         0.26%       8.514ms       4.291us          1984  
+(Worker_DP1_EP1 pid=279)                                        aten::nan_to_num         0.66%      66.041ms         2.28%     227.367ms      15.053us       8.219ms         0.25%      16.438ms       1.088us         15104  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.219ms         0.25%       8.219ms       1.088us          7552  
+(Worker_DP1_EP1 pid=279)                                               aten::abs         0.84%      83.520ms         2.95%     295.067ms      19.536us       7.998ms         0.24%      15.999ms       1.059us         15104  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       7.998ms         0.24%       7.998ms       1.059us          7552  
+(Worker_DP1_EP1 pid=279) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       7.681ms         0.23%       7.681ms       1.315us          5840  
+(Worker_DP1_EP1 pid=279)                                             aten::index         0.32%      31.717ms         0.51%      51.372ms      25.011us       7.055ms         0.21%       7.080ms       3.447us          2054  
+(Worker_DP1_EP1 pid=279)                                     cudaLaunchKernelExC         2.07%     206.451ms         2.09%     208.222ms       7.287us       6.059ms         0.18%       6.059ms       0.212us         28574  
+(Worker_DP1_EP1 pid=279)                              _moe_C::topk_softplus_sqrt         0.15%      15.033ms         0.26%      26.203ms      19.043us       5.750ms         0.17%       5.750ms       4.179us          1376  
+(Worker_DP1_EP1 pid=279) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       5.449ms         0.17%       5.449ms       3.960us          1376  
+(Worker_DP1_EP1 pid=279) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       5.329ms         0.16%       5.329ms       4.163us          1280  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::cutlass_kernels::finaliz...         0.00%       0.000us         0.00%       0.000us       0.000us       5.083ms         0.15%       5.083ms       3.694us          1376  
+(Worker_DP1_EP1 pid=279)                                        cudaLaunchKernel         6.76%     675.157ms         6.90%     688.544ms       5.644us       4.719ms         0.14%       4.732ms       0.039us        121992  
+(Worker_DP1_EP1 pid=279) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.587ms         0.14%       4.587ms       7.047us           651  
+(Worker_DP1_EP1 pid=279) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.511ms         0.14%       4.511ms       2.711us          1664  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::cutlass_kernels::doActiv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.388ms         0.13%       4.388ms       3.189us          1376  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::cutlass_kernels::expandI...         0.00%       0.000us         0.00%       0.000us       0.000us       4.341ms         0.13%       4.341ms       3.155us          1376  
+(Worker_DP1_EP1 pid=279)                          Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us       3.914ms         0.12%       3.914ms       1.111us          3523  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::cutlass_kernels::compute...         0.00%       0.000us         0.00%       0.000us       0.000us       3.818ms         0.12%       3.818ms       2.775us          1376  
+(Worker_DP1_EP1 pid=279)                                               aten::add         0.37%      36.730ms         0.65%      64.545ms      15.339us       2.997ms         0.09%       2.997ms       0.712us          4208  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.840ms         0.09%       2.840ms       1.032us          2752  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::cutlass_kernels::fusedBu...         0.00%       0.000us         0.00%       0.000us       0.000us       2.352ms         0.07%       2.352ms       1.764us          1333  
+(Worker_DP1_EP1 pid=279) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.266ms         0.07%       2.266ms       7.194us           315  
+(Worker_DP1_EP1 pid=279)                              _fused_q_kv_rmsnorm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.215ms         0.07%       2.215ms       1.609us          1376  
+(Worker_DP1_EP1 pid=279)                                         cudaEventRecord         0.09%       9.312ms         0.09%       9.312ms       1.344us       2.197ms         0.07%       2.197ms       0.317us          6930  
+(Worker_DP1_EP1 pid=279)                             _C::silu_and_mul_with_clamp         0.14%      14.213ms         0.24%      24.143ms      17.546us       2.031ms         0.06%       2.031ms       1.476us          1376  
+(Worker_DP1_EP1 pid=279) void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us       2.031ms         0.06%       2.031ms       1.476us          1376  
+(Worker_DP1_EP1 pid=279)                             _save_partial_states_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.015ms         0.06%       2.015ms       2.031us           992  
+(Worker_DP1_EP1 pid=279)                                              aten::topk         0.06%       5.722ms         0.12%      11.562ms      36.706us       2.009ms         0.06%       2.009ms       6.378us           315  
+(Worker_DP1_EP1 pid=279) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       1.864ms         0.06%       1.864ms       2.710us           688  
+(Worker_DP1_EP1 pid=279) _C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_inser...         0.13%      13.196ms         0.24%      23.585ms      34.281us       1.771ms         0.05%       1.771ms       2.574us           688  
+(Worker_DP1_EP1 pid=279) void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us       1.771ms         0.05%       1.771ms       2.574us           688  
+(Worker_DP1_EP1 pid=279)                                             aten::fill_         0.14%      13.916ms         0.28%      27.994ms      12.198us       1.692ms         0.05%       1.692ms       0.737us          2295  
+(Worker_DP1_EP1 pid=279)                                    _C::scaled_fp4_quant         0.12%      12.036ms         0.23%      22.822ms      16.586us       1.686ms         0.05%       1.686ms       1.225us          1376  
+(Worker_DP1_EP1 pid=279) void vllm::cvt_fp16_to_fp4_sf_major<__nv_bfloat16, f...         0.00%       0.000us         0.00%       0.000us       0.000us       1.686ms         0.05%       1.686ms       1.225us          1376  
+(Worker_DP1_EP1 pid=279) void tensorrt_llm::kernels::block_scale_interleave_k...         0.00%       0.000us         0.00%       0.000us       0.000us       1.582ms         0.05%       1.582ms       1.150us          1376  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.513ms         0.05%       1.513ms       1.099us          1376  
+(Worker_DP1_EP1 pid=279)                                               aten::sub         0.13%      13.076ms         0.26%      26.307ms       8.849us       1.431ms         0.04%       1.432ms       0.482us          2973  
+(Worker_DP1_EP1 pid=279) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.324ms         0.04%       1.324ms       1.971us           672  
+(Worker_DP1_EP1 pid=279) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.242ms         0.04%       1.242ms       3.697us           336  
+(Worker_DP1_EP1 pid=279) void at::native::bitonicSortKVInPlace<-2, -1, 16, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       1.137ms         0.03%       1.137ms       3.608us           315  
+(Worker_DP1_EP1 pid=279) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     957.254us         0.03%     957.254us       1.519us           630  
+(Worker_DP1_EP1 pid=279) void at::native::sbtopk::gatherTopK<float, unsigned ...         0.00%       0.000us         0.00%       0.000us       0.000us     872.487us         0.03%     872.487us       2.770us           315  
+(Worker_DP1_EP1 pid=279)        _fused_kv_compress_norm_rope_insert_indexer_attn         0.00%       0.000us         0.00%       0.000us       0.000us     759.890us         0.02%     759.890us       2.262us           336  
+(Worker_DP1_EP1 pid=279)            _compute_global_topk_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     756.439us         0.02%     756.439us       2.125us           356  
+(Worker_DP1_EP1 pid=279) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us     667.490us         0.02%     667.490us       2.119us           315  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     651.011us         0.02%     651.011us       0.911us           715  
+(Worker_DP1_EP1 pid=279) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us     647.080us         0.02%     647.080us       2.054us           315  
+(Worker_DP1_EP1 pid=279) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     641.775us         0.02%     641.775us       1.524us           421  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     586.722us         0.02%     586.722us       0.853us           688  
+(Worker_DP1_EP1 pid=279) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     518.338us         0.02%     518.338us       1.646us           315  
+(Worker_DP1_EP1 pid=279)                                               aten::div         0.03%       3.277ms         0.05%       5.085ms      16.143us     479.844us         0.01%     479.844us       1.523us           315  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     479.844us         0.01%     479.844us       1.523us           315  
+(Worker_DP1_EP1 pid=279) void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us     477.249us         0.01%     477.249us      11.640us            41  
+(Worker_DP1_EP1 pid=279) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     475.529us         0.01%     475.529us       1.157us           411  
+(Worker_DP1_EP1 pid=279) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us     451.965us         0.01%     451.965us       7.062us            64  
+(Worker_DP1_EP1 pid=279)                                         aten::remainder         0.04%       3.670ms         0.06%       5.539ms      17.584us     451.581us         0.01%     451.581us       1.434us           315  
+(Worker_DP1_EP1 pid=279) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     451.581us         0.01%     451.581us       1.434us           315  
+(Worker_DP1_EP1 pid=279) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us     431.846us         0.01%     431.846us       1.350us           320  
+(Worker_DP1_EP1 pid=279) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us     420.900us         0.01%     420.900us       4.384us            96  
+(Worker_DP1_EP1 pid=279) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP1_EP1 pid=279) Self CPU time total: 9.985s
+(Worker_DP1_EP1 pid=279) Self CUDA time total: 3.292s
+(Worker_DP1_EP1 pid=279) 
+(Worker_DP1_EP1 pid=279) INFO 07-14 12:59:03 [wrapper.py:66] Profiler stopped successfully.
+(EngineCore_DP1 pid=174) INFO 07-14 12:59:03 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore_DP1 pid=174) INFO 07-14 12:59:03 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore_DP1 pid=174) INFO 07-14 12:59:03 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore_DP1 pid=174) INFO 07-14 12:59:03 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore_DP1 pid=174) INFO 07-14 12:59:03 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=1
+(Worker_DP1_EP1 pid=279) INFO 07-14 12:59:03 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(Worker_DP1_EP1 pid=279) INFO 07-14 12:59:03 [wrapper.py:142] Shutting down profiler
+(Worker_DP3_EP3 pid=282) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP3_EP3 pid=282)                                                    Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+(Worker_DP3_EP3 pid=282) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP3_EP3 pid=282)                    execute_context_0(0)_generation_1(1)         0.00%       0.000us         0.00%       0.000us       0.000us       29.906s      1348.82%       29.906s     398.747ms            75  
+(Worker_DP3_EP3 pid=282)                   execute_context_1(10)_generation_0(0)         0.00%       0.000us         0.00%       0.000us       0.000us        2.007s        90.51%        2.007s     401.336ms             5  
+(Worker_DP3_EP3 pid=282)                                vllm::moe_forward_shared        31.11%        3.112s        43.21%        4.321s       3.140ms     983.468ms        44.36%        1.042s     756.957us          1376  
+(Worker_DP3_EP3 pid=282)                                             aten::copy_         2.01%     201.016ms         4.19%     418.967ms      11.449us     523.064ms        23.59%     523.186ms      14.297us         36594  
+(Worker_DP3_EP3 pid=282) ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us     520.082ms        23.46%     520.082ms     377.967us          1376  
+(Worker_DP3_EP3 pid=282)                                               aten::mul         1.98%     198.492ms         3.52%     352.443ms      11.798us     411.939ms        18.58%     411.940ms      13.790us         29872  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     386.052ms        17.41%     386.052ms      43.241us          8928  
+(Worker_DP3_EP3 pid=282) ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL(ncclDev...         0.00%       0.000us         0.00%       0.000us       0.000us     313.122ms        14.12%     313.122ms     227.560us          1376  
+(Worker_DP3_EP3 pid=282) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     205.791ms         9.28%     205.791ms      14.973us         13744  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     188.937ms         8.52%     188.937ms      68.654us          2752  
+(Worker_DP3_EP3 pid=282) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     116.249ms         5.24%     116.249ms      16.897us          6880  
+(Worker_DP3_EP3 pid=282) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      85.277ms         3.85%      85.277ms      12.473us          6837  
+(Worker_DP3_EP3 pid=282) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      55.482ms         2.50%      55.482ms      40.321us          1376  
+(Worker_DP3_EP3 pid=282)                                                aten::mm         1.16%     116.480ms         1.59%     159.056ms      36.281us      46.705ms         2.11%      46.705ms      10.654us          4384  
+(Worker_DP3_EP3 pid=282)                                               aten::bmm         0.58%      58.376ms         0.68%      68.422ms      39.966us      45.142ms         2.04%      45.142ms      26.368us          1712  
+(Worker_DP3_EP3 pid=282) void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us      44.654ms         2.01%      44.654ms      31.010us          1440  
+(Worker_DP3_EP3 pid=282) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us      42.779ms         1.93%      42.779ms      31.089us          1376  
+(Worker_DP3_EP3 pid=282)                                                 INVALID         0.28%      28.262ms         0.28%      28.262ms       0.298us      34.518ms         1.56%      34.518ms       0.364us         94784  
+(Worker_DP3_EP3 pid=282)                                    cudaDriverGetVersion         0.07%       7.051ms         0.07%       7.051ms       0.077us      24.586ms         1.11%      24.586ms       0.267us         92032  
+(Worker_DP3_EP3 pid=282)                                   cudaStreamIsCapturing         0.11%      11.379ms         0.11%      11.379ms       0.445us      19.854ms         0.90%      19.854ms       0.776us         25596  
+(Worker_DP3_EP3 pid=282)                                        aten::reciprocal         0.96%      95.853ms         1.73%     173.345ms      11.477us      18.620ms         0.84%      18.624ms       1.233us         15104  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      18.620ms         0.84%      18.620ms       1.233us         15104  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      17.938ms         0.81%      17.938ms       1.188us         15104  
+(Worker_DP3_EP3 pid=282)                                               aten::max         0.94%      94.159ms         1.73%     172.884ms      21.934us      17.316ms         0.78%      17.323ms       2.198us          7882  
+(Worker_DP3_EP3 pid=282) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us      16.664ms         0.75%      16.664ms       2.207us          7552  
+(Worker_DP3_EP3 pid=282) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us      13.241ms         0.60%      13.241ms      20.339us           651  
+(Worker_DP3_EP3 pid=282)                                        cuLaunchKernelEx         0.69%      69.136ms         0.71%      70.879ms       6.132us      13.082ms         0.59%      13.082ms       1.132us         11559  
+(Worker_DP3_EP3 pid=282)              mhc_pre_big_fuse_with_norm_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      12.380ms         0.56%      12.380ms       4.498us          2752  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::quantize_with_block_size...         0.00%       0.000us         0.00%       0.000us       0.000us      11.932ms         0.54%      11.932ms       1.580us          7552  
+(Worker_DP3_EP3 pid=282) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      11.921ms         0.54%      11.921ms     745.046us            16  
+(Worker_DP3_EP3 pid=282)                               mhc_fused_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      11.840ms         0.53%      11.840ms       4.353us          2720  
+(Worker_DP3_EP3 pid=282) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us      11.755ms         0.53%      11.755ms       9.248us          1271  
+(Worker_DP3_EP3 pid=282)                                         aten::clamp_min         0.63%      62.686ms         1.11%     110.724ms      14.662us       8.882ms         0.40%       8.885ms       1.177us          7552  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.882ms         0.40%       8.882ms       1.176us          7552  
+(Worker_DP3_EP3 pid=282) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       8.779ms         0.40%       8.779ms      12.760us           688  
+(Worker_DP3_EP3 pid=282)                                    cudaFuncSetAttribute         0.72%      71.551ms         0.72%      71.551ms       3.592us       8.411ms         0.38%       8.411ms       0.422us         19920  
+(Worker_DP3_EP3 pid=282)                                        aten::nan_to_num         0.66%      66.471ms         2.28%     227.631ms      15.071us       8.189ms         0.37%      16.378ms       1.084us         15104  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       8.189ms         0.37%       8.189ms       1.084us          7552  
+(Worker_DP3_EP3 pid=282) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       8.152ms         0.37%       8.152ms       4.109us          1984  
+(Worker_DP3_EP3 pid=282) void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       7.949ms         0.36%       7.949ms       1.361us          5840  
+(Worker_DP3_EP3 pid=282)                                               aten::abs         0.86%      85.844ms         3.00%     300.530ms      19.897us       7.867ms         0.35%      15.739ms       1.042us         15104  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       7.867ms         0.35%       7.867ms       1.042us          7552  
+(Worker_DP3_EP3 pid=282)                                  cudaDeviceGetAttribute         0.11%      11.463ms         0.11%      11.463ms       0.480us       7.528ms         0.34%       7.528ms       0.315us         23883  
+(Worker_DP3_EP3 pid=282)                                             aten::index         0.32%      32.348ms         0.52%      52.361ms      25.492us       7.099ms         0.32%       7.125ms       3.469us          2054  
+(Worker_DP3_EP3 pid=282)                                     cudaStreamWaitEvent         0.24%      23.977ms         0.24%      23.977ms       1.269us       6.817ms         0.31%       6.817ms       0.361us         18896  
+(Worker_DP3_EP3 pid=282)                                cudaEventRecordWithFlags         0.15%      14.971ms         0.15%      14.975ms       1.294us       6.609ms         0.30%       6.609ms       0.571us         11568  
+(Worker_DP3_EP3 pid=282)                              _moe_C::topk_softplus_sqrt         0.15%      14.760ms         0.26%      25.953ms      18.861us       5.888ms         0.27%       5.888ms       4.279us          1376  
+(Worker_DP3_EP3 pid=282) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       5.552ms         0.25%       5.552ms       4.035us          1376  
+(Worker_DP3_EP3 pid=282)                                     cudaLaunchKernelExC         2.06%     206.045ms         2.08%     207.708ms       7.269us       5.551ms         0.25%       5.551ms       0.194us         28574  
+(Worker_DP3_EP3 pid=282) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       5.437ms         0.25%       5.437ms       4.248us          1280  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::cutlass_kernels::finaliz...         0.00%       0.000us         0.00%       0.000us       0.000us       5.039ms         0.23%       5.039ms       3.662us          1376  
+(Worker_DP3_EP3 pid=282)                                     cudaPeekAtLastError         0.01%     856.957us         0.01%     856.957us       0.154us       4.746ms         0.21%       4.746ms       0.852us          5572  
+(Worker_DP3_EP3 pid=282) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.558ms         0.21%       4.558ms       7.002us           651  
+(Worker_DP3_EP3 pid=282) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.540ms         0.20%       4.540ms       2.728us          1664  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::cutlass_kernels::doActiv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.460ms         0.20%       4.460ms       3.241us          1376  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::cutlass_kernels::expandI...         0.00%       0.000us         0.00%       0.000us       0.000us       4.459ms         0.20%       4.459ms       3.241us          1376  
+(Worker_DP3_EP3 pid=282)                          Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us       4.024ms         0.18%       4.024ms       1.142us          3523  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::cutlass_kernels::compute...         0.00%       0.000us         0.00%       0.000us       0.000us       3.600ms         0.16%       3.600ms       2.616us          1376  
+(Worker_DP3_EP3 pid=282)                                        cudaLaunchKernel         6.73%     673.316ms         6.87%     686.610ms       5.628us       3.236ms         0.15%       3.249ms       0.027us        121992  
+(Worker_DP3_EP3 pid=282)                                               aten::add         0.37%      37.014ms         0.65%      64.753ms      15.388us       2.982ms         0.13%       2.982ms       0.709us          4208  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.893ms         0.13%       2.893ms       1.051us          2752  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::cutlass_kernels::fusedBu...         0.00%       0.000us         0.00%       0.000us       0.000us       2.391ms         0.11%       2.391ms       1.794us          1333  
+(Worker_DP3_EP3 pid=282) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.276ms         0.10%       2.276ms       7.226us           315  
+(Worker_DP3_EP3 pid=282)                              _fused_q_kv_rmsnorm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.244ms         0.10%       2.244ms       1.631us          1376  
+(Worker_DP3_EP3 pid=282)                             _C::silu_and_mul_with_clamp         0.15%      14.543ms         0.24%      24.325ms      17.678us       2.047ms         0.09%       2.047ms       1.488us          1376  
+(Worker_DP3_EP3 pid=282) void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us       2.047ms         0.09%       2.047ms       1.488us          1376  
+(Worker_DP3_EP3 pid=282)                             _save_partial_states_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.040ms         0.09%       2.040ms       2.056us           992  
+(Worker_DP3_EP3 pid=282)                                              aten::topk         0.06%       5.828ms         0.12%      11.681ms      37.084us       2.032ms         0.09%       2.032ms       6.452us           315  
+(Worker_DP3_EP3 pid=282) void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us       1.895ms         0.09%       1.895ms       2.755us           688  
+(Worker_DP3_EP3 pid=282) _C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_inser...         0.13%      13.292ms         0.24%      23.577ms      34.269us       1.778ms         0.08%       1.778ms       2.584us           688  
+(Worker_DP3_EP3 pid=282) void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us       1.778ms         0.08%       1.778ms       2.584us           688  
+(Worker_DP3_EP3 pid=282)                                             aten::fill_         0.14%      14.299ms         0.29%      28.695ms      12.503us       1.718ms         0.08%       1.718ms       0.749us          2295  
+(Worker_DP3_EP3 pid=282)                                    _C::scaled_fp4_quant         0.12%      11.911ms         0.23%      22.608ms      16.430us       1.707ms         0.08%       1.707ms       1.241us          1376  
+(Worker_DP3_EP3 pid=282) void vllm::cvt_fp16_to_fp4_sf_major<__nv_bfloat16, f...         0.00%       0.000us         0.00%       0.000us       0.000us       1.707ms         0.08%       1.707ms       1.241us          1376  
+(Worker_DP3_EP3 pid=282) void tensorrt_llm::kernels::block_scale_interleave_k...         0.00%       0.000us         0.00%       0.000us       0.000us       1.577ms         0.07%       1.577ms       1.146us          1376  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.468ms         0.07%       1.468ms       1.067us          1376  
+(Worker_DP3_EP3 pid=282)                                               aten::sub         0.13%      13.183ms         0.27%      26.644ms       8.962us       1.455ms         0.07%       1.456ms       0.490us          2973  
+(Worker_DP3_EP3 pid=282) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.340ms         0.06%       1.340ms       1.994us           672  
+(Worker_DP3_EP3 pid=282) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us       1.258ms         0.06%       1.258ms       3.744us           336  
+(Worker_DP3_EP3 pid=282) void at::native::bitonicSortKVInPlace<-2, -1, 16, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       1.165ms         0.05%       1.165ms       3.699us           315  
+(Worker_DP3_EP3 pid=282) void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     971.915us         0.04%     971.915us       1.543us           630  
+(Worker_DP3_EP3 pid=282) void at::native::sbtopk::gatherTopK<float, unsigned ...         0.00%       0.000us         0.00%       0.000us       0.000us     867.237us         0.04%     867.237us       2.753us           315  
+(Worker_DP3_EP3 pid=282)        _fused_kv_compress_norm_rope_insert_indexer_attn         0.00%       0.000us         0.00%       0.000us       0.000us     769.100us         0.03%     769.100us       2.289us           336  
+(Worker_DP3_EP3 pid=282)            _compute_global_topk_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     765.494us         0.03%     765.494us       2.150us           356  
+(Worker_DP3_EP3 pid=282)                                         cudaEventRecord         0.09%       9.259ms         0.09%       9.259ms       1.336us     765.123us         0.03%     765.123us       0.110us          6930  
+(Worker_DP3_EP3 pid=282) std::enable_if<true, void>::type internal::gemvx::ke...         0.00%       0.000us         0.00%       0.000us       0.000us     680.585us         0.03%     680.585us       2.161us           315  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     661.309us         0.03%     661.309us       0.925us           715  
+(Worker_DP3_EP3 pid=282) void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us     652.166us         0.03%     652.166us       2.070us           315  
+(Worker_DP3_EP3 pid=282) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     651.074us         0.03%     651.074us       1.546us           421  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     595.042us         0.03%     595.042us       0.865us           688  
+(Worker_DP3_EP3 pid=282) std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     529.512us         0.02%     529.512us       1.681us           315  
+(Worker_DP3_EP3 pid=282)                                               aten::div         0.03%       3.094ms         0.05%       4.889ms      15.521us     488.742us         0.02%     488.742us       1.552us           315  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     488.742us         0.02%     488.742us       1.552us           315  
+(Worker_DP3_EP3 pid=282) void cutlass::Kernel2<cutlass_80_wmma_tensorop_s1616...         0.00%       0.000us         0.00%       0.000us       0.000us     483.809us         0.02%     483.809us      11.800us            41  
+(Worker_DP3_EP3 pid=282) void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     483.356us         0.02%     483.356us       1.176us           411  
+(Worker_DP3_EP3 pid=282) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us     476.450us         0.02%     476.450us       7.445us            64  
+(Worker_DP3_EP3 pid=282)                                         aten::remainder         0.04%       3.658ms         0.05%       5.416ms      17.193us     458.847us         0.02%     458.847us       1.457us           315  
+(Worker_DP3_EP3 pid=282) void at::native::vectorized_elementwise_kernel<2, at...         0.00%       0.000us         0.00%       0.000us       0.000us     458.847us         0.02%     458.847us       1.457us           315  
+(Worker_DP3_EP3 pid=282) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us     450.821us         0.02%     450.821us       4.696us            96  
+(Worker_DP3_EP3 pid=282) kernel_cutlass_kernel_vllmmodelsdeepseek_v4nvidiaops...         0.00%       0.000us         0.00%       0.000us       0.000us     436.249us         0.02%     436.249us       1.363us           320  
+(Worker_DP3_EP3 pid=282) -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+(Worker_DP3_EP3 pid=282) Self CPU time total: 10.001s
+(Worker_DP3_EP3 pid=282) Self CUDA time total: 2.217s
+(Worker_DP3_EP3 pid=282) 
+(Worker_DP3_EP3 pid=282) INFO 07-14 12:59:03 [wrapper.py:66] Profiler stopped successfully.
+(EngineCore_DP3 pid=188) INFO 07-14 12:59:03 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore_DP3 pid=188) INFO 07-14 12:59:03 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore_DP3 pid=188) INFO 07-14 12:59:03 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore_DP3 pid=188) INFO 07-14 12:59:03 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore_DP3 pid=188) INFO 07-14 12:59:03 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=1
+(Worker_DP3_EP3 pid=282) INFO 07-14 12:59:03 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(Worker_DP3_EP3 pid=282) INFO 07-14 12:59:03 [wrapper.py:142] Shutting down profiler
+WARNING 07-14 12:59:08 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+WARNING 07-14 12:59:08 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+WARNING 07-14 12:59:08 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+# C7-DP COLLECTIVES trace=dp0_pp0_tp0_dcp0_ep0_rank0.1784033669244486404.pt.trace.json.gz n_layers=43 decode_fwd~32.0
+# C7-DP all-reduce: custom=0 ring=0 per-token=0.0 | all-to-all=0 per-token=0.0 | DSA-decode=1376
+# GEN 'The capital of France is' -> ' Paris.",\n    "The capital of France is Paris.",\n    "The capital of France is Paris.",\n    "The capital'
+# GEN 'def fibonacci(n):' -> '\\n    if n <= 0:\\n        return 0\\n    elif n == 1:\\n       '
+# GEN 'The three primary colors are' -> ' red, green, and blue. In the RGB color model, they are combined in various ways to reproduce a broad array'
+# C7-DP decode tok/s: 4.578 (wall1=5.746s wall64=19.508s) dp=4 tp=1 ppl=4.2640 graph=eager
+# C7-DP PASS dp=4 decode_tps=4.578 ppl=4.2640
+(EngineCore_DP0 pid=181) INFO 07-14 12:59:27 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore_DP0 pid=181) INFO 07-14 12:59:27 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore_DP0 pid=181) INFO 07-14 12:59:27 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore_DP0 pid=181) INFO 07-14 12:59:27 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore_DP0 pid=181) INFO 07-14 12:59:27 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=1
+(Worker_DP0_EP0 pid=276) INFO 07-14 12:59:27 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(Worker_DP0_EP0 pid=276) INFO 07-14 12:59:27 [wrapper.py:142] Shutting down profiler
+WARNING 07-14 12:59:32 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+# C7 DP board DONE (exit codes: [0, 0, 0, 0])
+Runner terminated.

@@ -639,17 +639,18 @@ def graph_gate_dp(
     baseline: str = "dense_nvfp4",
     eager: bool = False,
 ) -> None:
-    """C5 reduce-count lever: DP attention + EP MoE (tp=1, data_parallel_size=dp). Attention runs replicated
-    per DP rank so there is NO per-layer TP all-reduce (the 94.5% decode floor); the MoE stays EP (already
-    all-to-all today, not the dominant cost), so DP removes the ~43 attention all-reduces without adding MoE
-    collectives. Spawns dp processes (vLLM offline DP needs per-proc VLLM_DP_* env). Rank 0 reports."""
+    """C7 reduce-count lever: DP attention + EP MoE (tp=1, dp ranks via env-driven SPMD). Attention runs
+    replicated per DP rank so there is NO per-layer TP all-reduce (the 94.5% decode floor); the MoE stays
+    EP (all-to-all), so DP trades the ~43 attention all-reduces for the MoE all-to-all. Spawns dp fresh
+    interpreters (each sets VLLM_DP_* + CUDA_VISIBLE_DEVICES; no data_parallel_* LLM kwargs). Rank 0
+    reports single-request decode tok/s + the per-token all-reduce/all-to-all count from a trace."""
     import subprocess
     import sys
 
     # Launch each DP rank as a FRESH python interpreter (subprocess), not multiprocessing.spawn: spawn
     # re-imports this Modal-decorated __main__ in the child and chokes on the @app.function decorators.
     # A fresh interpreter importing the installed qb_dp_worker module avoids both re-import and pickling.
-    print(f"# C5 DP board: dp={dp} tp=1 baseline={baseline} eager={eager} (subprocess DP attention)",
+    print(f"# C7 DP board: dp={dp} tp=1 baseline={baseline} eager={eager} (subprocess DP attention)",
           flush=True)
     port = 29591
     procs = []
@@ -677,10 +678,10 @@ def graph_gate_dp(
                 codes[i] = p.poll()
             break
         time.sleep(2)
-    print(f"# C5 DP board DONE (exit codes: {codes})", flush=True)
+    print(f"# C7 DP board DONE (exit codes: {codes})", flush=True)
     if any(c != 0 for c in codes):
-        raise RuntimeError(f"C5 DP workers failed (exit codes {codes}); see log. Offline LLM likely "
-                           "rejected data_parallel_size>1 (needs vllm serve/AsyncLLM).")
+        raise RuntimeError(f"C7 DP workers failed (exit codes {codes}); see log for the rank tracebacks "
+                           "(DP init / EP all-to-all / OOM / plugin install).")
 
 
 @app.function(
