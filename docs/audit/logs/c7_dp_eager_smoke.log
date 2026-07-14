@@ -241,12 +241,36 @@ WARNING: Logs may not be continuous
 WARNING: Logs may not be continuous
 WARNING: Logs may not be continuous
 WARNING: Logs may not be continuous
-3ms       3.978us          1376  
-(Worker_DP2_EP2 pid=273) void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us       5.378ms         0.16%       5.378ms       4.201us          1280  
-(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::finaliz...         0.00%       0.000us         0.00%       0.000us       0.000us       4.994ms         0.15%       4.994ms       3.629us          1376  
-(Worker_DP2_EP2 pid=273) _ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.567ms         0.14%       4.567ms       7.015us           651  
-(Worker_DP2_EP2 pid=273) void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       4.516ms         0.14%       4.516ms       2.714us          1664  
-(Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::doActiv...         0.00%       0.000us         0.00%       0.000us       0.000us       4.386ms         0.13%       4.386ms       3.188us          1376  
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+WARNING: Logs may not be continuous
+.00%       0.000us       0.000us       4.386ms         0.13%       4.386ms       3.188us          1376  
 (Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::expandI...         0.00%       0.000us         0.00%       0.000us       0.000us       4.355ms         0.13%       4.355ms       3.165us          1376  
 (Worker_DP2_EP2 pid=273)                          Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us       3.959ms         0.12%       3.959ms       1.124us          3523  
 (Worker_DP2_EP2 pid=273) void tensorrt_llm::kernels::cutlass_kernels::compute...         0.00%       0.000us         0.00%       0.000us       0.000us       3.786ms         0.11%       3.786ms       2.751us          1376  

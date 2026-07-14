@@ -93,4 +93,4 @@ reduce-scatter floor dominates, and DP-attention decode is 2.84x slower than the
 
 ## Raw log
 
-`docs/audit/logs/c7_dp_eager_smoke.log`
+[c7_dp_eager_smoke.log](../audit/logs/c7_dp_eager_smoke.log)

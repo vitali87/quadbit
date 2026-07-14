@@ -31,4 +31,4 @@ let alone beat, 58.126.
 
 ## Raw log
 
-`docs/audit/logs/c7_dp_captured.log` (run b4wh13mbm, exit codes [0,0,0,0]).
+[c7_dp_captured.log](../audit/logs/c7_dp_captured.log) (run b4wh13mbm, exit codes [0,0,0,0]).

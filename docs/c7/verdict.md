@@ -42,6 +42,8 @@ README/paper headline change. No merge without explicit per-PR authorization.
 
 ## Deliverables
 
-`mode_validation.md`, `serve_baseline.md`, `dp_attention_ab.md`, `quality_guardrail.md`,
-`sparse_d2_transfer.md`, this verdict. Raw logs: `docs/audit/logs/c7_dp_captured.log`,
-`docs/audit/logs/c7_dp_eager_smoke.log`.
+[mode_validation.md](mode_validation.md), [serve_baseline.md](serve_baseline.md),
+[dp_attention_ab.md](dp_attention_ab.md), [quality_guardrail.md](quality_guardrail.md),
+[sparse_d2_transfer.md](sparse_d2_transfer.md), this verdict. Raw logs:
+[c7_dp_captured.log](../audit/logs/c7_dp_captured.log),
+[c7_dp_eager_smoke.log](../audit/logs/c7_dp_eager_smoke.log).

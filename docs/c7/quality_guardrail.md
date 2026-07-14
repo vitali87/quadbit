@@ -20,4 +20,4 @@ quality"). The quality guardrail passes; the campaign fails on speed, not qualit
 
 ## Raw log
 
-`docs/audit/logs/c7_dp_captured.log`.
+[c7_dp_captured.log](../audit/logs/c7_dp_captured.log).

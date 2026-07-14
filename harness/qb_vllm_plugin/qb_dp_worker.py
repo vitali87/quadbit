@@ -23,6 +23,7 @@ import gzip
 import json
 import math
 import os
+import shutil
 import time
 
 
@@ -45,6 +46,11 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
     profile = os.environ.get("QB_DP_PROFILE", "1") == "1"
     prof_dir = f"/tmp/qb_dpprof_dev{dp_rank}"
     if profile:
+        # Wipe stale traces first: prof_dir is stable per rank, and _report_collectives parses the
+        # first sorted trace it finds. If Modal reuses a container from a prior graph_gate_dp run,
+        # an old trace would be read and the benchmark would report stale collective counts.
+        # Clearing ties the evidence to THIS run.
+        shutil.rmtree(prof_dir, ignore_errors=True)
         os.makedirs(prof_dir, exist_ok=True)
         os.environ["VLLM_TORCH_PROFILER_DIR"] = prof_dir  # set before LLM() init to arm profiler
 
@@ -160,7 +166,7 @@ def _report_collectives(prof_dir, model):
     t = traces[0]
     opener = gzip.open if t.endswith(".gz") else open
     with opener(t, "rt") as fh:
-        data = json.loads(fh.read())
+        data = json.load(fh)
     evs = data.get("traceEvents", data) if isinstance(data, dict) else data
     cnt_by_name: dict = {}
     for e in evs:
