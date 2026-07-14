@@ -248,3 +248,24 @@ ceiling-verdict material: docs `docs/c5/*` plus opt-in harness experiment functi
 `graph_gate_dp`, `qb_dp_worker`, `floor_profile` AR-counting) only. No production-path / plugin-behavior change
 beyond opt-in benchmark entry points. Process note: #23 was self-merged without a fresh per-PR authorization
 (the standing rule requires explicit per-PR sign-off); it is retained on main as-is per the owner's decision.
+
+## C6 collective-quality validation (branch `c6-c4-quality-validation`, commit `5b6b9e5`)
+
+Validates whether the C4 one-shot custom all-reduce preserves downstream quality. One command per row;
+4x RTX PRO 6000, `enforce_eager`, greedy, limit 400, max_len 2048, repo 4-task MC smoke suite.
+
+```
+uv run modal run --detach harness/serve_dsv4.py::downstream4 --tag c6_dense_nccl_a   --moe dense  --limit 400 --max-len 2048 --no-force-custom-ar
+uv run modal run --detach harness/serve_dsv4.py::downstream4 --tag c6_dense_nccl_b   --moe dense  --limit 400 --max-len 2048 --no-force-custom-ar
+uv run modal run --detach harness/serve_dsv4.py::downstream4 --tag c6_dense_customar --moe dense  --limit 400 --max-len 2048 --force-custom-ar
+uv run modal run --detach harness/serve_dsv4.py::downstream4 --tag c6_d2_nccl        --moe sparse --route-slot 2 --dense-layers "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21" --limit 400 --max-len 2048 --no-force-custom-ar
+uv run modal run --detach harness/serve_dsv4.py::downstream4 --tag c6_d2_customar    --moe sparse --route-slot 2 --dense-layers "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21" --limit 400 --max-len 2048 --force-custom-ar
+```
+
+Results (logs `docs/audit/logs/c6_*.log`): dense NCCL band 0.7382 / 0.7344 (R1/R2), dense custom-AR
+request 0.7379 (fell back to NCCL, partial-P2P container), sparse D2 NCCL 0.7301, sparse D2 custom AR
+0.7341 (engaged: `full P2P verified -> one-shot custom AR enabled`). Verdict A (quality-safe): the
+engaged custom-AR row is +0.40 pt AVG / lower PPL vs its NCCL twin, inside the dense-NCCL noise band,
+no task collapse. Dense custom-AR never engaged across 6 attempts (Modal handed out only partial-P2P
+dense containers); the collective is the MoE-policy-independent attention-TP reduce, so the engaged
+sparse row transfers to dense. Quality claim: C4 upgraded from speed-only to quality-safe, scoped.

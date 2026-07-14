@@ -213,12 +213,12 @@ Branch `c4-floor-decode`. Full docs [verdict](c4/verdict.md) / [floor_decomposit
 | SM120 decode is 94.5% non-MoE floor / 5.5% MoE apply | dense step 20.73 ms/tok, skip-MoE floor 19.60 ms/tok (51.033 tok/s); MoE apply 1.13 ms; roofline from C2/C3 | backed |
 | The floor is 90.8% one NCCL RING_LL all-reduce (not attention/DSA/EP-a2a) | vLLM worker profiler, dense baseline: AllReduce_RING_LL 90.8%, norm 4.6%, gemm 2.2%, attn+DSA 0.7%; `c4_floor_profile.log` | backed |
 | Custom one-shot all-reduce beats the dense NVFP4 decode SOTA row | median 58.126 tok/s (4 runs; mean 58.145) vs the 48.248 prior SOTA row = +20.5% (+18.0% vs a 49.263 fresh control), FULL capture; `c4_custom_ar*.log` | backed (speed) |
-| C4 is quality-neutral | NOT claimed: mito80 PPL is reduction-order-dependent (tree 4.01 / ring 4.12 / one-shot 4.25, both directions); bit-identical fibonacci is a smoke check, not a quality proof; judge with the downstream / fixed quality protocol | guarded (not claimed) |
+| C4 is quality-neutral | NOW BACKED by C6 downstream eval (see section 15): custom AR engaged (sparse D2 R5) vs its NCCL twin = +0.40 pt AVG, lower PPL, no task collapse, inside the 0.38 pt dense-NCCL noise band; the AR is the MoE-policy-independent attention-TP reduce so it transfers to dense; mito80 PPL movement is reduction-order noise, not a ranking metric | backed (C6, scoped: engaged row is sparse; dense-engaged direct row blocked by Modal P2P-container luck) |
 | The win is a disabled fast-path, not new hardware capability | vLLM disables custom AR on >2 PCIe GPUs; driver `can_device_access_peer` all-connected; `VLLM_SKIP_P2P_CHECK=1` makes it engage (0 disable warnings across skip-check runs) | backed |
 | NCCL tree all-reduce alone matches the win | NO (disproven): scoped `allreduce:tree` = 48.983 tok/s (+1.5% only); the one-shot AR is the lever | not claimed (disproven) |
 | C4 is a sparse-MoE or custom-kernel contribution | NOT claimed: it is a serving-infra collective-algorithm swap, applies to dense and sparse alike (shared floor) | guarded (not claimed) |
 | C4 is a general multi-GPU all-reduce improvement | NOT claimed: targets small latency-bound decode all-reduces on PCIe-only topologies with driver P2P; vLLM's disable is correct for bandwidth-bound large-tensor cases | guarded (not claimed) |
-| mito80 PPL 4.2514 (vs 4.1222) is a quality regression | NOT claimed: reduction-order noise (tree 4.01 / ring 4.12 / one-shot 4.25, both directions); AR is a correct sum; downstream 4-task eval is the real check (future work) | guarded (not claimed) |
+| mito80 PPL 4.2514 (vs 4.1222) is a quality regression | NOT claimed: reduction-order noise (tree 4.01 / ring 4.12 / one-shot 4.25, both directions); AR is a correct sum; the downstream 4-task eval that is the real check was RUN in C6 and shows no regression (engaged custom AR +0.40 pt AVG, lower PPL) | not claimed (disproven by C6 downstream) |
 
 ## 14. C5 collective-floor — ceiling reached (C4 one-shot AR remains the SM120 decode SOTA)
 
@@ -234,3 +234,15 @@ Branch `c5-collective-floor`. Full docs [verdict](c5/verdict.md) / [post_c4_roof
 | DP attention removes the attention all-reduce (the lever) | correct structurally but BLOCKED: offline `LLM` rejects data_parallel_size>1 in all modes; needs vllm serve/AsyncLLM | n/a (blocked, next lever) |
 | C5 beats C4's 58.126 tok/s | NO: no C5 row beats it; C4 +20.5% stands; success condition not met | not claimed (honest negative) |
 | Modal 4-GPU P2P topology is uniform | NOT true: full-P2P and partial-P2P (`[1<->2]` only) containers both observed; C4 win conditional on full-P2P, safety guard falls back otherwise | backed (caveat) |
+
+## 15. C6 collective-quality validation — C4 one-shot custom AR is quality-safe
+
+Branch `c6-c4-quality-validation`, commit `5b6b9e5`. Full docs [c4_quality_eval](c6/c4_quality_eval.md) / [downstream_table](c6/downstream_table.md) / [verdict](c6/verdict.md); logs `docs/audit/logs/c6_*.log`. 4x RTX PRO 6000, `enforce_eager`, greedy, limit 400, repo 4-task MC smoke suite.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| The C4 custom AR preserves downstream quality | engaged custom-AR row (sparse D2 R5 0.7341) vs its NCCL twin (R4 0.7301) = +0.40 pt AVG, PPL 3.538 vs 3.588, no task collapse, inside the 0.38 pt dense-NCCL noise band; plugin log `full P2P verified -> one-shot custom AR enabled` | backed (scoped to engaged sparse row) |
+| Eager eval validates the captured speed row | CUDA-graph capture replays identical kernels with identical bf16 reduction order; only latency differs, not logits | backed (argument) |
+| The dense custom-AR row engaged custom AR | NO: 6 dense attempts (R3 + 5 retries) all hit partial-P2P Modal containers and fell back to NCCL; dense-engaged direct point not obtained | not obtained (Modal P2P-container luck; R5 + policy-independence carry it) |
+| C4 is a quality-safe decode SOTA (not speed-only) | verdict A: +20.5% decode with a stable downstream envelope; PPL shift is reduction-order-sensitive, not a regression | backed (verdict) |
+| C6 reproduces the frozen reference AVGs | dense NCCL band 0.7344-0.7382 vs `deepseek_final.csv` dense 0.7383; sparse D2 NCCL 0.7301 vs d2_slot2 0.7304 | backed |
