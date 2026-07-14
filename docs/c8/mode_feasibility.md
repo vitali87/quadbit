@@ -38,14 +38,32 @@ why 4 GPUs are needed to LOAD the model regardless, and PP fits comfortably with
 
 Harness: `graph_gate_pp` (single-process `LLM`, mp backend spawns the stage workers), commit `fcd46c6`.
 
-## Runtime mode proof (GPU run — to be filled from `c8_pp_eager.log`)
+## Runtime mode proof (GPU run `bhokhb5x5`, eager)
 
-_Pending run `bhokhb5x5` (eager). Will record: resolved `tp`/`pp`/`dp`/`ep`/`world_size`/backend,
-per-GPU layer ownership, per-GPU memory, weights replicated vs staged, all-reduce count per token
-(expect ~0), stage-boundary send/recv per token (expect ~pp-1), graph status, backend selected._
+Log: [c8_pp_eager.log](../audit/logs/c8_pp_eager.log). RTX PRO 6000:4, SM120, no NVLink.
 
-**Guardrail check (must pass before continuing):** the mode must be genuine layer-staging, not 4
-independent replicas or aggregate DP throughput. Proof = one model sharded across 4 GPUs by layer
-(each GPU has a distinct layer range, not the whole model), a single batch=1 request flowing through
-all stages, and all-reduce-per-token dropping toward 0. If instead the run shows 4 full-model replicas
-or the collective floor does not drop, C8 stops with verdict C.
+| proof point | observed | source line |
+|-------------|----------|-------------|
+| resolved parallel config | `tp=1 pp=4 dp=1 world_size=4 backend=mp ep=False` | `# C8-PP MODE` |
+| per-GPU layer ownership | hidden layers partitioned `[11,11,11,10]` (Worker_PP0..PP3 each own a distinct contiguous range) | `utils.py:144` ×4 |
+| weights staged vs replicated | **staged** — model load = **41.0 GiB per GPU** (~1/4 of the model), not the full ~142GB | `gpu_model_runner.py:5255` |
+| all-reduce per token | **0** (C4 ~43.5) — the per-layer TP all-reduce floor is gone | `# C8-PP all-reduce=0 per-token=0.0` |
+| stage-boundary transfers | send=108 recv=108 sendrecv=108 over `decode_fwd~36` = **3 send + 3 recv per token = pp-1** boundaries | `# C8-PP TRANSFERS` |
+| EP collectives | allgather=0 reduce-scatter=0 all-to-all=0 (pure PP, no EP) | `# C8-PP other` |
+| all-reduce backend for `pp:0` group | `['PYNCCL']` (used only for the tiny PP embed/logits sync, fires 0× per decode token) | `cuda_communicator.py:245` |
+| graph status | eager (`enforce_eager=True`, `cudagraph_mode=NONE`) | engine config |
+| coherent generation | 3/3 prompts coherent (Paris / fibonacci body / primary colors) | `# GEN` ×3 |
+| quality | ppl **4.1923** (C4/C7 baseline 4.264, same checkpoint/quant) | `# C8-PP PASS` |
+| eager decode | **7.539 tok/s** (wall1=0.420s wall64=8.776s) | `# C8-PP decode tok/s` |
+
+**Guardrail check — PASS.** Genuine layer-staging, not replicas or aggregate DP throughput: one model
+sharded across 4 GPUs by distinct layer range (`[11,11,11,10]`, 41 GiB/GPU vs 142GB whole), a single
+batch=1 request flowing through all 4 stages, **all-reduce-per-token = 0** (C4's dominant floor
+removed), and only pp-1 stage-boundary send/recv per token. C8 does **not** stop at verdict C — the
+mode is real and the C4 all-reduce floor is eliminated. Proceed to Task 2 (captured stage baseline).
+
+The open question the eager number cannot answer: eager decode (7.539) is launch-overhead-bound, not
+weight-bandwidth-bound. C7's DP-attention gained 4.5x from graph capture (4.578 → 20.450). Whether C8
+captured can close the gap to C4's 58.126 depends on (a) how much of C4's per-token time was the
+now-removed all-reduce vs the weight stream PP serializes 4-way at batch=1, and (b) whether vLLM can
+CUDA-graph-capture cross-process pipeline send/recv cleanly. Both are empirical — Task 2 measures them.
