@@ -24,4 +24,4 @@ C8 removed C4's dominant floor (per-layer TP all-reduce: ~43.5/token → **0**, 
 the pipeline/stage mode is fully viable (genuine layer-sharding, coherent gen, unchanged quality). But
 captured single-request decode is **22.930 tok/s = 2.53x slower than C4's 58.126**, because pipeline
 execution serializes at batch=1 the 4-way compute parallelism TP provides and idles 3 of 4 GPUs. C4
-remains the single-request SM120 dense NVFP4 decode ceiling. Full reasoning: `verdict.md`.
+remains the single-request SM120 dense NVFP4 decode ceiling. Full reasoning: [verdict.md](verdict.md).

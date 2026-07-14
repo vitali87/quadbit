@@ -750,7 +750,7 @@ def _report_pp_transfers(prof_dir, model, n_pp):
     for t in traces:
         opener = gzip.open if t.endswith(".gz") else open
         try:
-            with opener(t, "rt") as fh:
+            with opener(t, "rt", encoding="utf-8") as fh:
                 data = json.load(fh)
         except Exception:  # noqa: BLE001
             continue

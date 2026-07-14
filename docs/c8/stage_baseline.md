@@ -68,4 +68,4 @@ one microbatch, so there is nothing to overlap, double-buffer, or microbatch aga
 lever (double-buffered activations, send/compute overlap, microbatching) fills bubbles by putting
 **more concurrent requests** in flight, which is aggregate serving throughput, explicitly forbidden by
 the spec as a single-request-decode claim. Layer rebalancing (`[11,11,11,10]` is already near-even)
-is a sub-1% effect and cannot bridge 2.53x. See `verdict.md`.
+is a sub-1% effect and cannot bridge 2.53x. See [verdict.md](verdict.md).
