@@ -105,6 +105,55 @@ def inspect_vllm() -> None:
         print(f"  (GroupCoordinator.all_reduce introspect failed: {ex})", flush=True)
 
 
+@app.function(timeout=10 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def inspect_pp() -> None:
+    """C8 Task 1 (CPU recon, no GPU): can DeepSeek-V4-Flash run TP=1 with pipeline_parallel_size>1?
+    Answers three feasibility questions cheaply before spending a 4-GPU slot:
+      (1) does vLLM 0.24 offline LLM(pipeline_parallel_size>1) raise, the way it raises for DP?
+      (2) does the deepseek_v4 model class implement PP (SupportsPP / make_layers pp-slicing)?
+      (3) does EngineArgs accept pipeline_parallel_size in single-process offline mode?"""
+    import os
+    import subprocess
+
+    import vllm
+    root = os.path.dirname(vllm.__file__)
+    print(f"# vllm {vllm.__version__} at {root}", flush=True)
+
+    # (1) Is offline PP guarded like DP? DP raised "not supported for single-process usage".
+    r = subprocess.run(["grep", "-rn", "pipeline_parallel", f"{root}/entrypoints/llm.py"],
+                       capture_output=True, text=True)
+    print(f"# entrypoints/llm.py pipeline_parallel refs:\n{r.stdout or '  (none)'}", flush=True)
+    r2 = subprocess.run(["grep", "-rn", "single-process usage",
+                         f"{root}/entrypoints/llm.py", f"{root}/engine/arg_utils.py",
+                         f"{root}/config/parallel.py"], capture_output=True, text=True)
+    print(f"# 'single-process usage' guard hits (DP raised here; does PP?):\n"
+          f"{r2.stdout or '  (none)'}", flush=True)
+
+    # (2) Does the deepseek_v4 model implement PP? Look for SupportsPP + get_pp_indices/make_layers.
+    r3 = subprocess.run(["grep", "-rln", "SupportsPP", f"{root}/model_executor/models/"],
+                       capture_output=True, text=True)
+    pp_models = [os.path.basename(x) for x in r3.stdout.split()]
+    print(f"# model files declaring SupportsPP ({len(pp_models)}): "
+          f"{[m for m in pp_models if 'deepseek' in m or 'v4' in m] or pp_models[:8]}", flush=True)
+    for mod in ("deepseek_v4", "deepseek_v3", "deepseek_v2"):
+        fp = f"{root}/model_executor/models/{mod}.py"
+        if os.path.exists(fp):
+            rr = subprocess.run(["grep", "-nE",
+                                 "SupportsPP|get_pp_indices|make_layers|pp_missing|pp_rank", fp],
+                                capture_output=True, text=True)
+            print(f"# === {mod}.py PP markers ===\n{rr.stdout or '  (none)'}", flush=True)
+
+    # (3) EngineArgs field + the config that computes world size = tp*pp*dp.
+    from vllm.engine.arg_utils import EngineArgs
+    print(f"# EngineArgs.pipeline_parallel_size present: "
+          f"{hasattr(EngineArgs, 'pipeline_parallel_size')}", flush=True)
+    r4 = subprocess.run(["grep", "-nE", "pipeline_parallel_size|world_size|distributed_executor",
+                         f"{root}/config/parallel.py"], capture_output=True, text=True)
+    print(f"# config/parallel.py PP/world-size:\n{r4.stdout[:1500]}", flush=True)
+    print("# C8-INSPECT-PP done", flush=True)
+
+
 @app.function(
     gpu="RTX-PRO-6000:8",
     timeout=90 * MIN,
