@@ -766,9 +766,17 @@ def _report_pp_transfers(prof_dir, model, n_pp):
     def cnt(*subs):
         return sum(c for k, c in cnt_by_name.items() if any(s in k.lower() for s in subs))
     n_ar = cnt("cross_device_reduce") + cnt("allreduce_") + cnt("allreduce ")
-    n_send = cnt("send")
-    n_recv = cnt("recv")
+    # NCCL fuses point-to-point into one `ncclDevKernel_SendRecv` kernel, which matches
+    # "send", "recv", and "sendrecv" alike — count it once (n_sendrecv) and only add pure
+    # send/recv kernels that are NOT the fused form, so the total isn't triple-counted.
     n_sendrecv = cnt("sendrecv", "send_recv")
+
+    def cnt_excl(sub, *excl):
+        return sum(c for k, c in cnt_by_name.items()
+                   if sub in k.lower() and not any(e in k.lower() for e in excl))
+    n_send = cnt_excl("send", "sendrecv", "send_recv")
+    n_recv = cnt_excl("recv", "sendrecv", "send_recv")
+    n_xfer = n_sendrecv + n_send + n_recv
     n_ag = cnt("allgather", "all_gather")
     n_rs = cnt("reducescatter", "reduce_scatter")
     n_a2a = cnt("alltoall", "all_to_all", "all2all")
@@ -787,8 +795,8 @@ def _report_pp_transfers(prof_dir, model, n_pp):
     print(f"# C8-PP TRANSFERS traces={len(traces)} n_layers={n_layers} decode_fwd~{fwd:.1f} "
           f"DSA={n_dsa}", flush=True)
     print(f"# C8-PP all-reduce={n_ar} per-token={per(n_ar):.1f} (C4 ~43.5; PP target ~0) | "
-          f"send={n_send} recv={n_recv} sendrecv={n_sendrecv} "
-          f"stage-xfer-per-token={per(n_send + n_recv + n_sendrecv):.1f}", flush=True)
+          f"sendrecv={n_sendrecv} send_only={n_send} recv_only={n_recv} xfer={n_xfer} "
+          f"stage-xfer-per-token={per(n_xfer):.1f}", flush=True)
     print(f"# C8-PP other: allgather={n_ag} reduce-scatter={n_rs} all-to-all={n_a2a} "
           f"per-token ag={per(n_ag):.1f} rs={per(n_rs):.1f} a2a={per(n_a2a):.1f}", flush=True)
 

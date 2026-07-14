@@ -23,8 +23,14 @@ subtraction `dtps = 63.0 / (wall64 - wall1)`, batch=1, single request through al
   `cudagraph_mode=FULL_AND_PIECEWISE`, breakable CUDA graph enabled, capture sizes `[1,2,4,8,16]`.
 - Graph capture gain: 7.539 → 22.930 = **3.04x** (comparable to C7's 4.5x eager→captured).
 - Collectives verified from the trace (`_report_pp_transfers`, profiled pass last): **all-reduce = 0
-  per token** (C4's ~43.5 floor removed), only 3 stage-boundary send + 3 recv per token = `pp-1`
+  per token** (C4's ~43.5 floor removed), only 3 stage-boundary transfers per token = `pp-1`
   boundaries; allgather / reduce-scatter / all-to-all all 0.
+  - Note on the raw logs: NCCL implements each point-to-point boundary as one fused
+    `ncclDevKernel_SendRecv` kernel. The trace has **108** of them over `decode_fwd~36` = **3/token**.
+    The committed `c8_pp_*.log` lines predate a reporting fix and print `send=108 recv=108 sendrecv=108
+    stage-xfer-per-token=9.0` — that is the *same* 108 kernels substring-matched three ways (triple
+    count), not 9 distinct transfers. The harness now emits `xfer=108 stage-xfer-per-token=3.0`; the
+    underlying trace datum (108 kernels / 36 forwards = 3) is unchanged.
 - Coherent generation 3/3 both runs; ppl 4.19 (eager) / 4.29 (captured) vs C4/C7 baseline 4.264 —
   quality unchanged (no quantization/recovery change; PPL movement is decode-path noise, not drift).
 - Memory: 41.0 GiB model + 43.3 GiB KV per GPU (model genuinely layer-sharded `[11,11,11,10]`).

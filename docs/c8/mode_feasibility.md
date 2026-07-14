@@ -48,7 +48,7 @@ Log: [c8_pp_eager.log](../audit/logs/c8_pp_eager.log). RTX PRO 6000:4, SM120, no
 | per-GPU layer ownership | hidden layers partitioned `[11,11,11,10]` (Worker_PP0..PP3 each own a distinct contiguous range) | `utils.py:144` ×4 |
 | weights staged vs replicated | **staged** — model load = **41.0 GiB per GPU** (~1/4 of the model), not the full ~142GB | `gpu_model_runner.py:5255` |
 | all-reduce per token | **0** (C4 ~43.5) — the per-layer TP all-reduce floor is gone | `# C8-PP all-reduce=0 per-token=0.0` |
-| stage-boundary transfers | send=108 recv=108 sendrecv=108 over `decode_fwd~36` = **3 send + 3 recv per token = pp-1** boundaries | `# C8-PP TRANSFERS` |
+| stage-boundary transfers | 108 `ncclDevKernel_SendRecv` kernels over `decode_fwd~36` = **3 per token = pp-1** boundaries | `# C8-PP TRANSFERS` |
 | EP collectives | allgather=0 reduce-scatter=0 all-to-all=0 (pure PP, no EP) | `# C8-PP other` |
 | all-reduce backend for `pp:0` group | `['PYNCCL']` (used only for the tiny PP embed/logits sync, fires 0× per decode token) | `cuda_communicator.py:245` |
 | graph status | eager (`enforce_eager=True`, `cudagraph_mode=NONE`) | engine config |
