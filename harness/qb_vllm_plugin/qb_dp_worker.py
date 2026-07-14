@@ -62,7 +62,7 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
               enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
     if profile:
         # vLLM 0.24 arms the worker profiler via profiler_config (the VLLM_TORCH_PROFILER_DIR env
-        # alone raises "Profiling is not enabled" from start_profile); same shape floor_profile uses.
+        # alone raises "Profiling is not enabled" from start_profile); same as floor_profile.
         kw["profiler_config"] = {"profiler": "torch", "torch_profiler_dir": prof_dir}
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
@@ -100,8 +100,8 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
             profile = False
         torch.cuda.synchronize()
 
-    # Coherence + PPL are collective: EVERY rank must run them in lockstep or rank 0 deadlocks on the
-    # EP all-to-all. All ranks run identical inputs; only rank 0 keeps/prints the results.
+    # Coherence + PPL are collective: EVERY rank must run them in lockstep or rank 0 deadlocks on
+    # the EP all-to-all. All ranks run identical inputs; only rank 0 keeps/prints the results.
     gens = []
     for p in ["The capital of France is", "def fibonacci(n):", "The three primary colors are"]:
         pid = llm.get_tokenizer().encode(p)
