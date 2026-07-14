@@ -60,10 +60,17 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
               max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
               max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs,
               enable_expert_parallel=True, hf_overrides={"rope_scaling": rope})
+    if profile:
+        # vLLM 0.24 arms the worker profiler via profiler_config (the VLLM_TORCH_PROFILER_DIR env
+        # alone raises "Profiling is not enabled" from start_profile); same shape floor_profile uses.
+        kw["profiler_config"] = {"profiler": "torch", "torch_profiler_dir": prof_dir}
     try:
         llm = LLM(tokenizer_mode="deepseek_v4", **kw)
     except Exception as ex:  # noqa: BLE001
-        print(f"[dp{dp_rank}] deepseek_v4 kw rejected: {type(ex).__name__}: {ex}", flush=True)
+        print(f"[dp{dp_rank}] deepseek_v4/profiler_config rejected: {type(ex).__name__}: {ex}",
+              flush=True)
+        kw.pop("profiler_config", None)
+        profile = False
         llm = LLM(**kw)
     print(f"[dp{dp_rank}] LLM constructed dp={dp} tp=1 EP=on device=cuda:{dp_rank}", flush=True)
 
@@ -84,25 +91,25 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
     # Profiled pass (all ranks step together; only rank 0's trace is parsed for the AR/a2a count).
     if profile:
         torch.cuda.synchronize()
-        llm.start_profile()
-        _wall(16)
-        llm.stop_profile()
+        try:
+            llm.start_profile()
+            _wall(16)
+            llm.stop_profile()
+        except Exception as ex:  # noqa: BLE001
+            print(f"[dp{dp_rank}] profiling skipped: {type(ex).__name__}: {ex}", flush=True)
+            profile = False
         torch.cuda.synchronize()
 
-    if dp_rank != 0:
-        return
-
-    if profile:
-        _report_collectives(prof_dir, model)
-
-    # coherence smoke (rank 0)
+    # Coherence + PPL are collective: EVERY rank must run them in lockstep or rank 0 deadlocks on the
+    # EP all-to-all. All ranks run identical inputs; only rank 0 keeps/prints the results.
+    gens = []
     for p in ["The capital of France is", "def fibonacci(n):", "The three primary colors are"]:
         pid = llm.get_tokenizer().encode(p)
         sp = SamplingParams(temperature=0.0, max_tokens=24)
         out = llm.generate([{"prompt_token_ids": pid}], sp)
-        print(f"# GEN {p!r} -> {out[0].outputs[0].text!r}", flush=True)
+        if dp_rank == 0:
+            gens.append((p, out[0].outputs[0].text))
 
-    # teacher-forced PPL on the mito80 passage (same protocol as the other rows)
     passage = (
         "The mitochondria is the powerhouse of the cell. Photosynthesis converts sunlight, water, "
         "and carbon dioxide into glucose and oxygen. The Earth orbits the Sun once every year, and "
@@ -113,6 +120,14 @@ def dp_worker(dp_rank, dp, port, model, cap, max_seqs, max_len, gpu_mem, baselin
     pids = llm.get_tokenizer().encode(passage)
     pout = llm.generate([{"prompt_token_ids": pids}],
                         SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+
+    if dp_rank != 0:
+        return
+
+    if profile:
+        _report_collectives(prof_dir, model)
+    for p, txt in gens:
+        print(f"# GEN {p!r} -> {txt!r}", flush=True)
     plp = pout[0].prompt_logprobs or []
     nlls = [-d[tid].logprob for tid, d in zip(pids[1:], plp[1:], strict=False)
             if d and tid in d and math.isfinite(d[tid].logprob)]
