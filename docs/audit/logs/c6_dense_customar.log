@@ -1,0 +1,1146 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-f4qfiBxUDUAggsyob6MBKZ
+Building image im-6OtPwNSquuqXZIPIIGTR6L
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=40221 sha256=6e99d71837c25d594bf10cfc070e40b1de5934221a3d9dec2d19e1d4a182c538
+  Stored in directory: /tmp/pip-ephem-wheel-cache-1pzakdm5/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 2.58s
+
+Built image im-6OtPwNSquuqXZIPIIGTR6L in 7.63s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_dp.
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function graph_gate2.
+├── 🔨 Created function graph_gate_dp.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+[qb_sm120] driver can_device_access_peer matrix (4 GPUs): [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] fully_connected=False
+[qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled (NCCL fallback)
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=dense) pid=2
+[qb_sm120] installed in pid=2 (method=nvfp4)
+INFO 07-14 09:54:08 [api_utils.py:273] non-default args: {'tokenizer_mode': 'deepseek_v4', 'trust_remote_code': True, 'kv_cache_dtype': 'fp8', 'max_model_len': 2048, 'tensor_parallel_size': 4, 'gpu_memory_utilization': 0.95, 'max_num_batched_tokens': 2048, 'disable_log_stats': True, 'hf_overrides': {'rope_scaling': {'rope_type': 'yarn', 'factor': 16, 'original_max_position_embeddings': 65536, 'beta_fast': 32, 'beta_slow': 1}}, 'enforce_eager': True, 'model': 'nvidia/DeepSeek-V4-Flash-NVFP4'}
+INFO 07-14 09:54:08 [config.py:741] Detected quantization_config.scale_fmt=ue8m0; enabling UE8M0 for DeepGEMM.
+INFO 07-14 09:54:23 [model.py:598] Resolved architecture: DeepseekV4ForCausalLM
+INFO 07-14 09:54:23 [model.py:1725] Using max model len 2048
+INFO 07-14 09:54:23 [cache.py:279] Using fp8 data type to store kv cache. It reduces the GPU memory footprint and boosts the performance. Meanwhile, it may cause accuracy drop without a proper scaling factor
+INFO 07-14 09:54:23 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 07-14 09:54:23 [vllm.py:1006] Asynchronous scheduling is enabled.
+WARNING 07-14 09:54:23 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+INFO 07-14 09:54:23 [vllm.py:1094] Auto-enabling VLLM_USE_BREAKABLE_CUDAGRAPH=1. Set VLLM_USE_BREAKABLE_CUDAGRAPH=0 to opt out.
+WARNING 07-14 09:54:23 [vllm.py:1100] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+WARNING 07-14 09:54:23 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 07-14 09:54:23 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 07-14 09:54:23 [vllm.py:1288] Cudagraph is disabled under eager mode
+INFO 07-14 09:54:23 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+WARNING 07-14 09:54:24 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=61) [qb_sm120] driver can_device_access_peer matrix (4 GPUs): [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] fully_connected=False
+(EngineCore pid=61) [qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled (NCCL fallback)
+(EngineCore pid=61) [qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+(EngineCore pid=61) [qb_sm120] patched indexer mqa-logits (+3 rebinds)
+(EngineCore pid=61) [qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+(EngineCore pid=61) [qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=dense) pid=61
+(EngineCore pid=61) [qb_sm120] installed in pid=61 (method=nvfp4)
+(EngineCore pid=61) INFO 07-14 09:54:37 [core.py:114] Initializing a V1 LLM engine (v0.24.0) with config: model='nvidia/DeepSeek-V4-Flash-NVFP4', speculative_config=None, tokenizer='nvidia/DeepSeek-V4-Flash-NVFP4', skip_tokenizer_init=False, tokenizer_mode=deepseek_v4, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=2048, download_dir=None, load_format=auto, tensor_parallel_size=4, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=deepseek_v4_fp8, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=fp8, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_verbose=False), seed=0, served_model_name=nvidia/DeepSeek-V4-Flash-NVFP4, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['+quant_fp8', 'all', '+quant_fp8'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=61) INFO 07-14 09:54:37 [multiproc_executor.py:140] DP group leader: node_rank=0, node_rank_within_dp=0, master_addr=127.0.0.1, mq_connect_ip=172.20.0.39 (local), world_size=4, local_world_size=4
+[qb_sm120] driver can_device_access_peer matrix (4 GPUs): [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] fully_connected=False
+[qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled (NCCL fallback)
+[qb_sm120] driver can_device_access_peer matrix (4 GPUs): [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] fully_connected=False
+[qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled (NCCL fallback)
+[qb_sm120] driver can_device_access_peer matrix (4 GPUs): [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] fully_connected=False
+[qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled (NCCL fallback)
+[qb_sm120] driver can_device_access_peer matrix (4 GPUs): [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] fully_connected=False
+[qb_sm120] QB_FORCE_CUSTOM_AR: P2P NOT fully connected -> leaving custom AR disabled (NCCL fallback)
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched deep_gemm_fp8_o_proj in 3 module(s)
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched indexer mqa-logits (+3 rebinds)
+[qb_sm120] overrode cooperative_topk/persistent_topk with torch top-k
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=dense) pid=84
+[qb_sm120] installed in pid=84 (method=nvfp4)
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=dense) pid=83
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=dense) pid=82
+[qb_sm120] installed in pid=83 (method=nvfp4)
+[qb_sm120] installed in pid=82 (method=nvfp4)
+[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE=dense) pid=85
+[qb_sm120] installed in pid=85 (method=nvfp4)
+(Worker pid=82) INFO 07-14 09:55:05 [parallel_state.py:1588] world_size=4 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:31752 backend=nccl
+(Worker pid=84) INFO 07-14 09:55:05 [parallel_state.py:1588] world_size=4 rank=2 local_rank=2 distributed_init_method=tcp://127.0.0.1:31752 backend=nccl
+(Worker pid=83) INFO 07-14 09:55:05 [parallel_state.py:1588] world_size=4 rank=1 local_rank=1 distributed_init_method=tcp://127.0.0.1:31752 backend=nccl
+(Worker pid=85) INFO 07-14 09:55:05 [parallel_state.py:1588] world_size=4 rank=3 local_rank=3 distributed_init_method=tcp://127.0.0.1:31752 backend=nccl
+(Worker pid=82) INFO 07-14 09:55:05 [pynccl.py:113] vLLM is using nccl==2.28.9
+(Worker pid=82) WARNING 07-14 09:55:06 [symm_mem.py:66] SymmMemCommunicator: Device capability 12.0 not supported, communicator is not available.
+(Worker pid=83) WARNING 07-14 09:55:06 [symm_mem.py:66] SymmMemCommunicator: Device capability 12.0 not supported, communicator is not available.
+(Worker pid=84) WARNING 07-14 09:55:06 [symm_mem.py:66] SymmMemCommunicator: Device capability 12.0 not supported, communicator is not available.
+(Worker pid=85) WARNING 07-14 09:55:06 [symm_mem.py:66] SymmMemCommunicator: Device capability 12.0 not supported, communicator is not available.
+(Worker pid=83) WARNING 07-14 09:55:06 [custom_all_reduce.py:151] Custom allreduce is disabled because it's not supported on more than two PCIe-only GPUs. To silence this warning, specify disable_custom_all_reduce=True explicitly.
+(Worker pid=84) WARNING 07-14 09:55:06 [custom_all_reduce.py:151] Custom allreduce is disabled because it's not supported on more than two PCIe-only GPUs. To silence this warning, specify disable_custom_all_reduce=True explicitly.
+(Worker pid=85) WARNING 07-14 09:55:06 [custom_all_reduce.py:151] Custom allreduce is disabled because it's not supported on more than two PCIe-only GPUs. To silence this warning, specify disable_custom_all_reduce=True explicitly.
+(Worker pid=82) WARNING 07-14 09:55:06 [custom_all_reduce.py:151] Custom allreduce is disabled because it's not supported on more than two PCIe-only GPUs. To silence this warning, specify disable_custom_all_reduce=True explicitly.
+(Worker pid=82) INFO 07-14 09:55:06 [cuda_communicator.py:245] Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=82) INFO 07-14 09:55:06 [cuda_communicator.py:245] Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'ep:0' out of potential backends: ['NCCL_SYMM_MEM', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker pid=82) INFO 07-14 09:55:06 [parallel_state.py:1923] rank 0 in world size 4 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank 0, EPLB rank N/A
+(Worker pid=82) INFO 07-14 09:55:07 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+(Worker_TP0 pid=82) INFO 07-14 09:55:07 [gpu_model_runner.py:5160] Starting to load model nvidia/DeepSeek-V4-Flash-NVFP4...
+(Worker_TP0 pid=82) INFO 07-14 09:55:07 [quant_config.py:75] DeepSeek V4 expert_dtype resolved to 'fp4'
+(Worker_TP0 pid=82) INFO 07-14 09:55:07 [__init__.py:563] Selected CutlassFp8BlockScaledMMKernel for Fp8LinearMethod
+(Worker_TP3 pid=85) WARNING 07-14 09:55:07 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+(Worker_TP2 pid=84) WARNING 07-14 09:55:07 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+(Worker_TP1 pid=83) WARNING 07-14 09:55:07 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+(Worker_TP0 pid=82) INFO 07-14 09:55:07 [attention.py:87] Using DeepSeek's fp8_ds_mla KV cache format.
+(Worker_TP0 pid=82) WARNING 07-14 09:55:07 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+(Worker_TP0 pid=82) INFO 07-14 09:55:07 [nvfp4.py:270] Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'FLASHINFER_CUTLASS', 'MARLIN'].
+(Worker_TP0 pid=82) INFO 07-14 09:55:07 [attention.py:689] Using FP8 indexer cache for Lightning Indexer.
+(Worker_TP0 pid=82) INFO 07-14 09:55:09 [weight_utils.py:849] Filesystem type for checkpoints: 9P. Checkpoint size: 156.72 GiB. Available RAM: 1009.50 GiB.
+(Worker_TP0 pid=82) INFO 07-14 09:55:09 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (9P) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:   0% Completed | 0/46 [00:00<?, ?it/s]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:   2% Completed | 1/46 [00:00<00:10,  4.43it/s]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:   4% Completed | 2/46 [00:02<00:58,  1.32s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:   7% Completed | 3/46 [00:05<01:28,  2.05s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:   9% Completed | 4/46 [00:07<01:34,  2.24s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  11% Completed | 5/46 [00:10<01:34,  2.31s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  13% Completed | 6/46 [00:12<01:36,  2.40s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  15% Completed | 7/46 [00:15<01:32,  2.38s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  17% Completed | 8/46 [00:17<01:26,  2.28s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  20% Completed | 9/46 [00:19<01:23,  2.25s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  22% Completed | 10/46 [00:21<01:20,  2.25s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  24% Completed | 11/46 [00:24<01:20,  2.30s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  26% Completed | 12/46 [00:26<01:22,  2.44s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  28% Completed | 13/46 [00:29<01:21,  2.47s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  30% Completed | 14/46 [00:31<01:19,  2.48s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  33% Completed | 15/46 [00:34<01:16,  2.45s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  35% Completed | 16/46 [00:36<01:09,  2.32s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  37% Completed | 17/46 [00:38<01:07,  2.32s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  39% Completed | 18/46 [00:40<01:06,  2.36s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  41% Completed | 19/46 [00:43<01:05,  2.41s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  43% Completed | 20/46 [00:46<01:03,  2.43s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  46% Completed | 21/46 [00:48<00:59,  2.39s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  48% Completed | 22/46 [00:50<00:57,  2.42s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  50% Completed | 23/46 [00:53<00:57,  2.50s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  52% Completed | 24/46 [00:55<00:52,  2.38s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  54% Completed | 25/46 [00:58<00:51,  2.46s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  57% Completed | 26/46 [01:00<00:47,  2.38s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  59% Completed | 27/46 [01:02<00:44,  2.34s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  61% Completed | 28/46 [01:05<00:43,  2.41s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  63% Completed | 29/46 [01:07<00:41,  2.42s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  65% Completed | 30/46 [01:10<00:39,  2.49s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  67% Completed | 31/46 [01:13<00:38,  2.55s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  70% Completed | 32/46 [01:15<00:35,  2.52s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  72% Completed | 33/46 [01:17<00:31,  2.45s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  74% Completed | 34/46 [01:20<00:29,  2.46s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  76% Completed | 35/46 [01:22<00:27,  2.51s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  78% Completed | 36/46 [01:25<00:25,  2.52s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  80% Completed | 37/46 [01:27<00:21,  2.40s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  83% Completed | 38/46 [01:29<00:19,  2.40s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  85% Completed | 39/46 [01:32<00:16,  2.41s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  87% Completed | 40/46 [01:34<00:14,  2.38s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  89% Completed | 41/46 [01:37<00:12,  2.45s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  91% Completed | 42/46 [01:39<00:10,  2.53s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  93% Completed | 43/46 [01:42<00:07,  2.48s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  96% Completed | 44/46 [01:44<00:04,  2.47s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards:  98% Completed | 45/46 [01:44<00:01,  1.77s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards: 100% Completed | 46/46 [01:46<00:00,  1.70s/it]
+(Worker_TP0 pid=82) Loading safetensors checkpoint shards: 100% Completed | 46/46 [01:46<00:00,  2.31s/it]
+(Worker_TP0 pid=82) 
+(Worker_TP0 pid=82) INFO 07-14 09:56:55 [default_loader.py:430] Loading weights took 106.65 seconds
+(Worker_TP3 pid=85) [qb_sm120] fp8-fallback ACTIVE pid=85 method=nvfp4
+(Worker_TP3 pid=85) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_sm120] fp8-fallback ACTIVE pid=84 method=nvfp4
+(Worker_TP1 pid=83) [qb_sm120] fp8-fallback ACTIVE pid=83 method=nvfp4
+(Worker_TP2 pid=84) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_sm120] fp8-fallback ACTIVE pid=82 method=nvfp4
+(Worker_TP0 pid=82) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP1 pid=83) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP3 pid=85) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_shape] w=(1536, 4096) s=(12, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_shape] w=(8192, 1024) s=(64, 8) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_shape] w=(2048, 4096) s=(16, 32) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_shape] w=(4096, 2048) s=(32, 16) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_shape] w=(1024, 4096) s=(8, 32) bs=[128, 128]
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_shape] w=(4096, 512) s=(32, 4) bs=[128, 128]
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP2 pid=84) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP0 pid=82) [qb_sm120] MoE dense path: raw NVFP4 kept w13=(256, 1024, 2048) w2=(256, 4096, 256) I=512 experts=256 emap=n
+(Worker_TP1 pid=83) INFO 07-14 09:58:13 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP3 pid=85) INFO 07-14 09:58:14 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP2 pid=84) INFO 07-14 09:58:14 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0 pid=82) INFO 07-14 09:58:14 [gpu_model_runner.py:5255] Model loading took 40.83 GiB memory and 185.973727 seconds
+(Worker_TP0 pid=82) INFO 07-14 09:58:14 [interface.py:620] Setting kv cache block size to 256 for DEEPSEEK_SPARSE_SWA backend.
+(Worker_TP0 pid=82) 2026-07-14 09:58:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 09:58:24  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP0 pid=82) 2026-07-14 09:58:25  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 09:58:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(EngineCore pid=61) INFO 07-14 09:59:15 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP1 pid=83) 2026-07-14 09:58:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 09:58:24  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP1 pid=83) 2026-07-14 09:58:25  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 09:58:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3 pid=85) 2026-07-14 09:58:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 09:58:24  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP3 pid=85) 2026-07-14 09:58:25  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 09:58:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2 pid=84) 2026-07-14 09:58:21  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_block_m_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 09:58:24  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_block_m_tilelang`
+(Worker_TP2 pid=84) 2026-07-14 09:58:25  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 09:58:34  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0 pid=82) [qb_sm120] o_proj bf16 path ACTIVE pid=82 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP1 pid=83) [qb_sm120] o_proj bf16 path ACTIVE pid=83 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP3 pid=85) [qb_sm120] o_proj bf16 path ACTIVE pid=85 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP2 pid=84) [qb_sm120] o_proj bf16 path ACTIVE pid=84 o=(2048, 16, 512) n_groups=2 hpg=8 o_lora_rank=1024 wo_a.weight=(2048, 4096) wa=(2048, 4096) qb_bf16=n scale=(16, 32)
+(Worker_TP2 pid=84) 2026-07-14 09:59:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 10:00:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP2 pid=84) 2026-07-14 10:00:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 10:00:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(EngineCore pid=61) INFO 07-14 10:00:15 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=61) INFO 07-14 10:01:15 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP0 pid=82) 2026-07-14 09:59:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:00:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP0 pid=82) 2026-07-14 10:00:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:00:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP1 pid=83) 2026-07-14 09:59:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 10:00:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP1 pid=83) 2026-07-14 10:00:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 10:00:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP3 pid=85) 2026-07-14 09:59:58  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 10:00:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP3 pid=85) 2026-07-14 10:00:06  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 10:00:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP0 pid=82) INFO 07-14 10:01:29 [gpu_worker.py:508] Available KV cache memory: 47.34 GiB
+(EngineCore pid=61) INFO 07-14 10:01:30 [kv_cache_utils.py:2146] GPU KV cache size: 133,675 tokens
+(EngineCore pid=61) INFO 07-14 10:01:30 [kv_cache_utils.py:2147] Maximum concurrency for 2,048 tokens per request: 65.27x
+(Worker_TP0 pid=82) INFO 07-14 10:01:30 [indexer.py:276] DSA indexer decode path: use_flattening=False (next_n=1, use_fp4_indexer_cache=False)
+(Worker_TP0 pid=82) INFO 07-14 10:01:30 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP1 pid=83) INFO 07-14 10:01:30 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP3 pid=85) INFO 07-14 10:01:30 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP2 pid=84) INFO 07-14 10:01:30 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP0 pid=82) INFO 07-14 10:01:30 [flashinfer_sparse_mla_warmup.py:124] Autotuning FlashInfer SM120 sparse MLA DSv4 decode with cache: /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json
+(Worker_TP0 pid=82) 2026-07-14 10:01:30,149 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP3 pid=85) 2026-07-14 10:01:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 10:01:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0 pid=82) 2026-07-14 10:01:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:01:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  20%|██        | 1/5 [00:07<00:29,  7.37s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm:  60%|██████    | 3/5 [00:07<00:03,  1.96s/profile]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:07<00:00,  1.02profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:07<00:00,  1.53s/profile]
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 16.32profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 15.86profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 13.84profile/s]
+(Worker_TP2 pid=84) 2026-07-14 10:01:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 10:01:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP1 pid=83) 2026-07-14 10:01:32  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 10:01:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 483.08profile/s]
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 16.18profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 15.14profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 14.58profile/s]
+(Worker_TP0 pid=82) 2026-07-14 10:02:01  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:02:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0 pid=82) 2026-07-14 10:02:04  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:02:12  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 14.59profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 15.96profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 15.82profile/s]
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:   0%|          | 0/5 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  40%|████      | 2/5 [00:00<00:00, 17.15profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  80%|████████  | 4/5 [00:00<00:00, 13.87profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 5/5 [00:00<00:00, 14.79profile/s]
+(Worker_TP1 pid=83) 2026-07-14 10:02:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 10:02:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP1 pid=83) 2026-07-14 10:02:04  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP1 pid=83) 2026-07-14 10:02:12  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP1 pid=83) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=83 q=(8, 64, 128)/torch.float8_e4m3fn k=(2, 128)/torch.float8_e4m3fn w=(8, 64)
+(Worker_TP1 pid=83) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=83 q=(8, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(48888, 64, 1, 132)/torch.uint8 ctx=(8, 1) bt=(8, 8)
+(Worker_TP1 pid=83) [qb_sm120] torch top-k ACTIVE pid=83 logits=(8, 512) topk=512
+(Worker_TP2 pid=84) 2026-07-14 10:02:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 10:02:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP2 pid=84) 2026-07-14 10:02:04  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2 pid=84) 2026-07-14 10:02:12  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2 pid=84) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=84 q=(8, 64, 128)/torch.float8_e4m3fn k=(2, 128)/torch.float8_e4m3fn w=(8, 64)
+(Worker_TP2 pid=84) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=84 q=(8, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(48888, 64, 1, 132)/torch.uint8 ctx=(8, 1) bt=(8, 8)
+(Worker_TP2 pid=84) [qb_sm120] torch top-k ACTIVE pid=84 logits=(8, 512) topk=512
+(Worker_TP0 pid=82) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=82 q=(8, 64, 128)/torch.float8_e4m3fn k=(2, 128)/torch.float8_e4m3fn w=(8, 64)
+(Worker_TP0 pid=82) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=82 q=(8, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(48888, 64, 1, 132)/torch.uint8 ctx=(8, 1) bt=(8, 8)
+(Worker_TP0 pid=82) [qb_sm120] torch top-k ACTIVE pid=82 logits=(8, 512) topk=512
+(Worker_TP3 pid=85) 2026-07-14 10:02:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 10:02:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP3 pid=85) 2026-07-14 10:02:04  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP3 pid=85) 2026-07-14 10:02:12  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP3 pid=85) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=85 q=(8, 64, 128)/torch.float8_e4m3fn k=(2, 128)/torch.float8_e4m3fn w=(8, 64)
+(Worker_TP3 pid=85) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=85 q=(8, 1, 64, 128)/torch.float8_e4m3fn kv_cache=(48888, 64, 1, 132)/torch.uint8 ctx=(8, 1) bt=(8, 8)
+(Worker_TP3 pid=85) [qb_sm120] torch top-k ACTIVE pid=85 logits=(8, 512) topk=512
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 150.36profile/s]
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4:   0%|          | 0/6 [00:00<?, ?profile/s][AutoTuner]: Tuning sparse_mla_sm120_decode_dsv4: 100%|██████████| 6/6 [00:00<00:00, 506.93profile/s]
+(Worker_TP0 pid=82) 2026-07-14 10:02:26,964 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0 pid=82) 2026-07-14 10:02:26,986 - INFO - autotuner.py:1808 - flashinfer.jit: [Autotuner]: Saved 43 configs to /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json (43 new, 0 from previous config)
+(Worker_TP0 pid=82) 2026-07-14 10:02:27,016 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 43 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json
+(Worker_TP0 pid=82) INFO 07-14 10:02:27 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 0 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json.
+(Worker_TP2 pid=84) 2026-07-14 10:02:27,018 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 43 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json
+(Worker_TP2 pid=84) INFO 07-14 10:02:27 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 2 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json.
+(Worker_TP0 pid=82) 2026-07-14 10:02:27,019 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP1 pid=83) 2026-07-14 10:02:27,020 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 43 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json
+(Worker_TP2 pid=84) 2026-07-14 10:02:27,020 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP1 pid=83) INFO 07-14 10:02:27 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 1 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json.
+(Worker_TP3 pid=85) 2026-07-14 10:02:27,021 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 43 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json
+(Worker_TP3 pid=85) INFO 07-14 10:02:27 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv4 decode autotune cache loaded on rank 3 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/6b69291e7a6bb43a2ed024ad285a5ff1f1c5629b37bb1defa1393109ecca1faf/autotune_configs.json.
+(Worker_TP1 pid=83) 2026-07-14 10:02:27,022 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP3 pid=85) 2026-07-14 10:02:27,023 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP2 pid=84) 2026-07-14 10:02:27,024 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP1 pid=83) 2026-07-14 10:02:27,026 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP3 pid=85) 2026-07-14 10:02:27,027 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for fp4_gemm (runner=CutlassFp4GemmRunner, source=config file)
+(Worker_TP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  8.76profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  6.17profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 11.78profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.93profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 13.04profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00, 10.37profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 12.64profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00,  8.68profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 11.96profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 12.38profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 10.81profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 10.27profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 13.12profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.46profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 14.09profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 13.58profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 13.38profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.60profile/s]
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.46profile/s](Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.58profile/s]
+(Worker_TP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.11profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.63profile/s]
+(Worker_TP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.89profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.03profile/s]
+(Worker_TP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 17.10profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.01profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 17.22profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 17.60profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.14profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.75profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 17.28profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 17.97profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.38profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.89profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 17.36profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 15.06profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 15.17profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 14.23profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.08profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.95profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 13.86profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 14.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.18profile/s]
+(Worker_TP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.69profile/s]
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 14.35profile/s]
+(Worker_TP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 12.88profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 11.68profile/s][AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.61profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 12.27profile/s](Worker_TP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 14.85profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 12.81profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 13.53profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 13.34profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 14.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 14.15profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 14.62profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 13.69profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 14.50profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.21profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 13.47profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 13.19profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 14.10profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 12.35profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 12.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 12.11profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 11.91profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.49profile/s]
+(Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.17profile/s]
+(Worker_TP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 11.56profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.95profile/s]
+(Worker_TP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.62profile/s]
+(Worker_TP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:01,  5.20profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.20profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  38%|███▊      | 6/16 [00:00<00:02,  4.08profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 11.72profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00,  9.48profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00,  8.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  50%|█████     | 8/16 [00:00<00:00,  8.27profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 13.12profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 11.67profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 10.81profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  62%|██████▎   | 10/16 [00:00<00:00, 10.64profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 13.52profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.72profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.06profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  75%|███████▌  | 12/16 [00:00<00:00, 12.04profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 14.23profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 12.34profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 11.75profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  88%|████████▊ | 14/16 [00:00<00:00, 11.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 12.94profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.83profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.84profile/s]
+(Worker_TP1 pid=83) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.81profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.28profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 13.32profile/s]
+(Worker_TP2 pid=84) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 12.71profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 11.16profile/s]
+(Worker_TP3 pid=85) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s](Worker_TP0 pid=82) 
+[1A[AutoTuner]: Tuning fp4_gemm:  31%|███▏      | 5/16 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.52profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.24profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.07profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  44%|████▍     | 7/16 [00:00<00:00, 16.30profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.73profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.28profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.39profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  56%|█████▋    | 9/16 [00:00<00:00, 16.14profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.69profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.29profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.53profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  69%|██████▉   | 11/16 [00:00<00:00, 16.41profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.72profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.34profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.41profile/s]
+(EngineCore pid=61) INFO 07-14 10:02:31 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+[1A[AutoTuner]: Tuning fp4_gemm:  81%|████████▏ | 13/16 [00:00<00:00, 16.36profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.51profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.55profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.68profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm:  94%|█████████▍| 15/16 [00:00<00:00, 15.66profile/s]
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.08profile/s]
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 15.98profile/s]
+
+[1A[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.09profile/s]
+[AutoTuner]: Tuning fp4_gemm: 100%|██████████| 16/16 [00:00<00:00, 16.03profile/s]
+(Worker_TP2 pid=84) 2026-07-14 10:02:32,307 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0 pid=82) 2026-07-14 10:02:32,307 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP3 pid=85) 2026-07-14 10:02:32,307 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP1 pid=83) 2026-07-14 10:02:32,311 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0 pid=82) INFO 07-14 10:02:32 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP2 pid=84) INFO 07-14 10:02:32 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP1 pid=83) INFO 07-14 10:02:32 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP3 pid=85) INFO 07-14 10:02:32 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=61) INFO 07-14 10:02:33 [core.py:344] init engine (profile, create kv cache, warmup model) took 259.11 s
+(EngineCore pid=61) INFO 07-14 10:02:35 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=61) WARNING 07-14 10:02:35 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=61) WARNING 07-14 10:02:35 [vllm.py:1100] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+(EngineCore pid=61) WARNING 07-14 10:02:35 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=61) INFO 07-14 10:02:35 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(EngineCore pid=61) INFO 07-14 10:02:35 [vllm.py:1288] Cudagraph is disabled under eager mode
+(EngineCore pid=61) INFO 07-14 10:02:35 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+# downstream tag=c6_dense_customar moe=dense dense_layers=[] calib= limit=400 loaded 512s per-GPU-MB=[94761, 94761, 94761, 94761]
+
+[1ARendering prompts:   0%|          | 0/5 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 5/5 [00:00<00:00, 120.97it/s]
+
+(Worker_TP0 pid=82) WARNING 07-14 10:02:35 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0 pid=82) WARNING 07-14 10:02:36 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_c128a_topk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0 pid=82) WARNING 07-14 10:02:36 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_prefill_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+[1AProcessed prompts:   0%|          | 0/5 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](Worker_TP1 pid=83) 2026-07-14 10:02:36,052 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP3 pid=85) 2026-07-14 10:02:36,059 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP2 pid=84) 2026-07-14 10:02:36,061 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv4 (runner=SparseMlaDecodeV3Runner, source=config file)
+(Worker_TP0 pid=82) 2026-07-14 10:02:36  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:02:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP0 pid=82) 2026-07-14 10:02:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:02:48  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP0 pid=82) WARNING 07-14 10:02:49 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_global_topk_indices_and_lens_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0 pid=82) WARNING 07-14 10:02:50 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_prefill_chunk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+
+[1AProcessed prompts:  20%|██        | 1/5 [00:39<02:39, 39.77s/it, est. speed input: 0.13 toks/s, output: 0.60 toks/s]
+[1AProcessed prompts:  40%|████      | 2/5 [00:40<00:50, 16.89s/it, est. speed input: 0.22 toks/s, output: 1.18 toks/s]
+[1AProcessed prompts:  80%|████████  | 4/5 [00:41<00:06,  6.47s/it, est. speed input: 0.49 toks/s, output: 2.33 toks/s]
+[1AProcessed prompts: 100%|██████████| 5/5 [00:41<00:00,  6.47s/it, est. speed input: 0.61 toks/s, output: 2.91 toks/s]
+[1AProcessed prompts: 100%|██████████| 5/5 [00:41<00:00,  8.23s/it, est. speed input: 0.61 toks/s, output: 2.91 toks/s]
+# --- generation sanity ---
+  ['The capital of France is'] -> ' Paris.", "The capital of France is Paris.", "The capital of France is Paris.", "The capital of France is'
+  ['def fibonacci(n):'] -> '\\n    if n <= 0:\\n        return 0\\n    elif n == 1:\\n       '
+  ['The three primary colors are'] -> ' red, green, and blue. In the printing industry, the primaries are cyan, magenta, yellow and black.",\n'
+  ['Water is made of hydrogen and'] -> ' oxygen.",\n    "The sky is blue.",\n    "The grass is green.",\n    "The sun is bright.",\n   '
+  ['The opposite of hot is'] -> ' cold. The opposite of cold is hot. The opposite of hot is cold. The opposite of cold is hot. The'
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 2148.72it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:04<00:00,  4.41s/it, est. speed input: 25.60 toks/s, output: 0.23 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:04<00:00,  4.41s/it, est. speed input: 25.60 toks/s, output: 0.23 toks/s]Processed prompts: 100%|██████████| 1/1 [00:04<00:00,  4.41s/it, est. speed input: 25.60 toks/s, output: 0.23 toks/s]
+# PPL 3.518
+
+[1ARendering prompts:   0%|          | 0/1598 [00:00<?, ?it/s]
+[1ARendering prompts:  42%|████▏     | 670/1598 [00:00<00:00, 6698.97it/s]
+[1ARendering prompts:  84%|████████▍ | 1350/1598 [00:00<00:00, 6754.60it/s]
+[1ARendering prompts: 100%|██████████| 1598/1598 [00:00<00:00, 6726.92it/s]
+
+[1AProcessed prompts:   0%|          | 0/1598 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/1598 [00:02<54:50,  2.06s/it, est. speed input: 16.99 toks/s, output: 0.49 toks/s]
+[1AProcessed prompts:   0%|          | 2/1598 [00:04<56:03,  2.11s/it, est. speed input: 16.90 toks/s, output: 0.48 toks/s]
+[1AProcessed prompts:   0%|          | 3/1598 [00:11<1:54:53,  4.32s/it, est. speed input: 9.59 toks/s, output: 0.27 toks/s]
+[1AProcessed prompts:   2%|▏         | 39/1598 [00:18<09:23,  2.76it/s, est. speed input: 118.00 toks/s, output: 2.15 toks/s]
+[1AProcessed prompts:   6%|▌         | 88/1598 [00:25<05:29,  4.58it/s, est. speed input: 168.44 toks/s, output: 3.51 toks/s]
+[1AProcessed prompts:   9%|▉         | 143/1598 [00:32<04:09,  5.82it/s, est. speed input: 195.24 toks/s, output: 4.46 toks/s]
+[1AProcessed prompts:  13%|█▎        | 212/1598 [00:39<03:11,  7.25it/s, est. speed input: 212.19 toks/s, output: 5.43 toks/s]
+[1AProcessed prompts:  16%|█▋        | 262/1598 [00:45<03:01,  7.36it/s, est. speed input: 226.65 toks/s, output: 5.75 toks/s]
+[1AProcessed prompts:  20%|██        | 324/1598 [00:52<02:40,  7.96it/s, est. speed input: 236.54 toks/s, output: 6.19 toks/s]
+[1AProcessed prompts:  23%|██▎       | 374/1598 [00:58<02:36,  7.83it/s, est. speed input: 245.23 toks/s, output: 6.35 toks/s]
+[1AProcessed prompts:  27%|██▋       | 434/1598 [01:05<02:22,  8.19it/s, est. speed input: 251.55 toks/s, output: 6.62 toks/s]
+[1AProcessed prompts:  31%|███▏      | 500/1598 [01:12<02:08,  8.54it/s, est. speed input: 254.75 toks/s, output: 6.88 toks/s]
+[1AProcessed prompts:  36%|███▌      | 572/1598 [01:19<01:51,  9.16it/s, est. speed input: 258.74 toks/s, output: 7.19 toks/s]
+[1AProcessed prompts:  41%|████      | 649/1598 [01:26<01:37,  9.77it/s, est. speed input: 262.05 toks/s, output: 7.51 toks/s]
+[1AProcessed prompts:  44%|████▍     | 711/1598 [01:33<01:34,  9.41it/s, est. speed input: 263.44 toks/s, output: 7.60 toks/s]
+[1AProcessed prompts:  48%|████▊     | 763/1598 [01:40<01:34,  8.88it/s, est. speed input: 266.08 toks/s, output: 7.60 toks/s]
+[1AProcessed prompts:  51%|█████▏    | 822/1598 [01:47<01:27,  8.82it/s, est. speed input: 268.32 toks/s, output: 7.67 toks/s]
+[1AProcessed prompts:  55%|█████▌    | 882/1598 [01:53<01:20,  8.87it/s, est. speed input: 270.55 toks/s, output: 7.74 toks/s]
+[1AProcessed prompts:  58%|█████▊    | 926/1598 [02:00<01:23,  8.06it/s, est. speed input: 272.50 toks/s, output: 7.66 toks/s]
+[1AProcessed prompts:  62%|██████▏   | 984/1598 [02:07<01:15,  8.15it/s, est. speed input: 273.02 toks/s, output: 7.69 toks/s]
+[1AProcessed prompts:  65%|██████▌   | 1041/1598 [02:14<01:08,  8.16it/s, est. speed input: 274.18 toks/s, output: 7.72 toks/s]
+[1AProcessed prompts:  68%|██████▊   | 1093/1598 [02:21<01:03,  7.99it/s, est. speed input: 275.30 toks/s, output: 7.71 toks/s]
+[1AProcessed prompts:  72%|███████▏  | 1151/1598 [02:28<00:55,  8.01it/s, est. speed input: 275.73 toks/s, output: 7.73 toks/s]
+[1AProcessed prompts:  75%|███████▌  | 1201/1598 [02:35<00:50,  7.79it/s, est. speed input: 276.72 toks/s, output: 7.71 toks/s]
+[1AProcessed prompts:  79%|███████▊  | 1256/1598 [02:42<00:43,  7.92it/s, est. speed input: 277.85 toks/s, output: 7.73 toks/s]
+[1AProcessed prompts:  82%|████████▏ | 1311/1598 [02:49<00:36,  7.97it/s, est. speed input: 278.79 toks/s, output: 7.75 toks/s]
+[1AProcessed prompts:  85%|████████▌ | 1366/1598 [02:55<00:28,  8.03it/s, est. speed input: 279.73 toks/s, output: 7.76 toks/s]
+[1AProcessed prompts:  89%|████████▉ | 1428/1598 [03:03<00:20,  8.26it/s, est. speed input: 280.36 toks/s, output: 7.80 toks/s]
+[1AProcessed prompts:  93%|█████████▎| 1489/1598 [03:09<00:12,  8.45it/s, est. speed input: 280.79 toks/s, output: 7.84 toks/s]
+[1AProcessed prompts:  97%|█████████▋| 1547/1598 [03:16<00:05,  8.56it/s, est. speed input: 282.08 toks/s, output: 7.87 toks/s]
+[1AProcessed prompts: 100%|█████████▉| 1591/1598 [03:23<00:00,  7.89it/s, est. speed input: 282.40 toks/s, output: 7.82 toks/s]
+[1AProcessed prompts: 100%|██████████| 1598/1598 [03:23<00:00,  7.89it/s, est. speed input: 283.69 toks/s, output: 7.86 toks/s]
+[1AProcessed prompts: 100%|██████████| 1598/1598 [03:23<00:00,  7.86it/s, est. speed input: 283.69 toks/s, output: 7.86 toks/s]
+# TASK arc_c[allenai/ai2_arc] n=400 acc=0.6175 acc_norm=0.6300
+
+[1ARendering prompts:   0%|          | 0/1600 [00:00<?, ?it/s]
+[1ARendering prompts:  47%|████▋     | 759/1600 [00:00<00:00, 7578.30it/s]
+[1ARendering prompts:  96%|█████████▌| 1535/1600 [00:00<00:00, 7682.98it/s]
+[1ARendering prompts: 100%|██████████| 1600/1600 [00:00<00:00, 7666.19it/s]
+
+[1AProcessed prompts:   0%|          | 0/1600 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/1600 [00:01<42:16,  1.59s/it, est. speed input: 16.39 toks/s, output: 0.63 toks/s]
+[1AProcessed prompts:   0%|          | 2/1600 [00:03<42:58,  1.61s/it, est. speed input: 14.91 toks/s, output: 0.62 toks/s]
+[1AProcessed prompts:   0%|          | 3/1600 [00:09<1:44:38,  3.93s/it, est. speed input: 7.17 toks/s, output: 0.30 toks/s]
+[1AProcessed prompts:   4%|▎         | 56/1600 [00:16<06:00,  4.29it/s, est. speed input: 127.99 toks/s, output: 3.37 toks/s]
+[1AProcessed prompts:   6%|▋         | 103/1600 [00:23<04:37,  5.39it/s, est. speed input: 178.18 toks/s, output: 4.38 toks/s]
+[1AProcessed prompts:   9%|▉         | 148/1600 [00:30<04:14,  5.71it/s, est. speed input: 203.39 toks/s, output: 4.81 toks/s]
+[1AProcessed prompts:  12%|█▏        | 189/1600 [00:37<04:06,  5.73it/s, est. speed input: 218.24 toks/s, output: 4.99 toks/s]
+[1AProcessed prompts:  15%|█▍        | 237/1600 [00:44<03:41,  6.14it/s, est. speed input: 230.27 toks/s, output: 5.30 toks/s]
+[1AProcessed prompts:  18%|█▊        | 284/1600 [00:51<03:28,  6.32it/s, est. speed input: 239.05 toks/s, output: 5.48 toks/s]
+[1AProcessed prompts:  21%|██        | 334/1600 [00:58<03:13,  6.53it/s, est. speed input: 244.83 toks/s, output: 5.67 toks/s]
+[1AProcessed prompts:  24%|██▎       | 378/1600 [01:05<03:09,  6.44it/s, est. speed input: 249.34 toks/s, output: 5.73 toks/s]
+[1AProcessed prompts:  26%|██▋       | 420/1600 [01:12<03:06,  6.32it/s, est. speed input: 253.61 toks/s, output: 5.76 toks/s]
+[1AProcessed prompts:  29%|██▉       | 471/1600 [01:20<02:51,  6.60it/s, est. speed input: 256.67 toks/s, output: 5.89 toks/s]
+[1AProcessed prompts:  32%|███▏      | 516/1600 [01:27<02:46,  6.53it/s, est. speed input: 259.65 toks/s, output: 5.93 toks/s]
+[1AProcessed prompts:  35%|███▌      | 563/1600 [01:34<02:39,  6.49it/s, est. speed input: 261.59 toks/s, output: 5.96 toks/s]
+[1AProcessed prompts:  38%|███▊      | 607/1600 [01:41<02:33,  6.48it/s, est. speed input: 263.82 toks/s, output: 6.00 toks/s]
+[1AProcessed prompts:  41%|████▏     | 662/1600 [01:48<02:15,  6.90it/s, est. speed input: 265.55 toks/s, output: 6.12 toks/s]
+[1AProcessed prompts:  44%|████▍     | 709/1600 [01:55<02:09,  6.88it/s, est. speed input: 267.71 toks/s, output: 6.16 toks/s]
+[1AProcessed prompts:  47%|████▋     | 752/1600 [02:01<02:05,  6.74it/s, est. speed input: 269.68 toks/s, output: 6.18 toks/s]
+[1AProcessed prompts:  50%|█████     | 805/1600 [02:08<01:52,  7.05it/s, est. speed input: 271.25 toks/s, output: 6.26 toks/s]
+[1AProcessed prompts:  53%|█████▎    | 849/1600 [02:15<01:48,  6.90it/s, est. speed input: 273.14 toks/s, output: 6.27 toks/s]
+[1AProcessed prompts:  55%|█████▌    | 885/1600 [02:22<01:51,  6.44it/s, est. speed input: 274.48 toks/s, output: 6.23 toks/s]
+[1AProcessed prompts:  58%|█████▊    | 926/1600 [02:29<01:47,  6.26it/s, est. speed input: 275.22 toks/s, output: 6.21 toks/s]
+[1AProcessed prompts:  61%|██████    | 969/1600 [02:36<01:41,  6.21it/s, est. speed input: 275.80 toks/s, output: 6.21 toks/s]
+[1AProcessed prompts:  64%|██████▍   | 1023/1600 [02:42<01:25,  6.74it/s, est. speed input: 277.00 toks/s, output: 6.28 toks/s]
+[1AProcessed prompts:  67%|██████▋   | 1066/1600 [02:49<01:21,  6.54it/s, est. speed input: 277.57 toks/s, output: 6.27 toks/s]
+[1AProcessed prompts:  70%|██████▉   | 1118/1600 [02:56<01:10,  6.88it/s, est. speed input: 278.59 toks/s, output: 6.33 toks/s]
+[1AProcessed prompts:  73%|███████▎  | 1166/1600 [03:03<01:03,  6.84it/s, est. speed input: 278.96 toks/s, output: 6.34 toks/s]
+[1AProcessed prompts:  76%|███████▌  | 1214/1600 [03:10<00:55,  6.90it/s, est. speed input: 279.66 toks/s, output: 6.37 toks/s]
+[1AProcessed prompts:  79%|███████▉  | 1263/1600 [03:17<00:48,  7.01it/s, est. speed input: 280.62 toks/s, output: 6.40 toks/s]
+[1AProcessed prompts:  82%|████████▏ | 1306/1600 [03:24<00:43,  6.81it/s, est. speed input: 281.19 toks/s, output: 6.40 toks/s]
+[1AProcessed prompts:  85%|████████▍ | 1356/1600 [03:30<00:34,  7.09it/s, est. speed input: 282.47 toks/s, output: 6.44 toks/s]
+[1AProcessed prompts:  87%|████████▋ | 1399/1600 [03:37<00:28,  6.94it/s, est. speed input: 283.37 toks/s, output: 6.44 toks/s]
+[1AProcessed prompts:  91%|█████████ | 1449/1600 [03:43<00:21,  7.11it/s, est. speed input: 283.99 toks/s, output: 6.48 toks/s]
+[1AProcessed prompts:  93%|█████████▎| 1493/1600 [03:49<00:15,  7.09it/s, est. speed input: 285.27 toks/s, output: 6.49 toks/s]
+[1AProcessed prompts:  96%|█████████▋| 1541/1600 [03:56<00:08,  7.06it/s, est. speed input: 285.63 toks/s, output: 6.51 toks/s]
+[1AProcessed prompts:  99%|█████████▉| 1583/1600 [04:02<00:02,  7.09it/s, est. speed input: 287.18 toks/s, output: 6.52 toks/s]
+[1AProcessed prompts: 100%|██████████| 1600/1600 [04:02<00:00,  7.09it/s, est. speed input: 291.36 toks/s, output: 6.59 toks/s]
+[1AProcessed prompts: 100%|██████████| 1600/1600 [04:02<00:00,  6.59it/s, est. speed input: 291.36 toks/s, output: 6.59 toks/s]
+# TASK hellaswag[Rowan/hellaswag] n=400 acc=0.5425 acc_norm=0.7100
+`trust_remote_code` is not supported anymore.
+Please check that the Hugging Face dataset 'allenai/winogrande' isn't based on a loading script and remove `trust_remote_code`.
+If the dataset is based on a loading script, please ask the dataset author to remove it and convert it to a standard format like Parquet.
+
+[1ARendering prompts:   0%|          | 0/800 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 800/800 [00:00<00:00, 8160.60it/s]
+
+[1AProcessed prompts:   0%|          | 0/800 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/800 [00:01<19:45,  1.48s/it, est. speed input: 10.79 toks/s, output: 0.67 toks/s]
+[1AProcessed prompts:   0%|          | 2/800 [00:02<19:44,  1.48s/it, est. speed input: 10.78 toks/s, output: 0.67 toks/s]
+[1AProcessed prompts:   0%|          | 3/800 [00:10<56:20,  4.24s/it, est. speed input: 4.58 toks/s, output: 0.29 toks/s] 
+[1AProcessed prompts:  12%|█▏        | 94/800 [00:17<01:46,  6.62it/s, est. speed input: 116.57 toks/s, output: 5.23 toks/s]
+[1AProcessed prompts:  23%|██▎       | 184/800 [00:25<01:08,  8.96it/s, est. speed input: 162.54 toks/s, output: 7.23 toks/s]
+[1AProcessed prompts:  34%|███▍      | 275/800 [00:32<00:51, 10.25it/s, est. speed input: 188.75 toks/s, output: 8.38 toks/s]
+[1AProcessed prompts:  46%|████▌     | 368/800 [00:40<00:39, 11.04it/s, est. speed input: 204.35 toks/s, output: 9.14 toks/s]
+[1AProcessed prompts:  58%|█████▊    | 467/800 [00:47<00:27, 11.94it/s, est. speed input: 216.81 toks/s, output: 9.84 toks/s]
+[1AProcessed prompts:  70%|███████   | 561/800 [00:54<00:19, 12.45it/s, est. speed input: 226.82 toks/s, output: 10.32 toks/s]
+[1AProcessed prompts:  82%|████████▏ | 655/800 [01:01<00:11, 12.66it/s, est. speed input: 233.68 toks/s, output: 10.64 toks/s]
+[1AProcessed prompts:  94%|█████████▍| 753/800 [01:07<00:03, 13.78it/s, est. speed input: 243.77 toks/s, output: 11.18 toks/s]
+[1AProcessed prompts: 100%|██████████| 800/800 [01:07<00:00, 13.78it/s, est. speed input: 258.63 toks/s, output: 11.88 toks/s]
+[1AProcessed prompts: 100%|██████████| 800/800 [01:07<00:00, 11.88it/s, est. speed input: 258.63 toks/s, output: 11.88 toks/s]
+# TASK winogrande[allenai/winogrande] n=400 acc=0.7775 acc_norm=0.7775
+
+[1ARendering prompts:   0%|          | 0/400 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 400/400 [00:00<00:00, 7178.46it/s]
+
+[1AProcessed prompts:   0%|          | 0/400 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/400 [00:02<19:16,  2.90s/it, est. speed input: 21.39 toks/s, output: 0.35 toks/s]
+[1AProcessed prompts:   0%|          | 2/400 [00:06<20:41,  3.12s/it, est. speed input: 20.09 toks/s, output: 0.32 toks/s]
+[1AProcessed prompts:   1%|          | 4/400 [00:12<21:29,  3.26s/it, est. speed input: 19.30 toks/s, output: 0.31 toks/s]
+[1AProcessed prompts:   7%|▋         | 27/400 [00:19<03:27,  1.79it/s, est. speed input: 117.48 toks/s, output: 1.37 toks/s]
+[1AProcessed prompts:  14%|█▎        | 54/400 [00:26<02:05,  2.75it/s, est. speed input: 168.47 toks/s, output: 2.08 toks/s]
+[1AProcessed prompts:  20%|██        | 81/400 [00:32<01:37,  3.28it/s, est. speed input: 197.72 toks/s, output: 2.50 toks/s]
+[1AProcessed prompts:  26%|██▋       | 105/400 [00:38<01:25,  3.45it/s, est. speed input: 217.32 toks/s, output: 2.71 toks/s]
+[1AProcessed prompts:  32%|███▏      | 129/400 [00:45<01:16,  3.57it/s, est. speed input: 231.65 toks/s, output: 2.86 toks/s]
+[1AProcessed prompts:  39%|███▉      | 156/400 [00:51<01:04,  3.81it/s, est. speed input: 243.94 toks/s, output: 3.04 toks/s]
+[1AProcessed prompts:  46%|████▌     | 183/400 [00:57<00:55,  3.93it/s, est. speed input: 252.58 toks/s, output: 3.17 toks/s]
+[1AProcessed prompts:  53%|█████▎    | 211/400 [01:04<00:46,  4.06it/s, est. speed input: 258.96 toks/s, output: 3.29 toks/s]
+[1AProcessed prompts:  60%|█████▉    | 239/400 [01:10<00:38,  4.16it/s, est. speed input: 263.88 toks/s, output: 3.39 toks/s]
+[1AProcessed prompts:  66%|██████▋   | 266/400 [01:17<00:32,  4.16it/s, est. speed input: 268.68 toks/s, output: 3.45 toks/s]
+[1AProcessed prompts:  73%|███████▎  | 293/400 [01:23<00:25,  4.14it/s, est. speed input: 272.07 toks/s, output: 3.50 toks/s]
+[1AProcessed prompts:  80%|███████▉  | 319/400 [01:30<00:20,  4.04it/s, est. speed input: 274.39 toks/s, output: 3.53 toks/s]
+[1AProcessed prompts:  86%|████████▌ | 342/400 [01:36<00:14,  3.93it/s, est. speed input: 277.84 toks/s, output: 3.54 toks/s]
+[1AProcessed prompts:  92%|█████████▏| 369/400 [01:43<00:07,  4.04it/s, est. speed input: 280.96 toks/s, output: 3.58 toks/s]
+[1AProcessed prompts:  99%|█████████▉| 397/400 [01:46<00:00,  4.73it/s, est. speed input: 290.16 toks/s, output: 3.72 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [01:46<00:00,  4.73it/s, est. speed input: 292.27 toks/s, output: 3.75 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [01:46<00:00,  3.75it/s, est. speed input: 292.27 toks/s, output: 3.75 toks/s]
+# TASK mmlu:abstract_algebra n=100 acc=0.7600 acc_norm=0.7600
+
+[1ARendering prompts:   0%|          | 0/400 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 400/400 [00:00<00:00, 7619.95it/s]
+
+[1AProcessed prompts:   0%|          | 0/400 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/400 [00:03<23:54,  3.59s/it, est. speed input: 25.87 toks/s, output: 0.28 toks/s]
+[1AProcessed prompts:   0%|          | 2/400 [00:10<37:49,  5.70s/it, est. speed input: 17.27 toks/s, output: 0.19 toks/s]
+[1AProcessed prompts:   4%|▎         | 14/400 [00:17<06:49,  1.06s/it, est. speed input: 129.65 toks/s, output: 0.78 toks/s]
+[1AProcessed prompts:   7%|▋         | 28/400 [00:25<04:31,  1.37it/s, est. speed input: 171.42 toks/s, output: 1.11 toks/s]
+[1AProcessed prompts:  11%|█▏        | 45/400 [00:31<03:19,  1.78it/s, est. speed input: 196.27 toks/s, output: 1.41 toks/s]
+[1AProcessed prompts:  16%|█▌        | 62/400 [00:38<02:45,  2.04it/s, est. speed input: 214.73 toks/s, output: 1.60 toks/s]
+[1AProcessed prompts:  21%|██        | 84/400 [00:45<02:10,  2.42it/s, est. speed input: 227.01 toks/s, output: 1.84 toks/s]
+[1AProcessed prompts:  26%|██▌       | 103/400 [00:52<01:57,  2.53it/s, est. speed input: 236.82 toks/s, output: 1.96 toks/s]
+[1AProcessed prompts:  30%|███       | 122/400 [00:59<01:45,  2.63it/s, est. speed input: 245.39 toks/s, output: 2.07 toks/s]
+[1AProcessed prompts:  36%|███▌      | 143/400 [01:05<01:33,  2.76it/s, est. speed input: 250.66 toks/s, output: 2.17 toks/s]
+[1AProcessed prompts:  41%|████      | 163/400 [01:12<01:24,  2.82it/s, est. speed input: 254.72 toks/s, output: 2.24 toks/s]
+[1AProcessed prompts:  44%|████▍     | 178/400 [01:19<01:24,  2.62it/s, est. speed input: 259.01 toks/s, output: 2.23 toks/s]
+[1AProcessed prompts:  48%|████▊     | 193/400 [01:26<01:24,  2.45it/s, est. speed input: 260.77 toks/s, output: 2.22 toks/s]
+[1AProcessed prompts:  52%|█████▎    | 210/400 [01:34<01:18,  2.43it/s, est. speed input: 262.41 toks/s, output: 2.23 toks/s]
+[1AProcessed prompts:  57%|█████▋    | 228/400 [01:40<01:09,  2.48it/s, est. speed input: 264.99 toks/s, output: 2.26 toks/s]
+[1AProcessed prompts:  61%|██████    | 244/400 [01:47<01:04,  2.42it/s, est. speed input: 268.02 toks/s, output: 2.26 toks/s]
+[1AProcessed prompts:  66%|██████▋   | 265/400 [01:55<00:52,  2.58it/s, est. speed input: 268.29 toks/s, output: 2.30 toks/s]
+[1AProcessed prompts:  70%|██████▉   | 279/400 [02:02<00:50,  2.40it/s, est. speed input: 270.69 toks/s, output: 2.28 toks/s]
+[1AProcessed prompts:  73%|███████▎  | 293/400 [02:08<00:46,  2.29it/s, est. speed input: 271.18 toks/s, output: 2.27 toks/s]
+[1AProcessed prompts:  78%|███████▊  | 310/400 [02:15<00:38,  2.36it/s, est. speed input: 272.59 toks/s, output: 2.28 toks/s]
+[1AProcessed prompts:  81%|████████  | 324/400 [02:22<00:33,  2.27it/s, est. speed input: 274.43 toks/s, output: 2.27 toks/s]
+[1AProcessed prompts:  86%|████████▋ | 345/400 [02:29<00:21,  2.52it/s, est. speed input: 275.64 toks/s, output: 2.31 toks/s]
+[1AProcessed prompts:  90%|█████████ | 361/400 [02:36<00:15,  2.48it/s, est. speed input: 276.34 toks/s, output: 2.31 toks/s]
+[1AProcessed prompts:  94%|█████████▍| 375/400 [02:42<00:10,  2.35it/s, est. speed input: 277.26 toks/s, output: 2.30 toks/s]
+[1AProcessed prompts:  98%|█████████▊| 391/400 [02:49<00:03,  2.40it/s, est. speed input: 279.16 toks/s, output: 2.31 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [02:49<00:00,  2.40it/s, est. speed input: 286.86 toks/s, output: 2.36 toks/s]Processed prompts: 100%|██████████| 400/400 [02:49<00:00,  2.36it/s, est. speed input: 286.86 toks/s, output: 2.36 toks/s]
+# TASK mmlu:college_computer_science n=100 acc=0.9100 acc_norm=0.9100
+
+[1ARendering prompts:   0%|          | 0/400 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 400/400 [00:00<00:00, 6498.39it/s]
+
+[1AProcessed prompts:   0%|          | 0/400 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/400 [00:04<30:50,  4.64s/it, est. speed input: 44.63 toks/s, output: 0.22 toks/s]
+[1AProcessed prompts:   0%|          | 2/400 [00:09<30:44,  4.63s/it, est. speed input: 44.67 toks/s, output: 0.22 toks/s]
+[1AProcessed prompts:   1%|          | 3/400 [00:16<37:35,  5.68s/it, est. speed input: 38.34 toks/s, output: 0.19 toks/s]
+[1AProcessed prompts:   2%|▎         | 10/400 [00:23<11:50,  1.82s/it, est. speed input: 127.61 toks/s, output: 0.43 toks/s]
+[1AProcessed prompts:   4%|▍         | 15/400 [00:29<10:21,  1.61s/it, est. speed input: 153.89 toks/s, output: 0.50 toks/s]
+[1AProcessed prompts:   6%|▌         | 22/400 [00:36<08:08,  1.29s/it, est. speed input: 181.14 toks/s, output: 0.60 toks/s]
+[1AProcessed prompts:   7%|▋         | 28/400 [00:43<07:39,  1.23s/it, est. speed input: 199.67 toks/s, output: 0.65 toks/s]
+[1AProcessed prompts:   9%|▉         | 35/400 [00:50<07:00,  1.15s/it, est. speed input: 213.76 toks/s, output: 0.69 toks/s]
+[1AProcessed prompts:  10%|▉         | 39/400 [00:57<07:44,  1.29s/it, est. speed input: 222.06 toks/s, output: 0.68 toks/s]
+[1AProcessed prompts:  12%|█▏        | 46/400 [01:04<06:59,  1.19s/it, est. speed input: 231.59 toks/s, output: 0.71 toks/s]
+[1AProcessed prompts:  14%|█▎        | 54/400 [01:11<06:06,  1.06s/it, est. speed input: 237.64 toks/s, output: 0.76 toks/s]
+[1AProcessed prompts:  15%|█▌        | 60/400 [01:17<06:07,  1.08s/it, est. speed input: 244.89 toks/s, output: 0.77 toks/s]
+[1AProcessed prompts:  17%|█▋        | 69/400 [01:24<05:15,  1.05it/s, est. speed input: 249.76 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  19%|█▉        | 75/400 [01:31<05:25,  1.00s/it, est. speed input: 255.47 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  20%|██        | 80/400 [01:38<05:46,  1.08s/it, est. speed input: 255.16 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  22%|██▏       | 88/400 [01:44<05:11,  1.00it/s, est. speed input: 257.98 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  23%|██▎       | 91/400 [01:51<06:14,  1.21s/it, est. speed input: 261.67 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  24%|██▍       | 98/400 [01:58<05:40,  1.13s/it, est. speed input: 263.27 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  26%|██▌       | 104/400 [02:05<05:34,  1.13s/it, est. speed input: 264.42 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  28%|██▊       | 111/400 [02:12<05:12,  1.08s/it, est. speed input: 269.74 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  29%|██▉       | 116/400 [02:19<05:29,  1.16s/it, est. speed input: 269.47 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  30%|███       | 122/400 [02:26<05:20,  1.15s/it, est. speed input: 269.71 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  32%|███▏      | 128/400 [02:33<05:17,  1.17s/it, est. speed input: 270.13 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  33%|███▎      | 131/400 [02:40<06:07,  1.37s/it, est. speed input: 271.32 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  34%|███▍      | 138/400 [02:47<05:22,  1.23s/it, est. speed input: 272.94 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  36%|███▌      | 143/400 [02:54<05:27,  1.27s/it, est. speed input: 274.55 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  37%|███▋      | 149/400 [03:01<05:08,  1.23s/it, est. speed input: 274.31 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  39%|███▉      | 155/400 [03:07<04:53,  1.20s/it, est. speed input: 276.05 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  40%|████      | 160/400 [03:14<05:02,  1.26s/it, est. speed input: 277.77 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  41%|████▏     | 165/400 [03:21<05:01,  1.28s/it, est. speed input: 276.61 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  43%|████▎     | 171/400 [03:28<04:45,  1.25s/it, est. speed input: 277.18 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  44%|████▍     | 178/400 [03:35<04:20,  1.17s/it, est. speed input: 277.23 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  46%|████▋     | 185/400 [03:43<04:03,  1.13s/it, est. speed input: 278.32 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  48%|████▊     | 190/400 [03:50<04:15,  1.22s/it, est. speed input: 277.80 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  49%|████▉     | 197/400 [03:57<03:51,  1.14s/it, est. speed input: 277.65 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  51%|█████▏    | 205/400 [04:04<03:24,  1.05s/it, est. speed input: 279.38 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  52%|█████▏    | 209/400 [04:11<03:47,  1.19s/it, est. speed input: 279.86 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  53%|█████▎    | 212/400 [04:18<04:21,  1.39s/it, est. speed input: 279.25 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  55%|█████▍    | 218/400 [04:25<03:55,  1.29s/it, est. speed input: 280.75 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  55%|█████▌    | 221/400 [04:32<04:25,  1.48s/it, est. speed input: 280.13 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  56%|█████▋    | 226/400 [04:38<04:10,  1.44s/it, est. speed input: 280.82 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  58%|█████▊    | 234/400 [04:45<03:17,  1.19s/it, est. speed input: 281.87 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  60%|██████    | 242/400 [04:52<02:47,  1.06s/it, est. speed input: 282.50 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  62%|██████▏   | 248/400 [04:59<02:45,  1.09s/it, est. speed input: 282.49 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  64%|██████▎   | 254/400 [05:06<02:41,  1.11s/it, est. speed input: 282.79 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  66%|██████▌   | 263/400 [05:13<02:15,  1.01it/s, est. speed input: 282.82 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  68%|██████▊   | 271/400 [05:20<02:02,  1.06it/s, est. speed input: 283.67 toks/s, output: 0.85 toks/s]
+[1AProcessed prompts:  69%|██████▉   | 276/400 [05:26<02:08,  1.03s/it, est. speed input: 283.55 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  70%|███████   | 281/400 [05:33<02:11,  1.11s/it, est. speed input: 284.06 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  72%|███████▏  | 288/400 [05:40<02:01,  1.08s/it, est. speed input: 283.96 toks/s, output: 0.85 toks/s]
+[1AProcessed prompts:  73%|███████▎  | 293/400 [05:47<02:05,  1.17s/it, est. speed input: 283.74 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  74%|███████▍  | 297/400 [05:55<02:14,  1.31s/it, est. speed input: 284.29 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  76%|███████▌  | 303/400 [06:02<02:02,  1.26s/it, est. speed input: 284.56 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  77%|███████▋  | 308/400 [06:08<01:59,  1.29s/it, est. speed input: 284.52 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  78%|███████▊  | 314/400 [06:16<01:48,  1.26s/it, est. speed input: 284.81 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  80%|████████  | 320/400 [06:22<01:37,  1.21s/it, est. speed input: 284.79 toks/s, output: 0.84 toks/s]
+[1AProcessed prompts:  81%|████████▏ | 325/400 [06:29<01:34,  1.26s/it, est. speed input: 285.51 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  82%|████████▎ | 330/400 [06:36<01:31,  1.30s/it, est. speed input: 285.97 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  84%|████████▎ | 334/400 [06:43<01:33,  1.41s/it, est. speed input: 286.04 toks/s, output: 0.83 toks/s]
+[1AProcessed prompts:  84%|████████▍ | 338/400 [06:50<01:33,  1.51s/it, est. speed input: 285.52 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  86%|████████▌ | 343/400 [06:58<01:25,  1.50s/it, est. speed input: 285.93 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  86%|████████▋ | 346/400 [07:05<01:29,  1.66s/it, est. speed input: 286.16 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  87%|████████▋ | 349/400 [07:11<01:31,  1.80s/it, est. speed input: 286.01 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  89%|████████▉ | 356/400 [07:18<01:04,  1.46s/it, est. speed input: 285.99 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  91%|█████████ | 364/400 [07:25<00:43,  1.21s/it, est. speed input: 286.24 toks/s, output: 0.82 toks/s]
+[1AProcessed prompts:  92%|█████████▏| 368/400 [07:32<00:42,  1.32s/it, est. speed input: 286.01 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  93%|█████████▎| 373/400 [07:39<00:35,  1.33s/it, est. speed input: 286.40 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  94%|█████████▍| 378/400 [07:46<00:29,  1.34s/it, est. speed input: 286.39 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  96%|█████████▌| 384/400 [07:53<00:20,  1.28s/it, est. speed input: 286.99 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  98%|█████████▊| 390/400 [08:00<00:12,  1.25s/it, est. speed input: 287.12 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts:  99%|█████████▉| 395/400 [08:07<00:06,  1.30s/it, est. speed input: 286.97 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [08:13<00:00,  1.26s/it, est. speed input: 288.21 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [08:13<00:00,  1.26s/it, est. speed input: 288.21 toks/s, output: 0.81 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [08:13<00:00,  1.23s/it, est. speed input: 288.21 toks/s, output: 0.81 toks/s]
+# TASK mmlu:high_school_world_history n=100 acc=0.9200 acc_norm=0.9200
+
+[1ARendering prompts:   0%|          | 0/400 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 400/400 [00:00<00:00, 7296.15it/s]
+
+[1AProcessed prompts:   0%|          | 0/400 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/400 [00:04<33:14,  5.00s/it, est. speed input: 50.60 toks/s, output: 0.20 toks/s]
+[1AProcessed prompts:   0%|          | 2/400 [00:09<33:09,  5.00s/it, est. speed input: 50.61 toks/s, output: 0.20 toks/s]
+[1AProcessed prompts:   1%|          | 3/400 [00:17<40:26,  6.11s/it, est. speed input: 43.54 toks/s, output: 0.17 toks/s]
+[1AProcessed prompts:   3%|▎         | 13/400 [00:23<08:52,  1.38s/it, est. speed input: 114.70 toks/s, output: 0.54 toks/s]
+[1AProcessed prompts:   6%|▌         | 22/400 [00:30<06:37,  1.05s/it, est. speed input: 150.01 toks/s, output: 0.71 toks/s]
+[1AProcessed prompts:   8%|▊         | 33/400 [00:37<05:09,  1.19it/s, est. speed input: 177.36 toks/s, output: 0.88 toks/s]
+[1AProcessed prompts:  11%|█▏        | 45/400 [00:44<04:15,  1.39it/s, est. speed input: 197.83 toks/s, output: 1.02 toks/s]
+[1AProcessed prompts:  15%|█▌        | 60/400 [00:51<03:26,  1.65it/s, est. speed input: 212.02 toks/s, output: 1.17 toks/s]
+[1AProcessed prompts:  18%|█▊        | 71/400 [00:57<03:20,  1.64it/s, est. speed input: 222.64 toks/s, output: 1.23 toks/s]
+[1AProcessed prompts:  20%|█▉        | 78/400 [01:04<03:41,  1.45it/s, est. speed input: 231.30 toks/s, output: 1.21 toks/s]
+[1AProcessed prompts:  21%|██▏       | 85/400 [01:11<03:57,  1.33it/s, est. speed input: 238.61 toks/s, output: 1.19 toks/s]
+[1AProcessed prompts:  24%|██▍       | 95/400 [01:18<03:41,  1.37it/s, est. speed input: 244.11 toks/s, output: 1.22 toks/s]
+[1AProcessed prompts:  26%|██▌       | 104/400 [01:24<03:38,  1.36it/s, est. speed input: 247.34 toks/s, output: 1.22 toks/s]
+[1AProcessed prompts:  29%|██▉       | 115/400 [01:32<03:22,  1.41it/s, est. speed input: 250.08 toks/s, output: 1.25 toks/s]
+[1AProcessed prompts:  32%|███▏      | 127/400 [01:39<03:03,  1.48it/s, est. speed input: 253.18 toks/s, output: 1.28 toks/s]
+[1AProcessed prompts:  34%|███▍      | 137/400 [01:46<02:59,  1.46it/s, est. speed input: 254.69 toks/s, output: 1.29 toks/s]
+[1AProcessed prompts:  36%|███▌      | 144/400 [01:53<03:14,  1.32it/s, est. speed input: 258.92 toks/s, output: 1.27 toks/s]
+[1AProcessed prompts:  38%|███▊      | 152/400 [02:00<03:14,  1.27it/s, est. speed input: 259.53 toks/s, output: 1.26 toks/s]
+[1AProcessed prompts:  41%|████      | 163/400 [02:07<02:56,  1.34it/s, est. speed input: 261.55 toks/s, output: 1.27 toks/s]
+[1AProcessed prompts:  44%|████▍     | 175/400 [02:15<02:35,  1.45it/s, est. speed input: 261.83 toks/s, output: 1.30 toks/s]
+[1AProcessed prompts:  47%|████▋     | 188/400 [02:22<02:15,  1.57it/s, est. speed input: 263.94 toks/s, output: 1.32 toks/s]
+[1AProcessed prompts:  50%|█████     | 201/400 [02:29<02:01,  1.63it/s, est. speed input: 264.27 toks/s, output: 1.35 toks/s]
+[1AProcessed prompts:  53%|█████▎    | 213/400 [02:36<01:54,  1.64it/s, est. speed input: 267.04 toks/s, output: 1.36 toks/s]
+[1AProcessed prompts:  55%|█████▌    | 220/400 [02:44<02:06,  1.42it/s, est. speed input: 266.04 toks/s, output: 1.34 toks/s]
+[1AProcessed prompts:  57%|█████▊    | 230/400 [02:51<01:59,  1.42it/s, est. speed input: 266.50 toks/s, output: 1.34 toks/s]
+[1AProcessed prompts:  60%|██████    | 240/400 [02:58<01:52,  1.43it/s, est. speed input: 267.84 toks/s, output: 1.35 toks/s]
+[1AProcessed prompts:  62%|██████▏   | 249/400 [03:04<01:47,  1.40it/s, est. speed input: 269.06 toks/s, output: 1.35 toks/s]
+[1AProcessed prompts:  66%|██████▌   | 262/400 [03:11<01:29,  1.55it/s, est. speed input: 270.84 toks/s, output: 1.37 toks/s]
+[1AProcessed prompts:  68%|██████▊   | 270/400 [03:18<01:30,  1.44it/s, est. speed input: 271.67 toks/s, output: 1.36 toks/s]
+[1AProcessed prompts:  71%|███████   | 284/400 [03:25<01:12,  1.61it/s, est. speed input: 272.70 toks/s, output: 1.38 toks/s]
+[1AProcessed prompts:  74%|███████▍  | 296/400 [03:32<01:03,  1.64it/s, est. speed input: 272.74 toks/s, output: 1.39 toks/s]
+[1AProcessed prompts:  77%|███████▋  | 308/400 [03:39<00:54,  1.68it/s, est. speed input: 273.71 toks/s, output: 1.40 toks/s]
+[1AProcessed prompts:  80%|████████  | 322/400 [03:46<00:43,  1.78it/s, est. speed input: 273.99 toks/s, output: 1.42 toks/s]
+[1AProcessed prompts:  84%|████████▍ | 335/400 [03:53<00:36,  1.80it/s, est. speed input: 274.48 toks/s, output: 1.44 toks/s]
+[1AProcessed prompts:  88%|████████▊ | 351/400 [04:00<00:25,  1.93it/s, est. speed input: 275.10 toks/s, output: 1.46 toks/s]
+[1AProcessed prompts:  91%|█████████ | 363/400 [04:07<00:20,  1.82it/s, est. speed input: 275.50 toks/s, output: 1.46 toks/s]
+[1AProcessed prompts:  93%|█████████▎| 372/400 [04:15<00:16,  1.66it/s, est. speed input: 275.43 toks/s, output: 1.46 toks/s]
+[1AProcessed prompts:  95%|█████████▌| 381/400 [04:21<00:12,  1.57it/s, est. speed input: 276.32 toks/s, output: 1.46 toks/s]
+[1AProcessed prompts:  97%|█████████▋| 388/400 [04:28<00:08,  1.41it/s, est. speed input: 276.66 toks/s, output: 1.44 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [04:28<00:00,  1.41it/s, est. speed input: 283.92 toks/s, output: 1.49 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [04:28<00:00,  1.49it/s, est. speed input: 283.92 toks/s, output: 1.49 toks/s]
+# TASK mmlu:professional_medicine n=100 acc=0.9700 acc_norm=0.9700
+
+[1ARendering prompts:   0%|          | 0/400 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 400/400 [00:00<00:00, 7576.42it/s]
+
+[1AProcessed prompts:   0%|          | 0/400 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:   0%|          | 1/400 [00:03<25:53,  3.89s/it, est. speed input: 30.31 toks/s, output: 0.26 toks/s]
+[1AProcessed prompts:   0%|          | 2/400 [00:07<25:59,  3.92s/it, est. speed input: 30.14 toks/s, output: 0.26 toks/s]
+[1AProcessed prompts:   1%|          | 3/400 [00:13<32:13,  4.87s/it, est. speed input: 25.60 toks/s, output: 0.22 toks/s]
+[1AProcessed prompts:   5%|▌         | 20/400 [00:20<04:40,  1.35it/s, est. speed input: 114.81 toks/s, output: 1.00 toks/s]
+[1AProcessed prompts:   9%|▉         | 36/400 [00:26<03:17,  1.84it/s, est. speed input: 166.11 toks/s, output: 1.37 toks/s]
+[1AProcessed prompts:  14%|█▎        | 54/400 [00:32<02:35,  2.23it/s, est. speed input: 200.53 toks/s, output: 1.67 toks/s]
+[1AProcessed prompts:  18%|█▊        | 70/400 [00:38<02:20,  2.35it/s, est. speed input: 221.17 toks/s, output: 1.82 toks/s]
+[1AProcessed prompts:  22%|██▏       | 87/400 [00:44<02:06,  2.47it/s, est. speed input: 235.72 toks/s, output: 1.94 toks/s]
+[1AProcessed prompts:  26%|██▌       | 103/400 [00:51<01:59,  2.48it/s, est. speed input: 246.40 toks/s, output: 2.01 toks/s]
+[1AProcessed prompts:  30%|██▉       | 119/400 [00:57<01:51,  2.52it/s, est. speed input: 254.04 toks/s, output: 2.07 toks/s]
+[1AProcessed prompts:  34%|███▍      | 136/400 [01:04<01:45,  2.51it/s, est. speed input: 260.40 toks/s, output: 2.12 toks/s]
+[1AProcessed prompts:  38%|███▊      | 153/400 [01:10<01:35,  2.60it/s, est. speed input: 266.83 toks/s, output: 2.18 toks/s]
+[1AProcessed prompts:  42%|████▎     | 170/400 [01:16<01:26,  2.66it/s, est. speed input: 271.48 toks/s, output: 2.23 toks/s]
+[1AProcessed prompts:  47%|████▋     | 188/400 [01:23<01:19,  2.67it/s, est. speed input: 275.30 toks/s, output: 2.26 toks/s]
+[1AProcessed prompts:  51%|█████     | 204/400 [01:28<01:12,  2.69it/s, est. speed input: 279.45 toks/s, output: 2.30 toks/s]
+[1AProcessed prompts:  56%|█████▌    | 222/400 [01:35<01:05,  2.73it/s, est. speed input: 282.94 toks/s, output: 2.33 toks/s]
+[1AProcessed prompts:  60%|█████▉    | 239/400 [01:41<00:59,  2.69it/s, est. speed input: 284.30 toks/s, output: 2.35 toks/s]
+[1AProcessed prompts:  64%|██████▍   | 256/400 [01:47<00:52,  2.72it/s, est. speed input: 287.12 toks/s, output: 2.37 toks/s]
+[1AProcessed prompts:  68%|██████▊   | 274/400 [01:54<00:45,  2.76it/s, est. speed input: 289.58 toks/s, output: 2.40 toks/s]
+[1AProcessed prompts:  73%|███████▎  | 291/400 [02:00<00:39,  2.77it/s, est. speed input: 291.86 toks/s, output: 2.42 toks/s]
+[1AProcessed prompts:  77%|███████▋  | 308/400 [02:06<00:33,  2.78it/s, est. speed input: 294.00 toks/s, output: 2.44 toks/s]
+[1AProcessed prompts:  82%|████████▏ | 326/400 [02:12<00:26,  2.82it/s, est. speed input: 296.20 toks/s, output: 2.46 toks/s]
+[1AProcessed prompts:  86%|████████▌ | 343/400 [02:18<00:20,  2.81it/s, est. speed input: 297.57 toks/s, output: 2.47 toks/s]
+[1AProcessed prompts:  90%|█████████ | 361/400 [02:24<00:13,  2.85it/s, est. speed input: 299.20 toks/s, output: 2.49 toks/s]
+[1AProcessed prompts:  94%|█████████▍| 378/400 [02:31<00:07,  2.79it/s, est. speed input: 300.48 toks/s, output: 2.50 toks/s]
+[1AProcessed prompts:  98%|█████████▊| 394/400 [02:36<00:02,  2.88it/s, est. speed input: 303.10 toks/s, output: 2.52 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [02:36<00:00,  2.88it/s, est. speed input: 307.73 toks/s, output: 2.56 toks/s]
+[1AProcessed prompts: 100%|██████████| 400/400 [02:36<00:00,  2.56it/s, est. speed input: 307.73 toks/s, output: 2.56 toks/s]
+# TASK mmlu:moral_scenarios n=100 acc=0.6100 acc_norm=0.6100
+# TASK mmlu_subset n_subj=5 acc=0.8340
+# ================ DOWNSTREAM SUMMARY ================
+# tag=c6_dense_customar PPL=3.518 per-GPU-MB=[94761, 94761, 94761, 94761]
+#   arc_c[allenai/ai2_arc]       acc=0.6175 acc_norm=0.6300 primary=0.6300 (n=400)
+#   hellaswag[Rowan/hellaswag]   acc=0.5425 acc_norm=0.7100 primary=0.7100 (n=400)
+#   winogrande[allenai/winogrande] acc=0.7775 acc_norm=0.7775 primary=0.7775 (n=400)
+#   mmlu_subset                  acc=0.8340 acc_norm=0.8340 primary=0.8340 (n=5)
+# AVG normalized primary = 0.7379
+# downstream CSV -> /cache/qb_downstream_c6_dense_customar.csv
+(EngineCore pid=61) INFO 07-14 10:31:54 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=61) INFO 07-14 10:31:54 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=61) INFO 07-14 10:31:54 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=61) INFO 07-14 10:31:54 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore pid=61) INFO 07-14 10:31:54 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=4
+(Worker_TP0 pid=82) 2026-07-14 10:06:38  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:133): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP0 pid=82) 2026-07-14 10:06:41  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:141): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP0 pid=82) INFO 07-14 10:31:54 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+WARNING 07-14 10:31:59 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+[modal-client] 2026-07-14T14:32:09+0400 Timed out waiting for final app logs.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-f4qfiBxUDUAggsyob6MBKZ
