@@ -2516,6 +2516,7 @@ def _downstream_impl(
     sparse_proj: str = "both",
     route_slot: int = 0,
     glm: bool = False,
+    force_custom_ar: bool = False,
 ) -> None:
     """WS-A downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
     acc/acc_norm: per choice, sum teacher-forced logprob of the continuation tokens via vLLM
@@ -2542,6 +2543,14 @@ def _downstream_impl(
     os.environ["QB_SPARSE_PROJ"] = sparse_proj
     os.environ["QB_ROUTE_SLOT"] = str(route_slot)
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    # C6: exercise the C4 one-shot custom all-reduce (same env the speed row used). The plugin's
+    # install() reads QB_FORCE_CUSTOM_AR, verifies the full P2P matrix, and (only if fully
+    # connected) spoofs is_fully_connected + sets VLLM_SKIP_P2P_CHECK so vLLM enables
+    # cross_device_reduce_1stage on the 4 PCIe GPUs. Graph capture is off here (enforce_eager) but
+    # the AR kernel and its bf16 reduction order are byte-identical eager vs graph-replayed, so
+    # downstream quality under this flag equals the captured speed row's. False = NCCL ring.
+    if force_custom_ar:
+        os.environ["QB_FORCE_CUSTOM_AR"] = "1"
 
     def smi():
         q = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
@@ -2833,10 +2842,15 @@ def downstream4(
     max_len: int = 2048,
     sparse_proj: str = "both",
     route_slot: int = 0,
+    force_custom_ar: bool = False,
 ) -> None:
     # 4-GPU variant: route-slot keeps raw NVFP4 + packed codes resident, so experts must shard over
-    # more GPUs to fit (tp=2 OOMs at the first-22 anchor).
-    _downstream_impl(4, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot)
+    # more GPUs to fit (tp=2 OOMs at the first-22 anchor). force_custom_ar routes the attention TP
+    # all-reduce through C4's one-shot custom AR (C6 validation of the speed-row collective).
+    _downstream_impl(
+        4, tag, moe, dense_layers, calib_file, limit, max_len, sparse_proj, route_slot,
+        force_custom_ar=force_custom_ar,
+    )
 
 
 @app.function(
