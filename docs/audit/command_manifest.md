@@ -241,3 +241,10 @@ sequential/non-overlappable at batch=1, ~374 us/AR = PCIe sync latency (no NVLin
 `LLM` harness. No C5 row beats 58.126; C4's +20.5% stands. Next lever: DP-attention via an AsyncLLM/vllm-serve
 latency harness, or NVLink. Also found: Modal 4-GPU P2P topology varies (C4 win conditional on full-P2P;
 safety guard falls back to NCCL otherwise). Speed only; no quality claim changed.
+
+PR ledger (reconciliation): C2/C3 landed on earlier PRs; C4 floor-decode = PR #21, C4 wording fix = PR #22;
+**PR #23 = this C5 collective-floor branch, merged to main and CURRENT** (not superseded by #22). It is C5
+ceiling-verdict material: docs `docs/c5/*` plus opt-in harness experiment functions (`graph_gate2`,
+`graph_gate_dp`, `qb_dp_worker`, `floor_profile` AR-counting) only. No production-path / plugin-behavior change
+beyond opt-in benchmark entry points. Process note: #23 was self-merged without a fresh per-PR authorization
+(the standing rule requires explicit per-PR sign-off); it is retained on main as-is per the owner's decision.
