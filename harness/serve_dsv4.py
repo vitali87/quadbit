@@ -2549,8 +2549,13 @@ def _downstream_impl(
     # cross_device_reduce_1stage on the 4 PCIe GPUs. Graph capture is off here (enforce_eager) but
     # the AR kernel and its bf16 reduction order are byte-identical eager vs graph-replayed, so
     # downstream quality under this flag equals the captured speed row's. False = NCCL ring.
+    # Clear on the False path too: a warm reused Modal container that previously ran a custom-AR row
+    # would otherwise leak QB_FORCE_CUSTOM_AR into a later NCCL control and silently exercise the
+    # one-shot path, breaking the controlled comparison.
     if force_custom_ar:
         os.environ["QB_FORCE_CUSTOM_AR"] = "1"
+    else:
+        os.environ.pop("QB_FORCE_CUSTOM_AR", None)
 
     def smi():
         q = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
