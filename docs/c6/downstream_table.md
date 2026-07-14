@@ -20,7 +20,7 @@ AVG = mean of the four primaries. limit=400 per task (mmlu_subset = 5 subjects x
   AVG **+0.40 pt** (0.7341 vs 0.7301). No task collapses: arc +0.75, hellaswag -1.00, winogrande
   +2.25, mmlu -0.40. All swings sit inside the dense-NCCL noise band. PPL 3.538 vs 3.588 (lower).
 
-## Reference (frozen [deepseek_final.csv](../audit/logs/deepseek_final.csv))
+## Reference (frozen [deepseek_final.csv](../figures/data/deepseek_final.csv))
 
 - dense AVG 0.7383 (2-GPU) -- matches C6 dense NCCL band (0.7344-0.7382).
 - d2_slot2 AVG 0.7304 (4-GPU, route_slot 2) -- matches C6 sparse D2 NCCL (R4 0.7301).
