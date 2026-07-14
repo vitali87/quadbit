@@ -176,6 +176,12 @@ def _report_collectives(prof_dir, model):
     n_customar = cnt("cross_device_reduce")
     n_ring_ar = cnt("allreduce_") + cnt("allreduce ")
     n_a2a = cnt("alltoall", "all_to_all", "all2all")
+    # vLLM does EP for this MoE NOT via all-to-all but via AllGather + ReduceScatter per layer
+    # (ncclDevKernel_AllGather_RING_LL / ncclDevKernel_ReduceScatter_Sum_*). Counting only
+    # all-reduce/all-to-all falsely reports "0 collectives" and hides that DP-attention merely MOVED
+    # the per-layer cross-GPU floor from attention-TP-reduce to the EP allgather/reducescatter path.
+    n_allgather = cnt("allgather", "all_gather")
+    n_reducescatter = cnt("reducescatter", "reduce_scatter")
     n_dsa = cnt("sparse_mla_decode", "sparse_mla")
     n_layers = 0
     try:
@@ -188,7 +194,13 @@ def _report_collectives(prof_dir, model):
     ar = n_customar or n_ring_ar
     ar_tok = (ar / fwd) if fwd else 0.0
     a2a_tok = (n_a2a / fwd) if fwd else 0.0
+    ag_tok = (n_allgather / fwd) if fwd else 0.0
+    rs_tok = (n_reducescatter / fwd) if fwd else 0.0
+    total_tok = ar_tok + a2a_tok + ag_tok + rs_tok  # true per-token cross-GPU collective floor
     print(f"# C7-DP COLLECTIVES trace={os.path.basename(t)} n_layers={n_layers} "
           f"decode_fwd~{fwd:.1f}", flush=True)
     print(f"# C7-DP all-reduce: custom={n_customar} ring={n_ring_ar} per-token={ar_tok:.1f} | "
           f"all-to-all={n_a2a} per-token={a2a_tok:.1f} | DSA-decode={n_dsa}", flush=True)
+    print(f"# C7-DP EP-collectives: allgather={n_allgather} per-token={ag_tok:.1f} | "
+          f"reduce-scatter={n_reducescatter} per-token={rs_tok:.1f} | "
+          f"TOTAL-per-token={total_tok:.1f} (C5 attention-AR baseline=43.5)", flush=True)
