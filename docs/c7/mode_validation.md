@@ -59,13 +59,26 @@ Measured by parsing rank 0's torch trace and counting collective kernels (same m
 `floor_profile`): `cross_device_reduce`/`allreduce_` = TP all-reduce; `alltoall` = EP; the
 `sparse_mla_decode` kernel is the once-per-layer-per-forward anchor for the per-token normalization.
 
-| config | all-reduce / token | all-to-all / token | verdict |
-|--------|-------------------|--------------------|---------|
-| C4/C5 baseline (tp=4) | ~43.5 (measured C5) | ~0 | attention AR is the floor |
-| C7 DP-attention (tp=1, dp=4) | <!-- FILL --> | <!-- FILL --> | <!-- FILL --> |
+**Correction (important).** The first counter only matched `allreduce`/`alltoall` and so falsely
+reported "0 collectives" for C7. vLLM does EP for this MoE **not via all-to-all** but via a per-layer
+**AllGather + ReduceScatter** (`ncclDevKernel_AllGather_RING_LL`,
+`ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL`). The counter now sums those too; the numbers below are
+the corrected totals from the eager validation trace (`dp0_..rank0` trace, `n_layers=43`,
+`decode_fwd~32`, each collective kernel firing 1376 times = 1376/32 = **43 = once per layer**).
 
-**Gate:** AR/token must collapse toward ~0 for DP-attention to be the lever. If it does not, stop and
-report DP-attention not activated (verdict C).
+| config | attention all-reduce / token | EP allgather / token | EP reduce-scatter / token | **total collectives / token** |
+|--------|------------------------------|----------------------|---------------------------|-------------------------------|
+| C4/C5 baseline (tp=4) | ~43.5 (measured C5) | 0 | 0 | **~43.5** |
+| C7 DP-attention (tp=1, dp=4, EP) | **0** (removed) | 43.0 | 43.0 | **~86** |
+
+**Gate result — DP-attention activates but is NOT the lever.** The attention TP all-reduce *is* removed
+(custom=0, ring=0). But the per-layer cross-GPU collective floor did **not** drop toward 0 — it *moved*
+to the EP path and roughly **doubled** (43.5 → ~86), and those collectives are costlier: AllGather alone
+is 39–76% of decode CUDA time (956µs–5.3ms per call, PCIe-bound, no NVLink). Eager decode is 4.578 tok/s
+(ppl 4.264, output coherent: "Paris", correct fibonacci, RGB). The eager number is not comparable to
+C4's *captured* 58.126; a captured DP run measures the real speed (Task 2/3), but since the collective
+floor grew rather than shrank, the C4 ceiling is expected to hold. Not verdict C (mode did activate);
+trending to **verdict D** (AR count "drops" to 0 but a worse EP-collective floor dominates).
 
 ## Raw log
 
