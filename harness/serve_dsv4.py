@@ -105,6 +105,55 @@ def inspect_vllm() -> None:
         print(f"  (GroupCoordinator.all_reduce introspect failed: {ex})", flush=True)
 
 
+@app.function(timeout=10 * MIN, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def inspect_pp() -> None:
+    """C8 Task 1 (CPU recon, no GPU): can DeepSeek-V4-Flash run TP=1 with pipeline_parallel_size>1?
+    Answers three feasibility questions cheaply before spending a 4-GPU slot:
+      (1) does vLLM 0.24 offline LLM(pipeline_parallel_size>1) raise, the way it raises for DP?
+      (2) does the deepseek_v4 model class implement PP (SupportsPP / make_layers pp-slicing)?
+      (3) does EngineArgs accept pipeline_parallel_size in single-process offline mode?"""
+    import os
+    import subprocess
+
+    import vllm
+    root = os.path.dirname(vllm.__file__)
+    print(f"# vllm {vllm.__version__} at {root}", flush=True)
+
+    # (1) Is offline PP guarded like DP? DP raised "not supported for single-process usage".
+    r = subprocess.run(["grep", "-rn", "pipeline_parallel", f"{root}/entrypoints/llm.py"],
+                       capture_output=True, text=True)
+    print(f"# entrypoints/llm.py pipeline_parallel refs:\n{r.stdout or '  (none)'}", flush=True)
+    r2 = subprocess.run(["grep", "-rn", "single-process usage",
+                         f"{root}/entrypoints/llm.py", f"{root}/engine/arg_utils.py",
+                         f"{root}/config/parallel.py"], capture_output=True, text=True)
+    print(f"# 'single-process usage' guard hits (DP raised here; does PP?):\n"
+          f"{r2.stdout or '  (none)'}", flush=True)
+
+    # (2) Does the deepseek_v4 model implement PP? Look for SupportsPP + get_pp_indices/make_layers.
+    r3 = subprocess.run(["grep", "-rln", "SupportsPP", f"{root}/model_executor/models/"],
+                       capture_output=True, text=True)
+    pp_models = [os.path.basename(x) for x in r3.stdout.split()]
+    print(f"# model files declaring SupportsPP ({len(pp_models)}): "
+          f"{[m for m in pp_models if 'deepseek' in m or 'v4' in m] or pp_models[:8]}", flush=True)
+    for mod in ("deepseek_v4", "deepseek_v3", "deepseek_v2"):
+        fp = f"{root}/model_executor/models/{mod}.py"
+        if os.path.exists(fp):
+            rr = subprocess.run(["grep", "-nE",
+                                 "SupportsPP|get_pp_indices|make_layers|pp_missing|pp_rank", fp],
+                                capture_output=True, text=True)
+            print(f"# === {mod}.py PP markers ===\n{rr.stdout or '  (none)'}", flush=True)
+
+    # (3) EngineArgs field + the config that computes world size = tp*pp*dp.
+    from vllm.engine.arg_utils import EngineArgs
+    print(f"# EngineArgs.pipeline_parallel_size present: "
+          f"{hasattr(EngineArgs, 'pipeline_parallel_size')}", flush=True)
+    r4 = subprocess.run(["grep", "-nE", "pipeline_parallel_size|world_size|distributed_executor",
+                         f"{root}/config/parallel.py"], capture_output=True, text=True)
+    print(f"# config/parallel.py PP/world-size:\n{r4.stdout[:1500]}", flush=True)
+    print("# C8-INSPECT-PP done", flush=True)
+
+
 @app.function(
     gpu="RTX-PRO-6000:8",
     timeout=90 * MIN,
@@ -682,6 +731,203 @@ def graph_gate_dp(
     if any(c != 0 for c in codes):
         raise RuntimeError(f"C7 DP workers failed (exit codes {codes}); see log for the rank tracebacks "
                            "(DP init / EP all-to-all / OOM / plugin install).")
+
+
+def _report_pp_transfers(prof_dir, model, n_pp):
+    """C8: aggregate ALL PP-worker traces and count per-token cross-GPU work. tp=1 => allreduce
+    should be ~0 (C4 floor removed); PP boundaries show up as send/recv (ncclDevKernel_SendRecv).
+    Layers are partitioned across workers, so total DSA across all traces = forwards*n_layers =>
+    forwards normalizes per token. Reports allreduce/send/recv/allgather per token, none hidden."""
+    import glob
+    import gzip
+    import json
+
+    traces = sorted(glob.glob(f"{prof_dir}/*.json*"))
+    if not traces:
+        print("# C8-PP NO TRACE WRITTEN — profiler dir empty", flush=True)
+        return
+    cnt_by_name: dict = {}
+    for t in traces:
+        opener = gzip.open if t.endswith(".gz") else open
+        try:
+            with opener(t, "rt", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:  # noqa: BLE001
+            continue
+        evs = data.get("traceEvents", data) if isinstance(data, dict) else data
+        for e in evs:
+            if not isinstance(e, dict) or e.get("ph") != "X":
+                continue
+            if str(e.get("cat", "")) not in ("kernel", "gpu_op", "Kernel"):
+                continue
+            nm = str(e.get("name", ""))
+            cnt_by_name[nm] = cnt_by_name.get(nm, 0) + 1
+
+    def cnt(*subs):
+        return sum(c for k, c in cnt_by_name.items() if any(s in k.lower() for s in subs))
+    n_ar = cnt("cross_device_reduce") + cnt("allreduce_") + cnt("allreduce ")
+    # NCCL fuses point-to-point into one `ncclDevKernel_SendRecv` kernel, which matches
+    # "send", "recv", and "sendrecv" alike — count it once (n_sendrecv) and only add pure
+    # send/recv kernels that are NOT the fused form, so the total isn't triple-counted.
+    n_sendrecv = cnt("sendrecv", "send_recv")
+
+    def cnt_excl(sub, *excl):
+        return sum(c for k, c in cnt_by_name.items()
+                   if sub in k.lower() and not any(e in k.lower() for e in excl))
+    n_send = cnt_excl("send", "sendrecv", "send_recv")
+    n_recv = cnt_excl("recv", "sendrecv", "send_recv")
+    n_xfer = n_sendrecv + n_send + n_recv
+    n_ag = cnt("allgather", "all_gather")
+    n_rs = cnt("reducescatter", "reduce_scatter")
+    n_a2a = cnt("alltoall", "all_to_all", "all2all")
+    n_dsa = cnt("sparse_mla_decode", "sparse_mla")
+    n_layers = 0
+    try:
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained(model, trust_remote_code=True, local_files_only=True)
+        n_layers = int(getattr(cfg, "num_hidden_layers", 0))
+    except Exception:  # noqa: BLE001
+        pass
+    fwd = (n_dsa / n_layers) if (n_dsa and n_layers) else 0.0
+
+    def per(n):
+        return (n / fwd) if fwd else 0.0
+    print(f"# C8-PP TRANSFERS traces={len(traces)} n_layers={n_layers} decode_fwd~{fwd:.1f} "
+          f"DSA={n_dsa}", flush=True)
+    print(f"# C8-PP all-reduce={n_ar} per-token={per(n_ar):.1f} (C4 ~43.5; PP target ~0) | "
+          f"sendrecv={n_sendrecv} send_only={n_send} recv_only={n_recv} xfer={n_xfer} "
+          f"stage-xfer-per-token={per(n_xfer):.1f}", flush=True)
+    print(f"# C8-PP other: allgather={n_ag} reduce-scatter={n_rs} all-to-all={n_a2a} "
+          f"per-token ag={per(n_ag):.1f} rs={per(n_rs):.1f} a2a={per(n_a2a):.1f}", flush=True)
+
+
+@app.function(
+    gpu="RTX-PRO-6000:4",
+    timeout=90 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def graph_gate_pp(
+    pp: int = 4,
+    cap: int = 512,
+    max_seqs: int = 8,
+    max_len: int = 2048,
+    gpu_mem: float = 0.9,
+    baseline: str = "dense_nvfp4",
+    eager: bool = False,
+    ep: bool = False,
+    profile: bool = True,
+) -> None:
+    """C8 pipeline/layer-stage decode lever: tensor_parallel_size=1 (NO per-layer TP all-reduce, the
+    C4 ~91% floor) + pipeline_parallel_size=pp so each stage owns ~n_layers/pp contiguous layers on
+    one GPU; only stage-boundary activation send/recv crosses GPUs. Single-request batch=1 decode
+    latency = sum of stage compute + (pp-1) transfers, no all-reduces. Reports the ACTUAL mode
+    (tp/pp/dp/ep, world_size), decode tok/s (same two-run TTFT-subtracted metric as C4), PPL,
+    coherence, and the per-token all-reduce/stage-transfer counts from aggregated worker traces.
+    ep=False is pure PP (experts placed with their stage's layers); ep=True stacks EP under PP."""
+    import math
+    import os
+
+    import torch
+    from vllm import LLM, SamplingParams
+
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["QB_DENSE"] = "nvfp4"
+    os.environ["QB_MOE"] = "off" if baseline == "dense_nvfp4" else "sparse"
+    os.environ["QB_GRAPH"] = "0" if eager else "1"
+    os.environ["QB_GRAPH_CAP"] = str(cap)
+    os.environ["QB_DENSE_BACKEND"] = "native_nvfp4"
+
+    prof_dir = "/tmp/qb_ppprof"
+    if profile:
+        import shutil
+        shutil.rmtree(prof_dir, ignore_errors=True)
+        os.makedirs(prof_dir, exist_ok=True)
+        os.environ["VLLM_TORCH_PROFILER_DIR"] = prof_dir
+
+    print(f"# C8 PP board: pp={pp} tp=1 ep={ep} baseline={baseline} eager={eager} "
+          f"graph={'eager' if eager else 'captured'}", flush=True)
+    rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
+            "beta_fast": 32, "beta_slow": 1}
+    kw = dict(model=MODEL, tensor_parallel_size=1, pipeline_parallel_size=pp, enforce_eager=eager,
+              trust_remote_code=True, max_model_len=max_len, gpu_memory_utilization=gpu_mem,
+              kv_cache_dtype="fp8", max_num_batched_tokens=max(2048, max_len),
+              max_num_seqs=max_seqs, enable_expert_parallel=ep, hf_overrides={"rope_scaling": rope})
+    if profile:
+        kw["profiler_config"] = {"profiler": "torch", "torch_profiler_dir": prof_dir}
+    t0 = time.time()
+    try:
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    except Exception as ex:  # noqa: BLE001
+        print(f"# C8-PP profiler_config/tokenizer rejected: {type(ex).__name__}: {ex}", flush=True)
+        kw.pop("profiler_config", None)
+        profile = False
+        llm = LLM(tokenizer_mode="deepseek_v4", **kw)
+    print(f"# C8-PP load+capture ok in {time.time() - t0:.0f}s", flush=True)
+
+    # Mode proof: introspect the resolved parallel config (not just the kwargs we passed).
+    try:
+        pc = llm.llm_engine.vllm_config.parallel_config
+        print(f"# C8-PP MODE tp={pc.tensor_parallel_size} pp={pc.pipeline_parallel_size} "
+              f"dp={pc.data_parallel_size} world_size={pc.world_size} "
+              f"backend={pc.distributed_executor_backend} "
+              f"ep={getattr(pc, 'enable_expert_parallel', '?')}", flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print(f"# C8-PP mode introspect failed: {type(ex).__name__}: {ex}", flush=True)
+
+    def _wall(n):
+        torch.cuda.synchronize()
+        t = time.time()
+        llm.generate([{"prompt_token_ids": tids}], SamplingParams(temperature=0.0, max_tokens=n))
+        torch.cuda.synchronize()
+        return time.time() - t
+
+    tids = llm.get_tokenizer().encode("The history of the Roman empire spans many centuries and")
+    _wall(4)                          # warm
+    w1, w64 = _wall(1), _wall(64)     # batch=1 TTFT-subtracted decode
+    dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
+
+    gens = []
+    for p in ["The capital of France is", "def fibonacci(n):", "The three primary colors are"]:
+        pid = llm.get_tokenizer().encode(p)
+        out = llm.generate([{"prompt_token_ids": pid}],
+                           SamplingParams(temperature=0.0, max_tokens=24))
+        gens.append((p, out[0].outputs[0].text))
+
+    passage = (
+        "The mitochondria is the powerhouse of the cell. Photosynthesis converts sunlight, water, "
+        "and carbon dioxide into glucose and oxygen. The Earth orbits the Sun once every year, and "
+        "the Moon orbits the Earth roughly every twenty-eight days. Water boils at one hundred "
+        "degrees Celsius at sea level and freezes at zero degrees. The human heart pumps blood "
+        "through arteries and veins, delivering oxygen to every tissue in the body."
+    )
+    pids = llm.get_tokenizer().encode(passage)
+    pout = llm.generate([{"prompt_token_ids": pids}],
+                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+
+    # Profiled pass LAST (nothing collective follows it).
+    if profile:
+        torch.cuda.synchronize()
+        try:
+            llm.start_profile()
+            _wall(16)
+            llm.stop_profile()
+        except Exception as ex:  # noqa: BLE001
+            print(f"# C8-PP profiling skipped: {type(ex).__name__}: {ex}", flush=True)
+            profile = False
+        torch.cuda.synchronize()
+        if profile:
+            _report_pp_transfers(prof_dir, MODEL, pp)
+
+    for p, txt in gens:
+        print(f"# GEN {p!r} -> {txt!r}", flush=True)
+    plp = pout[0].prompt_logprobs or []
+    nlls = [-d[tid].logprob for tid, d in zip(pids[1:], plp[1:], strict=False)
+            if d and tid in d and math.isfinite(d[tid].logprob)]
+    ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
+    print(f"# C8-PP decode tok/s: {dtps:.3f} (wall1={w1:.3f}s wall64={w64:.3f}s) pp={pp} tp=1 "
+          f"ppl={ppl:.4f} graph={'eager' if eager else 'captured'}", flush=True)
+    print(f"# C8-PP PASS pp={pp} decode_tps={dtps:.3f} ppl={ppl:.4f}", flush=True)
 
 
 @app.function(

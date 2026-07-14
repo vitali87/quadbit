@@ -290,3 +290,26 @@ captured 58.126 = **2.84x slower**; eager 4.578 tok/s. Quality unchanged: ppl 4.
 correct (Paris / fibonacci / RGB). **Verdict D**: AR count drops to 0 but a worse EP allgather+
 reduce-scatter floor dominates; C4 58.126 SOTA stands. Sparse D2 not run (gate "only if dense improves"
 not met). Speed only; no quality claim changed; no README/paper headline change.
+
+## C8 pipeline/layer-stage serve-latency lever (branch `c8-pipeline-stage-decode`)
+
+Tests whether pure pipeline parallelism (tp=1, pp=4, no EP — each stage owns ~1/4 of the layers on one
+GPU) removes C4's per-layer TP all-reduce floor and beats 58.126. Unlike C7's DP (which raised offline),
+plain offline `LLM(tensor_parallel_size=1, pipeline_parallel_size=4)` is expressible (mp executor,
+deepseek_v2 base class is PP-capable). 4x RTX PRO 6000 (SM120), no NVLink.
+
+```
+uv run modal run --detach harness/serve_dsv4.py::inspect_pp                       # CPU recon (log c8_inspect_pp.log)
+uv run modal run --detach harness/serve_dsv4.py::graph_gate_pp --eager            # eager    (log c8_pp_eager.log)
+uv run modal run --detach harness/serve_dsv4.py::graph_gate_pp                     # captured (log c8_pp_captured.log)
+```
+
+Results (logs `docs/audit/logs/c8_pp_*.log`): mode is genuine layer-staging (tp=1/pp=4/world=4,
+layers `[11,11,11,10]`, 41 GiB/GPU, single batch=1 request through all stages). all-reduce/token = 0
+(C4's ~43.5 floor removed), only 3 stage-boundary send/recv per token. Captured PP decode **22.930
+tok/s** (wall1=0.162s wall64=2.909s) vs C4 58.126 = **2.53x slower**; eager 7.539 (capture gain 3.04x).
+Quality unchanged: ppl 4.19-4.29 (baseline 4.264), coherence probes correct. **Verdict D**: at batch=1
+pipeline serializes the 4-way compute TP parallelizes and idles 3/4 GPUs, so the serialization penalty
+exceeds the removed all-reduce time; C4 58.126 SOTA stands. Task 3 not run (bubble-fill is aggregate-
+only at batch=1); sparse D2 / GLM not run (gates "only if dense improves/wins" not met). Speed only; no
+quality claim changed; no README/paper headline change.
