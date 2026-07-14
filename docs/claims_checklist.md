@@ -261,3 +261,20 @@ Branch `c7-dp-attention-serve`. Full docs [verdict](c7/verdict.md) / [mode_valid
 | Aggregate serving throughput of the 4 DP replicas is a decode SOTA | NO: 4x20.450 = 81.8 tok/s exists but at 2.84x-worse per-request latency; labeled aggregate per the guardrail, not a single-request decode win | not claimed (guardrail honored) |
 | Sparse D2 transfer under DP-attention | not run: spec gate "only if dense improves" not met (dense regressed 2.84x) | not obtained (gate not met) |
 | C7 verdict | D — AR count drops to 0 but a worse EP allgather+reduce-scatter floor dominates; C4 58.126 SOTA unchanged | verdict |
+
+## 17. C8 pipeline/layer-stage serve-latency lever — verdict D, C4 ceiling stands
+
+Branch `c8-pipeline-stage-decode`. Full docs [verdict](c8/verdict.md) / [mode_feasibility](c8/mode_feasibility.md) / [stage_baseline](c8/stage_baseline.md) / [final_board](c8/final_board.md); logs `docs/audit/logs/c8_pp_*.log`. 4x RTX PRO 6000 (SM120), no NVLink. Same checkpoint/quant/prompt/metric as C4/C7.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| Offline PP is expressible (unlike C5/C7 DP, which raised) | plain `LLM(tensor_parallel_size=1, pipeline_parallel_size=4)` constructs; no single-process guard; `mp` executor; deepseek_v2 base class is PP-capable | backed |
+| PP is genuine layer-staging, not replicas/aggregate | one model sharded by distinct layer range `[11,11,11,10]`, 41.0 GiB/GPU (~1/4, not 142GB whole); single batch=1 request flows through all 4 stages | backed (guardrail honored) |
+| PP removes C4's per-layer TP all-reduce floor | trace all-reduce = **0 per token** (C4 ~43.5), replaced by 3 stage-boundary send/recv (pp-1); no EP collectives | backed |
+| Captured PP stage beats C4 58.126 | NO (honest negative): 22.930 tok/s = **2.53x slower**; capture gave 3.04x (7.539→22.930) and still fell short | not claimed |
+| Why it lost | batch=1 pp=4 serializes the 4-way compute TP parallelizes and idles 3/4 GPUs; per-token wall 43.6ms (C8) vs 17.2ms (C4) despite all-reduce gone — serialization penalty > removed all-reduce time | backed |
+| PP stage changes model quality | NO: ppl 4.19 (eager) / 4.29 (captured) vs 4.264 baseline, coherence probes correct — pure execution-mode change | backed (quality-safe) |
+| Aggregate serving throughput of pp=4 is a decode SOTA | NO: pp=4 leaves ~75% GPU idle so microbatched QPS would be higher, but that is throughput not single-request latency; left unmeasured/unclaimed per guardrail | not claimed (guardrail honored) |
+| Task 3 bubble removal could close the gap for single-request | NO: at batch=1 there is one microbatch — every bubble-fill lever (double-buffer/overlap/microbatch) adds concurrent requests = aggregate throughput, forbidden as single-request claim | not obtained (structurally aggregate-only) |
+| Sparse D2 (Task 5) / GLM (Task 6) | not run: gates "only if dense improves/wins" not met (dense regressed 2.53x); no 8-GPU GLM launched | not obtained (gate not met) |
+| C8 verdict | D — all-reduce floor removed to 0 but batch=1 pipeline serialization dominates; C4 58.126 SOTA unchanged. Across C4/C7/C8 the per-layer all-reduce is the price of 4-way concurrency, not removable overhead | verdict |
