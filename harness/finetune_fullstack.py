@@ -259,8 +259,8 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
         except Exception as e:
             print(f"  [sel] hellaswag unavailable: {e}", flush=True)
         try:
-            for ex in load_dataset("allenai/winogrande", "winogrande_xl", split="validation",
-                                   trust_remote_code=True).select(range(limit)):
+            for ex in load_dataset("allenai/winogrande", "winogrande_xl",
+                                   split="validation").select(range(limit)):
                 if ex["answer"] in ("1", "2") and "_" in ex["sentence"]:
                     a, b = ex["sentence"].split("_", 1)
                     items.append((a, [ex["option1"] + b, ex["option2"] + b], int(ex["answer"]) - 1))

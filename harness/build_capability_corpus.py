@@ -106,7 +106,7 @@ def build(smoke: bool, per_source_cap: int) -> None:
     eos = tok.eos_token_id
 
     def load(args, split):
-        return load_dataset(*args, split=split, trust_remote_code=True)
+        return load_dataset(*args, split=split)  # all four sources are Parquet now (no loading script)
 
     # --- build the eval 13-gram guard set from the rendered EVAL splits of every source ---
     eval_ngrams: set[int] = set()
@@ -200,7 +200,8 @@ def build(smoke: bool, per_source_cap: int) -> None:
 @app.local_entrypoint()
 def main(mode: str = "smoke") -> None:
     if mode == "full":  # long job -> spawn + `modal run --detach` so it survives local disconnect
-        call = build.spawn(smoke=False, per_source_cap=0)
+        # cap per source so MMLU aux_train (~100k) does not swamp the ~40k-each other tasks; ARC (~5k) uses all
+        call = build.spawn(smoke=False, per_source_cap=50000)
         print(f"SPAWN_ID {call.object_id}", flush=True)
         call.get()
     else:
