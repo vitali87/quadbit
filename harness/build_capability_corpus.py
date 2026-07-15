@@ -94,7 +94,7 @@ SOURCES = [
 
 @app.function(cpu=8.0, timeout=6 * 60 * MINUTES, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def build(smoke: bool, per_source_cap: int) -> None:
+def build(smoke: bool, per_source_cap: int, src_token_cap: int = 0, tag: str = "") -> None:
     import json
     import os
 
@@ -140,11 +140,13 @@ def build(smoke: bool, per_source_cap: int) -> None:
         except Exception as e:
             print(f"WARN train split {args}/{tr} unavailable ({e}); skipped", flush=True)
             continue
-        src_kept = 0
+        src_kept = src_tok = 0
         for ex in ds:
             if smoke and src_kept >= 500:
                 break
             if per_source_cap and src_kept >= per_source_cap:
+                break
+            if src_token_cap and src_tok >= src_token_cap:  # per-source TOKEN budget: stops long-body sources (MMLU) from swamping the mix
                 break
             text = render(ex)
             if not text:
@@ -162,9 +164,10 @@ def build(smoke: bool, per_source_cap: int) -> None:
             buf.append(eos)
             buf.extend(ids)
             ntok += len(ids) + 1
+            src_tok += len(ids) + 1
             kept += 1
             src_kept += 1
-        print(f"  {args[0]}/{args[-1]}: kept {src_kept:,} (tot {kept:,} docs, {ntok:,} tok)", flush=True)
+        print(f"  {args[0]}/{args[-1]}: kept {src_kept:,} ({src_tok:,} tok) (tot {kept:,} docs, {ntok:,} tok)", flush=True)
 
     assert kept > 0, "no training docs survived — every source failed to load or render"
 
@@ -172,7 +175,7 @@ def build(smoke: bool, per_source_cap: int) -> None:
     n_seq = len(buf) // SEQ
     assert n_seq > 0, f"only {len(buf)} tokens rendered (< SEQ={SEQ}); raise per_source_cap or check sources"
     arr = np.asarray(buf[:n_seq * SEQ], dtype=np.int32).reshape(n_seq, SEQ)
-    out = CORPUS_DIR + ("_smoke" if smoke else "")
+    out = CORPUS_DIR + tag + ("_smoke" if smoke else "")
     os.makedirs(out, exist_ok=True)
     shard = 500_000  # sequences per shard
     for s in range(0, n_seq, shard):
@@ -188,6 +191,7 @@ def build(smoke: bool, per_source_cap: int) -> None:
         "sequences": int(n_seq), "docs_kept": kept, "dropped_contam": drop_contam,
         "dropped_dup": drop_dup, "dropped_empty": drop_empty, "leak_in_sample": leak,
         "positive_control_hits": ctrl_hit, "sources": [s[0][0] + "/" + s[0][-1] for s in SOURCES],
+        "src_token_cap": src_token_cap, "per_source_cap": per_source_cap,
     }
     with open(f"{out}/manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
@@ -199,7 +203,11 @@ def build(smoke: bool, per_source_cap: int) -> None:
 
 @app.local_entrypoint()
 def main(mode: str = "smoke") -> None:
-    if mode == "full":  # long job -> spawn + `modal run --detach` so it survives local disconnect
+    if mode == "balanced":  # per-source TOKEN cap so MMLU's long bodies (was 69.5%) sit ~equal with Wino/HellaSwag
+        call = build.spawn(smoke=False, per_source_cap=0, src_token_cap=4_000_000, tag="_bal")
+        print(f"SPAWN_ID {call.object_id}", flush=True)
+        call.get()
+    elif mode == "full":  # long job -> spawn + `modal run --detach` so it survives local disconnect
         # cap per source so MMLU aux_train (~100k) does not swamp the ~40k-each other tasks; ARC (~5k) uses all
         call = build.spawn(smoke=False, per_source_cap=50000)
         print(f"SPAWN_ID {call.object_id}", flush=True)
