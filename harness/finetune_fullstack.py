@@ -319,9 +319,12 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
     tag = ("_" + corpus.rstrip("/").split("/")[-1]) if corpus else ("_2sh" if both_shards else "")
     tag += "_fs" + ("A" if attn else "M")  # full-stack marker: A=+attn, M=mlp-only, distinct from finetune_pair keys
     ck = f"/cache/phase1_{model.split('/')[-1]}_P{P1}{tag}_lr{lr_max:.0e}.pt"
+    ck2 = f"/cache/phase2_{model.split('/')[-1]}_P{P1}_p2{P2}{tag}_lr{lr_max:.0e}.pt"   # durable phase-2 resume (survives Modal preemption)
+    bcap = f"/cache/best_cap_{model.split('/')[-1]}_P{P1}_p2{P2}{tag}_lr{lr_max:.0e}.pt"
 
     CKPT_EVERY = 2500
     masks, qats, start_step = {}, [], 0
+    best_acc, best_path, from_p2 = -1.0, None, False   # SELECT ON DOWNSTREAM, not PPL; best restored across preemption below
 
     def _mem(tag):  # GB alloc/reserved/free/peak — proves the phase-1 checkpoint is not duplicated on GPU
         free, _tot = torch.cuda.mem_get_info(dev)
@@ -329,19 +332,26 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
               f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f} GB  "
               f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f} GB  free {free / 2**30:.2f} GB", flush=True)
 
-    if os.path.exists(ck):
-        ckd = torch.load(ck, map_location="cpu", weights_only=True)  # CPU: never hold a duplicate copy on the GPU
+    resume = ck2 if os.path.exists(ck2) else (ck if os.path.exists(ck) else None)
+    if resume is not None:
+        from_p2 = (resume == ck2)   # ck2 wins: a preemption mid/post phase-2 continues where it left off
+        ckd = torch.load(resume, map_location="cpu", weights_only=True)  # CPU: never hold a duplicate copy on the GPU
         start_step = int(ckd["step"])
-        _mem("after checkpoint load (cpu)")
+        _mem(f"after checkpoint load (cpu): {resume.split('/')[-1]}")
         for (parent, nm, _), W in zip(targets, ckd["weights"]):
             qat = QATLinear(W.to(torch.bfloat16)).to(dev)  # only the live module weight lands on GPU
             masks[qat] = (W != 0).to(dev); setattr(parent, nm, qat); qats.append(qat)
         _mem("after qats built")
+        if from_p2:  # restore best-capability selection so preemption does not lose the best snapshot
+            best_acc = float(ckd.get("best_acc", -1.0))
+            if best_acc > -1.0 and os.path.exists(bcap):
+                best_path = bcap
         del ckd
         import gc
         gc.collect(); torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats(dev)
         _mem("after ckd deleted")
-        print(f"resumed phase-1 checkpoint {ck} at step {start_step}", flush=True)
+        print(f"resumed {'phase-2' if from_p2 else 'phase-1'} checkpoint {resume} at step {start_step}"
+              + (f" (best-cap sel {best_acc:.4f})" if from_p2 else ""), flush=True)
     else:
         Hs, ns = {}, {}
 
@@ -412,16 +422,16 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
                 save_ck(step + 1)
         save_ck(P1)
         print(f"saved phase-1 checkpoint {ck}", flush=True)
-    print(f"PPL after phase-1 bf16 recovery: {ppl(student):.3f}  "
-          f"downstream(sel): {downstream_acc(student):.4f}", flush=True)
+    if not from_p2:  # skip the phase-1 baseline eval when resuming straight into phase-2
+        print(f"PPL after phase-1 bf16 recovery: {ppl(student):.3f}  "
+              f"downstream(sel): {downstream_acc(student):.4f}", flush=True)
 
     for q in qats:
         q.qat = True                                  # phase 2: QAT (weight+act FP4 STE)
     student.train()
-    best_acc, best_path = -1.0, None                   # SELECT ON DOWNSTREAM, not PPL
-    bcap = f"/cache/best_cap_{model.split('/')[-1]}_P{P1}_p2{P2}{tag}_lr{lr_max:.0e}.pt"
-    _mem("before P2 step 1")
-    for step in range(P1, total):
+    p2_start = max(P1, start_step)                      # resume phase-2 where preemption left off (durable ck2)
+    _mem(f"before P2 step {p2_start - P1 + 1}")
+    for step in range(p2_start, total):
         loss = kd_step(step)
         if (step + 1) % 500 == 0 or (step + 1) == total:
             acc = downstream_acc(student)
@@ -433,6 +443,8 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
                 torch.save([q.weight.detach().cpu() for q in qats], bcap); vol.commit()
                 best_path = bcap
                 print(f"  best-capability checkpoint -> {bcap} (sel {best_acc:.4f})", flush=True)
+            torch.save({"step": step + 1, "weights": [q.weight.data.cpu() for q in qats],
+                        "best_acc": best_acc}, ck2); vol.commit()  # durable: resume phase-2 here after preemption
             student.train()
     if best_path is not None:  # restore best-capability checkpoint before packing
         bw = torch.load(best_path, map_location="cpu", weights_only=True)
