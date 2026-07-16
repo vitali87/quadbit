@@ -322,12 +322,25 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
 
     CKPT_EVERY = 2500
     masks, qats, start_step = {}, [], 0
+
+    def _mem(tag):  # GB alloc/reserved/free/peak — proves the phase-1 checkpoint is not duplicated on GPU
+        free, _tot = torch.cuda.mem_get_info(dev)
+        print(f"  [mem] {tag}: alloc {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
+              f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f} GB  "
+              f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f} GB  free {free / 2**30:.2f} GB", flush=True)
+
     if os.path.exists(ck):
-        ckd = torch.load(ck, map_location=dev, weights_only=True)
+        ckd = torch.load(ck, map_location="cpu", weights_only=True)  # CPU: never hold a duplicate copy on the GPU
         start_step = int(ckd["step"])
+        _mem("after checkpoint load (cpu)")
         for (parent, nm, _), W in zip(targets, ckd["weights"]):
-            qat = QATLinear(W.to(torch.bfloat16)).to(dev)
+            qat = QATLinear(W.to(torch.bfloat16)).to(dev)  # only the live module weight lands on GPU
             masks[qat] = (W != 0).to(dev); setattr(parent, nm, qat); qats.append(qat)
+        _mem("after qats built")
+        del ckd
+        import gc
+        gc.collect(); torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats(dev)
+        _mem("after ckd deleted")
         print(f"resumed phase-1 checkpoint {ck} at step {start_step}", flush=True)
     else:
         Hs, ns = {}, {}
@@ -405,20 +418,28 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
     for q in qats:
         q.qat = True                                  # phase 2: QAT (weight+act FP4 STE)
     student.train()
-    best_acc, best_weights = -1.0, None                # SELECT ON DOWNSTREAM, not PPL
+    best_acc, best_path = -1.0, None                   # SELECT ON DOWNSTREAM, not PPL
+    bcap = f"/cache/best_cap_{model.split('/')[-1]}_P{P1}_p2{P2}{tag}_lr{lr_max:.0e}.pt"
+    _mem("before P2 step 1")
     for step in range(P1, total):
         loss = kd_step(step)
         if (step + 1) % 500 == 0 or (step + 1) == total:
             acc = downstream_acc(student)
             print(f"  P2 {step + 1 - P1}/{P2} KD {loss:.4f} PPL(FP4) {ppl(student, windows=8):.3f} "
                   f"downstream(sel) {acc:.4f}", flush=True)
-            if acc >= best_acc:
-                best_acc = acc; best_weights = [q.weight.data.clone() for q in qats]
+            _mem(f"P2 {step + 1 - P1}")
+            if acc >= best_acc:  # snapshot best-capability weights to /cache as CPU tensors — no GPU-resident copy
+                best_acc = acc
+                torch.save([q.weight.detach().cpu() for q in qats], bcap); vol.commit()
+                best_path = bcap
+                print(f"  best-capability checkpoint -> {bcap} (sel {best_acc:.4f})", flush=True)
             student.train()
-    if best_weights is not None:  # restore best-capability checkpoint before packing
-        for q, w in zip(qats, best_weights):
-            q.weight.data.copy_(w)
-        print(f"restored best-downstream(sel) checkpoint: {best_acc:.4f}", flush=True)
+    if best_path is not None:  # restore best-capability checkpoint before packing
+        bw = torch.load(best_path, map_location="cpu", weights_only=True)
+        for q, w in zip(qats, bw):
+            q.weight.data.copy_(w.to(dev))
+        del bw
+        print(f"restored best-downstream(sel) checkpoint: {best_acc:.4f} from {best_path}", flush=True)
     print(f"PPL after phase-2 QAT recovery (FP4): {ppl(student):.3f}", flush=True)
 
     rck = f"/cache/recovered_{model.split('/')[-1]}_P{P1}_p2{P2}{tag}_lr{lr_max:.0e}.pt"
