@@ -278,3 +278,23 @@ Branch `c8-pipeline-stage-decode`. Full docs [verdict](c8/verdict.md) / [mode_fe
 | Task 3 bubble removal could close the gap for single-request | NO: at batch=1 there is one microbatch — every bubble-fill lever (double-buffer/overlap/microbatch) adds concurrent requests = aggregate throughput, forbidden as single-request claim | not obtained (structurally aggregate-only) |
 | Sparse D2 (Task 5) / GLM (Task 6) | not run: gates "only if dense improves/wins" not met (dense regressed 2.53x); no 8-GPU GLM launched | not obtained (gate not met) |
 | C8 verdict | D — all-reduce floor removed to 0 but batch=1 pipeline serialization dominates; C4 58.126 SOTA unchanged. Across C4/C7/C8 the per-layer all-reduce is the price of 4-way concurrency, not removable overhead | verdict |
+
+## 18. Gap C full-stack QAT capability recovery (single dense model) — KILL
+
+Controlled test of whether the single-dense-model 2:4-FP4 downstream residual is a recovery artifact or a
+real capacity floor. Branch `qat-fullstack-capability`, harness `harness/finetune_fullstack.py`, full note
+[docs/qat/design.md](qat/design.md) Result section. Llama-3.1-8B-Instruct, single RTX PRO 6000. Downstream
+= in-loop 3-task MC (ARC-Challenge/HellaSwag/Winogrande, 200 each = 600); NOT the 4-task MoE AVG, do not
+cross-compare absolute values.
+
+| Claim | Evidence | Status |
+|-------|----------|--------|
+| Full-stack QAT (widen sparsified+trainable+STE to attn q/k/v/o + MLP; capability corpus from downstream TRAIN splits; downstream-in-loop selection) does NOT recover capability | `harness/finetune_fullstack.py`; `docs/qat/design.md` Result | backed (negative) |
+| Final through-kernel downstream 0.3967 is BELOW the one-shot 0.4333 bar and far below dense teacher 0.6150 | `docs/qat/design.md` Result core table; run app `ap-Ggm58ogbWn2eNNs0cQQNBW` logs | backed (negative) |
+| Deploy gap is 0.005 (fake-quant 0.4017 -> kernel 0.3967): limiting factor is capacity/recovery, not kernel/STE fidelity | `docs/qat/design.md` Result; `finetune_fullstack.py::QuadbitLinear` pack | backed |
+| Phase-2 downstream oscillated 0.378-0.402 across all 6 evals with no upward drift | `docs/qat/design.md` Result trajectory table | backed |
+| Capability corpus has zero eval leakage (positive-control PASS, 13-gram decontam vs all eval splits) | `harness/build_capability_corpus.py` manifest (`leak_in_sample` 0, `positive_control_hits` > 0) | backed |
+| Per-task through-kernel breakdown (broad vs concentrated failure) | `harness/finetune_fullstack.py::evalpertask`, read-only on the saved best-cap weights; `docs/qat/design.md` Result per-task table | backed |
+| Recovery beats one-shot / closes the residual | NOT claimed (disproven): recovery worsened both PPL (149->203) and downstream (0.4333->0.3967) vs one-shot | not claimed (disproven) |
+| This is a kernel-fidelity, OOM, or attention-packing/STE failure | NOT claimed (disproven): deploy gap 0.005, run completed with ~14.4 GB free at phase-2 peak, STE bit-matches the kernel | not claimed (disproven) |
+| The run used the pre-registered recipe (no knob tuning) | infra-only fixes `2ff580a` (resume GPU-duplicate) + `90be3e2` (durable phase-2 resume); LR/steps/alpha/attn/optimizer/selection/corpus/hardware/model/eval unchanged | backed |
