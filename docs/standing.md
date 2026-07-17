@@ -212,8 +212,14 @@ been run on a real deployment target. Frame sparse recovery as early-stage, not 
    win was launch-overhead only; this graph decode win is a separate kernel-scheduling lever. Artifacts:
    `docs/graph_serving_result.md` (main serving table + sweep + proofs + diagnosis), `docs/frozen_serving_result.md`
    (eager ablation).
-4. **Sparse recovery on a real target** (not TinyLlama), with enough data to test the
-   "monotonic in data" claim, compared to NVFP4-QAD-style recovery.
+4. ~~**Sparse recovery on a real target** (not TinyLlama), with enough data to test the
+   "monotonic in data" claim, compared to NVFP4-QAD-style recovery.~~ **DONE for CAPABILITY on the
+   single dense model — KILL (2026-07-17, `docs/qat/design.md` Result, gap #17 below).** Full-stack
+   QAT on Llama-3.1-8B-Instruct (widened attn+MLP trainable+STE + in-distribution capability corpus +
+   downstream-in-loop selection) recovered downstream to only **0.3967 through-kernel, BELOW the
+   one-shot 0.4333 bar**. The 2:4-FP4 capability floor is real; not a recovery artifact. PPL-scale
+   recovery on a real target (the "monotonic in data" question) remains as gap #5's data-lever
+   negative; capability recovery is now a controlled negative.
 5. **The sparse value proposition is RESOLVED: speed-only, loses to dense on accuracy.** The
    TinyLlama "sparse-recovered 9.60 beats dense-zero-train 9.73" flip was an artifact of the crude +2
    dense number — with the corrected dense W4A4 (+0.63/+0.71) that flip is dead. On Meta-Llama-3-8B:
@@ -314,3 +320,25 @@ Wanda-pair mask (13.06). DECISIVE NEGATIVE: downstream 0-shot accuracy barely mo
 HellaSwag ~0.60) vs dense ~0.52/0.78; the ~20pt 2:4-sparsity capability loss is NOT recovered; CE-heavy PPL
 win is WikiText overfitting. Decode token-parallel kernel (Workstream B) refuted (compute-bound, 190x slower).
 Frontier: sparse capability recovery (broader distill data / different prune target), not serving plumbing.
+
+## Gap C full-stack QAT capability recovery (2026-07-17): KILL
+The controlled follow-on to the 2026-07-08 accuracy-repair negative above. Question: is the single-dense-model
+2:4-FP4 downstream residual a recovery artifact or a real capacity floor? Fork `harness/finetune_fullstack.py`
+attacked it with the three levers prior recovery lacked, all pre-registered: widen the sparsified+trainable+STE
+set to attention q/k/v/o + MLP; a balanced CAPABILITY corpus built from the downstream TRAIN splits (zero eval
+leakage, positive-control PASS) instead of web text; and downstream-in-loop best-capability checkpoint selection.
+Llama-3.1-8B-Instruct, SparseGPT-pair one-shot -> phase-1 masked bf16 (30000) -> phase-2 weight+act FP4 QAT (3000,
+warm-restart), single RTX PRO 6000. Full note `docs/qat/design.md` Result. `[measured]`
+- **KILL.** Final through-kernel downstream **0.3967** is 3.66pt BELOW the training-free one-shot bar **0.4333**
+  and far below dense teacher **0.6150** — short of PARTIAL (above one-shot), let alone WIN (>= half the teacher gap,
+  0.5242). Widened attn+MLP QAT + in-distribution corpus + honest selection did NOT recover capability; it
+  underperformed the one-shot prune. Core: teacher 0.6150 / one-shot 0.4333 / best-cap fake-quant 0.4017 /
+  through-kernel 0.3967.
+- **Deploy gap = 0.005** (fake-quant 0.4017 -> kernel 0.3967): kernel fidelity is tight, so the limiting factor is
+  capacity/recovery, NOT the kernel or STE. Phase-2 downstream oscillated 0.378-0.402 with no upward drift.
+- **Scope/convention:** in-loop metric is 3-task (ARC-Challenge/HellaSwag/Winogrande, 200 each = 600); MMLU/ARC-Easy
+  are in the corpus but not the metric. Not comparable to the repo's 4-task MoE downstream AVGs.
+- **Reframe:** on the single dense model the 2:4-FP4 capability tax is NOT recoverable by full-stack QAT; the MoE
+  wins (WS-C down-only, WS-D route-slot) came from training-free structural AVOIDANCE, not weight recovery. The
+  capability floor bites the single dense model harder (no MoE combine error-cancellation). Dense W4A4 at +0.63 PPL
+  (no sparsity) stays the accuracy headline; sparse is a speed-only Pareto point on this axis too.
