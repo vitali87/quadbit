@@ -50,7 +50,7 @@ vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
               secrets=[modal.Secret.from_name("huggingface")])
 def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool = False,
         lr_max: float = 2e-4, p2_lr: float = 1e-5, ce_alpha: float = 0.1, corpus: str = "",
-        attn: bool = True, sel_limit: int = 200) -> float:
+        attn: bool = True, sel_limit: int = 200, eval_weights: str = "", include_fq: bool = False) -> float:
     # attn: also sparsify+train attention q/k/v/o (the full-stack lever). ce_alpha default 0.1: a
     # little hard-label CE alongside KD sharpens the argmax that MC accuracy reads. sel_limit: items
     # per task for the in-loop downstream selector (0 disables selection, keeps final-step weights).
@@ -250,12 +250,12 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
             for ex in load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test").select(range(limit)):
                 t, l, k = ex["choices"]["text"], ex["choices"]["label"], ex["answerKey"]
                 if k in l:
-                    items.append((f"Question: {ex['question']}\nAnswer:", [" " + c for c in t], l.index(k)))
+                    items.append(("arc_challenge", f"Question: {ex['question']}\nAnswer:", [" " + c for c in t], l.index(k)))
         except Exception as e:
             print(f"  [sel] arc unavailable: {e}", flush=True)
         try:
             for ex in load_dataset("Rowan/hellaswag", split="validation").select(range(limit)):
-                items.append((ex["ctx"], [" " + e for e in ex["endings"]], int(ex["label"])))
+                items.append(("hellaswag", ex["ctx"], [" " + e for e in ex["endings"]], int(ex["label"])))
         except Exception as e:
             print(f"  [sel] hellaswag unavailable: {e}", flush=True)
         try:
@@ -263,7 +263,7 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
                                    split="validation").select(range(limit)):
                 if ex["answer"] in ("1", "2") and "_" in ex["sentence"]:
                     a, b = ex["sentence"].split("_", 1)
-                    items.append((a, [ex["option1"] + b, ex["option2"] + b], int(ex["answer"]) - 1))
+                    items.append(("winogrande", a, [ex["option1"] + b, ex["option2"] + b], int(ex["answer"]) - 1))
         except Exception as e:
             print(f"  [sel] winogrande unavailable: {e}", flush=True)
         return items
@@ -271,24 +271,37 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
     sel_items = _mc_items(sel_limit) if sel_limit else []
     print(f"downstream selection set: {len(sel_items)} items", flush=True)
 
+    def _pred_item(m, ctx, conts):
+        cids = tok(ctx, return_tensors="pt").input_ids.to(dev)
+        best, arg = -1e30, 0
+        for j, cont in enumerate(conts):
+            full = tok(ctx + cont, return_tensors="pt").input_ids.to(dev)
+            lg = m(full).logits[0, :-1].float().log_softmax(-1)
+            tgt = full[0, 1:]
+            lp = lg[torch.arange(tgt.shape[0], device=dev), tgt]
+            score = lp[cids.shape[1] - 1:].mean().item()  # mean logprob of the continuation
+            if score > best:
+                best, arg = score, j
+        return arg
+
     def downstream_acc(m):
         if not sel_items:
             return 0.0
         m.eval(); correct = 0
         with torch.no_grad():
-            for ctx, conts, gold in sel_items:
-                cids = tok(ctx, return_tensors="pt").input_ids.to(dev)
-                best, arg = -1e30, 0
-                for j, cont in enumerate(conts):
-                    full = tok(ctx + cont, return_tensors="pt").input_ids.to(dev)
-                    lg = m(full).logits[0, :-1].float().log_softmax(-1)
-                    tgt = full[0, 1:]
-                    lp = lg[torch.arange(tgt.shape[0], device=dev), tgt]
-                    score = lp[cids.shape[1] - 1:].mean().item()  # mean logprob of the continuation
-                    if score > best:
-                        best, arg = score, j
-                correct += int(arg == gold)
+            for _task, ctx, conts, gold in sel_items:
+                correct += int(_pred_item(m, ctx, conts) == gold)
         return correct / len(sel_items)
+
+    def downstream_by_task(m):  # per-task (correct, total) over the same sel_items — for the Gap C record table
+        from collections import defaultdict
+        cor, tot = defaultdict(int), defaultdict(int)
+        m.eval()
+        with torch.no_grad():
+            for task, ctx, conts, gold in sel_items:
+                tot[task] += 1
+                cor[task] += int(_pred_item(m, ctx, conts) == gold)
+        return {t: (cor[t], tot[t]) for t in tot}
 
     def target_lins(m):  # WIDENED: MLP gate/up/down + (if attn) self_attn q/k/v/o, dims %256 for the kernel
         specs = [("mlp", "gate_proj"), ("mlp", "up_proj"), ("mlp", "down_proj")]
@@ -331,6 +344,73 @@ def run(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool =
         print(f"  [mem] {tag}: alloc {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
               f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f} GB  "
               f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f} GB  free {free / 2**30:.2f} GB", flush=True)
+
+    if eval_weights:  # READ-ONLY per-task record eval (Gap C closeout): no training, no knob change, no checkpoint writes
+        import gc
+
+        def _load(p):
+            w = torch.load(p, map_location="cpu", weights_only=True)
+            return w["weights"] if isinstance(w, dict) else w
+
+        def _set_qats(weights, qat_on):  # replace every target with a QATLinear from given weights
+            for (parent, nm, _), W in zip(targets, weights):
+                q = QATLinear(W.to(torch.bfloat16)).to(dev); q.qat = qat_on; setattr(parent, nm, q)
+
+        rows = {}
+        rows["teacher"] = downstream_by_task(teacher)                       # (1) dense reference
+        print("  [eval] teacher done", flush=True)
+
+        Hs, ns = {}, {}                                                     # (2) one-shot pair-2:4 (masked bf16)
+
+        def _hook(mod, inp, _o):
+            x = inp[0].detach().float().reshape(-1, inp[0].shape[-1]); k = id(mod); nn_ = x.shape[0]
+            if k not in Hs:
+                Hs[k] = torch.zeros(x.shape[1], x.shape[1], device=dev); ns[k] = 0
+            Hs[k] *= ns[k] / (ns[k] + nn_)
+            Hs[k] += (x * math.sqrt(2.0 / (ns[k] + nn_))).t() @ (x * math.sqrt(2.0 / (ns[k] + nn_)))
+            ns[k] += nn_
+
+        hks = [lin.register_forward_hook(_hook) for _, _, lin in targets]
+        with torch.no_grad():
+            for i in range(0, 16 * 2048, 2048):
+                student(train_ids[i:i + 2048].unsqueeze(0).to(dev))
+        for h in hks:
+            h.remove()
+        _set_qats([sparsegpt_pair24(lin.weight.data, Hs.pop(id(lin))).to(torch.bfloat16).cpu()
+                   for _, _, lin in targets], False)
+        rows["oneshot"] = downstream_by_task(student)
+        print("  [eval] one-shot done", flush=True)
+        del Hs, ns; gc.collect(); torch.cuda.empty_cache()
+
+        if os.path.exists(ck):                                             # (3) post-phase-1 masked bf16
+            _set_qats(_load(ck), False)
+            rows["postP1"] = downstream_by_task(student)
+            print("  [eval] post-P1 done", flush=True)
+
+        bw = _load(eval_weights)                                          # deployed best-capability weights
+        if include_fq:  # (4) fake-quant STE per-task — OPTIONAL: STE runs per forward (~50 min/600 items), preemption-prone; aggregate 0.4017 already banked
+            _set_qats(bw, True)
+            rows["fakequant"] = downstream_by_task(student)
+            print("  [eval] fake-quant done", flush=True)
+
+        for (parent, nm, _), W in zip(targets, bw):                       # (5) through the real 2:4-sparse FP4 kernel
+            setattr(parent, nm, QuadbitLinear(W.to(torch.bfloat16)).to(dev))
+        rows["kernel"] = downstream_by_task(student)
+        print("  [eval] through-kernel done", flush=True)
+
+        tsk = sorted({t for r in rows.values() for t in r})
+        print("GAPC_PERTASK_BEGIN", flush=True)
+        for state in ["teacher", "oneshot", "postP1", "fakequant", "kernel"]:
+            if state not in rows:
+                continue
+            tc = tn = 0; parts = []
+            for t in tsk:
+                c, n = rows[state].get(t, (0, 0)); tc += c; tn += n
+                parts.append(f"{t}={c}/{n}={c / n:.4f}" if n else f"{t}=NA")
+            print(f"GAPC_PERTASK {state}: " + "  ".join(parts)
+                  + f"  AGG={tc / tn:.4f}" if tn else f"GAPC_PERTASK {state}: NA", flush=True)
+        print("GAPC_PERTASK_END", flush=True)
+        return 0.0
 
     resume = ck2 if os.path.exists(ck2) else (ck if os.path.exists(ck) else None)
     if resume is not None:
@@ -477,3 +557,19 @@ def main(model: str = MODEL, p1: int = 30000, p2: int = 3000, both_shards: bool 
                      p2_lr=p2_lr, ce_alpha=ce_alpha, corpus=corpus, attn=attn, sel_limit=sel_limit)
     print(f"SPAWN_ID {call.object_id}", flush=True)
     print(f"RESULT {call.get():.3f}", flush=True)
+
+
+@app.local_entrypoint()
+def evalpertask(model: str = "meta-llama/Llama-3.1-8B-Instruct", p1: int = 30000, p2: int = 3000,
+                corpus: str = "/cache/corpus_capability_llama3_bal", attn: bool = True,
+                sel_limit: int = 200, weights: str = "", include_fq: bool = False) -> None:
+    # Gap C closeout: per-task through-kernel breakdown on the saved best-capability weights (read-only).
+    # --include-fq adds the slow fake-quant STE per-task row (preemption-prone); off by default.
+    if not weights:
+        base = corpus.rstrip("/").split("/")[-1]
+        weights = f"/cache/best_cap_{model.split('/')[-1]}_P{p1}_p2{p2}_{base}_fs{'A' if attn else 'M'}_lr2e-04.pt"
+    print(f"eval weights: {weights}", flush=True)
+    call = run.spawn(model=model, p1=p1, p2=p2, corpus=corpus, attn=attn,
+                     sel_limit=sel_limit, eval_weights=weights, include_fq=include_fq)
+    print(f"SPAWN_ID {call.object_id}", flush=True)
+    call.get()
