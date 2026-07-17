@@ -111,11 +111,13 @@ def build(smoke: bool, per_source_cap: int, src_token_cap: int = 0, tag: str = "
     # --- build the eval 13-gram guard set from the rendered EVAL splits of every source ---
     eval_ngrams: set[int] = set()
     ctrl_text = ""
+    failed_eval: set = set()  # sources whose eval split failed -> their train data is undecontaminated, skip it
     for args, _tr, ev, render in SOURCES:
         try:
             ds = load(args, ev)
         except Exception as e:  # a single unavailable eval split must not disable the guard for the rest
             print(f"WARN eval split {args}/{ev} unavailable ({e}); its train source is SKIPPED below too", flush=True)
+            failed_eval.add(args)
             continue
         for ex in ds:
             t = render(ex)
@@ -135,6 +137,9 @@ def build(smoke: bool, per_source_cap: int, src_token_cap: int = 0, tag: str = "
     seen: set[int] = set()
     kept = drop_contam = drop_dup = drop_empty = ntok = 0
     for args, tr, ev, render in SOURCES:
+        if args in failed_eval:  # eval split failed to load -> can't decontaminate this source, drop its train too
+            print(f"WARN train split {args}/{tr} SKIPPED (its eval guard is missing)", flush=True)
+            continue
         try:
             ds = load(args, tr)
         except Exception as e:
