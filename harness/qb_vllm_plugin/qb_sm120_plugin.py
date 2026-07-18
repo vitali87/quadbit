@@ -2011,6 +2011,9 @@ def _install_gptoss_moe() -> None:
         t, h = x.shape
         topk = topk_ids.shape[1]
         ii, hh_dim, ee = layer._qbg_i, layer._qbg_h, layer._qbg_e
+        if STATS["moe_calls"] == 1:  # one-time proof the sparse kernel path is LIVE (worker process)
+            print(f"[qb_sm120] gpt-oss SPARSE apply LIVE (kernel path): x={tuple(x.shape)} "
+                  f"topk={topk} experts={ee} I={ii} H={hh_dim} pid={os.getpid()}", flush=True)
         hp, ip = layer._qbg_hp, layer._qbg_ip
         mpeI, mpeH = layer._qbg_mpeI, layer._qbg_mpeH
         on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
