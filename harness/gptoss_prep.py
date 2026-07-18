@@ -438,3 +438,201 @@ def m1_validate(layer: int = 11, experts: str = "0,1,2,3") -> None:
         print(f"  L{layer} e{e}: full-expert cos(quadbit,fakequant)={c_qb_fq:.5f} (assembly)  "
               f"cos(quadbit,bf16-dense)={c_qb_ref:.4f} (2:4 tax)  {'OK' if c_qb_fq > 0.95 else 'FAIL'}", flush=True)
     print(f"# M1 done: {'FORWARD-PARITY OK — plugin apply-path math verified (interleave+clamped-swiglu+bias)' if allok else 'FORWARD MISMATCH — investigate'}", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
+              secrets=[modal.Secret.from_name("huggingface")])
+def seg_validate(layer: int = 11, n_experts: int = 8, tokens: int = 128, topk: int = 4) -> None:
+    """M1.5 serving-kernel gate: validate the SEGMENTED routed kernel (sparse_moe_mm_2lvl / seg_gemm),
+    which is what the vLLM plugin apply() uses (NOT the single-expert kernel M1/M2 validated), on gpt-oss
+    dims + real routing. Stacks n_experts padded gpt-oss experts, routes `tokens` rows top-`topk`, and runs
+    the exact plugin forward (gate/up seg-gemms -> clamped-swiglu+bias -> down seg-gemm+bias -> weighted
+    combine) vs a per-(token,expert) bf16 dense reference. cos(quadbit,fakequant)~1 => seg kernel + routing
+    correct on gpt-oss; cos(quadbit,dense) = the routed 2:4 tax. Helpers (incl. seg_gemm/build_routing)
+    copied from qb_sm120_plugin; ponytail: dedup if a 5th consumer appears."""
+    import ctypes
+    import subprocess
+
+    import torch
+    import torch.nn.functional as F
+    from huggingface_hub import hf_hub_download
+    from safetensors import safe_open
+
+    so = "/root/sparse_fp4.so"
+    c = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                        "-o", so, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
+    if c.returncode != 0:
+        print(c.stderr, flush=True); raise SystemExit(1)
+    lib = ctypes.CDLL(so)
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
+                                       + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.qb_init_moe_attrs()
+    dev = torch.device("cuda")
+    _BN = 128
+
+    FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    _cc = torch.arange(128, device=dev); _e, _m = (_cc >> 3) & 0xf, _cc & 7
+    UE4M3 = torch.where(_e == 0, _m.float() * 0.001953125, (1.0 + _m.float() / 8.0) * torch.exp2((_e - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
+        biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):  # bf16 [out,in] -> (ac,meta,scale,ga); plugin pack() verbatim (magnitude 2:4)
+        out_f, in_f = w.shape; ks = in_f // 128
+        wg = w.float().view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2)
+        scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga)
+        sdeq = UE4M3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(),
+                ga.reshape(out_f).float().contiguous())
+
+    def stack(packs):  # plugin stack() verbatim
+        return (torch.cat([p[0] for p in packs], 0).contiguous(),
+                torch.cat([p[1] for p in packs], 1).contiguous(),
+                torch.cat([p[2] for p in packs], 1).contiguous(),
+                torch.cat([p[3] for p in packs], 0).contiguous())
+
+    def seg_gemm(x, w, mpe, in_f, eblk):  # plugin seg_gemm() verbatim
+        r = x.shape[0]; ac, meta, scale_a, ga = w; ks = in_f // 128
+        xb = x.to(torch.bfloat16).contiguous()
+        bb = torch.empty((r, in_f // 2), dtype=torch.uint8, device=dev)
+        sb = torch.empty((ks, r, 4), dtype=torch.uint8, device=dev)
+        gb = torch.empty((r,), dtype=torch.float32, device=dev)
+        lib.quantize_act_nvfp4_2lvl(xb.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), r, in_f)
+        cc = torch.empty((r, mpe), dtype=torch.bfloat16, device=dev)
+        lib.sparse_moe_mm_2lvl(ac.data_ptr(), bb.data_ptr(), scale_a.data_ptr(), sb.data_ptr(),
+                               meta.data_ptr(), cc.data_ptr(), ac.shape[0], mpe, r, in_f,
+                               ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(), 1, 0)
+        return cc
+
+    def build_routing(assign, e):  # plugin build_routing() verbatim
+        order = torch.argsort(assign, stable=True)
+        counts = torch.bincount(assign, minlength=e)
+        padc = (counts + _BN - 1) // _BN * _BN
+        r_pad = int(padc.sum().item())
+        src = torch.full((r_pad,), -1, dtype=torch.long, device=dev)
+        eblk = torch.zeros(r_pad // _BN, dtype=torch.int32, device=dev)
+        off = 0; oi = 0
+        for ex in range(e):
+            ce = int(counts[ex].item()); pe = int(padc[ex].item())
+            if pe == 0:
+                continue
+            src[off:off + ce] = order[oi:oi + ce]; oi += ce
+            eblk[off // _BN:(off + pe) // _BN] = ex; off += pe
+        return src, eblk, r_pad
+
+    def mxfp4_dequant(blocks_u8, scales_u8):
+        b = blocks_u8.to(dev).to(torch.int32) & 0xFF; lead = b.shape[:-1]
+        codes = torch.stack([b & 0xF, (b >> 4) & 0xF], dim=-1).reshape(*lead[:-1], lead[-1] * 32).long()
+        vals = FP4[codes]; nb = scales_u8.shape[-1]
+        mult = torch.exp2(scales_u8.to(dev).float() - 127.0)
+        return (vals.reshape(*vals.shape[:-1], nb, 32) * mult[..., None]).reshape(vals.shape).to(torch.bfloat16)
+
+    def sparse_fp4_dequant(W):
+        out_f, in_f = W.shape; ks = in_f // 128
+        Wg = W.view(out_f, ks, 16, 4, 2)
+        i01, _ = Wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        keptW = torch.gather(Wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        gA = (keptW.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = keptW.reshape(out_f, ks, 4, 8, 2)
+        sdeq = UE4M3[enc((blk.abs().amax(dim=(3, 4)) / 6.0) / gA)] * gA
+        kd = (FP4[q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])] * sdeq[..., None, None]).reshape(out_f, ks, 16, 2, 2)
+        Wd = torch.zeros(out_f, ks, 16, 4, 2, device=dev)
+        Wd.scatter_(3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2), kd)
+        return Wd.reshape(out_f, in_f)
+
+    def pad_w(W):
+        out_f, in_f = W.shape
+        outp = ((out_f + 255) // 256) * 256; inp = ((in_f + 127) // 128) * 128
+        Wp = W.new_zeros(outp, inp); Wp[:out_f, :in_f] = W
+        return Wp
+
+    def swiglu(gate, up):
+        gate = gate.clamp(max=7.0); up = up.clamp(-7.0, 7.0)
+        return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
+
+    idx_path = hf_hub_download(MODEL, "model.safetensors.index.json")
+    weight_map = __import__("json").load(open(idx_path))["weight_map"]
+
+    def get(name):
+        p = hf_hub_download(MODEL, weight_map[name])
+        with safe_open(p, framework="pt", device="cpu") as f:
+            return f.get_tensor(name)
+
+    print(f"# M1.5 gpt-oss SEG-kernel + routing gate ({MODEL}) layer {layer} E={n_experts} T={tokens} topk={topk}", flush=True)
+    guB, guS = get(f"model.layers.{layer}.mlp.experts.gate_up_proj_blocks"), get(f"model.layers.{layer}.mlp.experts.gate_up_proj_scales")
+    guBias = get(f"model.layers.{layer}.mlp.experts.gate_up_proj_bias").to(dev).float()
+    dnB, dnS = get(f"model.layers.{layer}.mlp.experts.down_proj_blocks"), get(f"model.layers.{layer}.mlp.experts.down_proj_scales")
+    dnBias = get(f"model.layers.{layer}.mlp.experts.down_proj_bias").to(dev).float()
+
+    # decode + de-interleave + pad + pack all experts; stack for the seg kernel
+    gW, uW, dW, gB_, uB_, dB_ = [], [], [], [], [], []
+    gp, up_, dp = [], [], []
+    for e in range(n_experts):
+        gu = mxfp4_dequant(guB[e], guS[e]).float(); dn = mxfp4_dequant(dnB[e], dnS[e]).float()
+        g, u = gu[0::2, :], gu[1::2, :]
+        gW.append(g); uW.append(u); dW.append(dn)
+        gB_.append(guBias[e][0::2]); uB_.append(guBias[e][1::2]); dB_.append(dnBias[e])
+        gp.append(pack(pad_w(g))); up_.append(pack(pad_w(u))); dp.append(pack(pad_w(dn)))
+    I, H = gW[0].shape[0], gW[0].shape[1]
+    Ip, Hp = pad_w(dW[0]).shape[1], pad_w(gW[0]).shape[1]   # padded in-dims: down in=I->Ip, gate in=H->Hp
+    mpeI, mpeH = pad_w(gW[0]).shape[0], pad_w(dW[0]).shape[0]  # padded out: gate/up out=I->mpeI, down out=H->mpeH
+    gS, uS_, dS = stack(gp), stack(up_), stack(dp)
+    gBias_s = torch.stack(gB_); uBias_s = torch.stack(uB_); dBias_s = torch.stack(dB_)  # [E,I],[E,I],[E,H]
+
+    torch.manual_seed(layer)
+    x = torch.randn(tokens, H, device=dev, dtype=torch.bfloat16) * 0.1
+    topk_ids = torch.stack([torch.randperm(n_experts, device=dev)[:topk] for _ in range(tokens)])  # [T,topk]
+    topk_w = torch.rand(tokens, topk, device=dev); topk_w = topk_w / topk_w.sum(1, keepdim=True)
+
+    # ---- reference: per-(token,expert) bf16 dense expert, weighted combine ----
+    ref = torch.zeros(tokens, H, device=dev)
+    for t in range(tokens):
+        for j in range(topk):
+            e = int(topk_ids[t, j]); w = topk_w[t, j].float()
+            g = x[t].float() @ gW[e].t() + gB_[e]; u = x[t].float() @ uW[e].t() + uB_[e]
+            h = swiglu(g, u); o = h @ dW[e].t() + dB_[e]
+            ref[t] += w * o
+
+    # ---- quadbit seg path (exact plugin apply) ----
+    assign = topk_ids.reshape(-1).to(torch.long)
+    tok_of = torch.arange(tokens, device=dev).repeat_interleave(topk)
+    w_of = topk_w.reshape(-1).float()
+    src, eblk, r_pad = build_routing(assign, n_experts)
+    valid = src >= 0; srcc = src.clamp_min(0)
+    row_exp = assign[srcc]
+    xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
+    xsp = torch.zeros(r_pad, Hp, device=dev, dtype=torch.bfloat16); xsp[:, :H] = xs
+    g = seg_gemm(xsp, gS, mpeI, Hp, eblk)[:, :I].float() + gBias_s[row_exp]
+    u = seg_gemm(xsp, uS_, mpeI, Hp, eblk)[:, :I].float() + uBias_s[row_exp]
+    h = swiglu(g, u)
+    hp = torch.zeros(r_pad, Ip, device=dev, dtype=torch.bfloat16); hp[:, :I] = h.to(torch.bfloat16)
+    d = seg_gemm(hp, dS, mpeH, Ip, eblk)[:, :H].float() + dBias_s[row_exp]
+    qb = torch.zeros(tokens, H, device=dev)
+    qb.index_add_(0, tok_of[srcc], d * (w_of[srcc] * valid.float())[:, None])
+
+    c_ref = F.cosine_similarity(qb.flatten(), ref.flatten(), dim=0).item()
+    print(f"  seg forward: cos(quadbit-seg, bf16-dense)={c_ref:.4f}  (routed 2:4 tax; must match M1 per-expert "
+          f"~0.90-0.95 — a routing/kernel bug would collapse this toward 0)", flush=True)
+    ok = c_ref > 0.85
+    print(f"# M1.5 done: {'SEG KERNEL + ROUTING OK on gpt-oss dims' if ok else 'SEG MISMATCH — investigate'}", flush=True)
