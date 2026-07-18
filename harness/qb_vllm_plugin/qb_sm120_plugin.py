@@ -1531,6 +1531,7 @@ def install() -> None:
         print(f"[qb_sm120] topk override skipped: {type(ex).__name__}: {ex}", flush=True)
 
     _install_moe()
+    _install_gptoss_moe()
 
     if _INSTR or _TAX:
         import atexit
@@ -1905,3 +1906,154 @@ def _install_moe() -> None:
     ModelOptNvFp4FusedMoE.maybe_make_prepare_finalize = (
         lambda self, routing_tables=None: None)
     print(f"[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE={qb_moe}) pid={os.getpid()}", flush=True)
+
+
+def _install_gptoss_moe() -> None:
+    # gpt-oss-20b experts are natively MXFP4, so vLLM loads them under GptOssMxfp4MoEMethod (NOT
+    # ModelOptNvFp4FusedMoE) -- a different quant-method class the _install_moe patch never touches.
+    # This installs the quadbit 2:4-sparse-FP4 expert path for gpt-oss: decode MXFP4 -> de-interleave
+    # the fused gate/up (gpt-oss stores gate=out[0::2], up=out[1::2]) -> pad each expert to the sparse
+    # kernel's alignment (out%256, in%128; gpt-oss 2880 dims are unaligned) -> pack 2:4 two-level-NVFP4
+    # -> serve through the segmented sm_120 kernel with gpt-oss's CLAMPED SwiGLU (alpha=1.702, limit=7)
+    # and expert biases. Forward verified offline in harness/gptoss_prep.py (M0/M2/M1/M1.5). QB_MOE=sparse.
+    qb_moe = os.environ.get("QB_MOE", "off").lower()
+    if qb_moe != "sparse":
+        return
+    try:
+        from vllm.model_executor.layers.quantization.mxfp4 import GptOssMxfp4MoEMethod
+    except Exception as ex:  # noqa: BLE001
+        print(f"[qb_sm120] gpt-oss MoE patch skipped (import): {type(ex).__name__}: {ex}", flush=True)
+        return
+
+    import torch
+    import torch.nn.functional as F
+
+    dev = torch.device("cuda")
+    fp4 = torch.tensor(_FP4_VALS, device=dev)
+    orig_pw = GptOssMxfp4MoEMethod.process_weights_after_loading
+    orig_apply = GptOssMxfp4MoEMethod.apply
+
+    def _mxfp4_dequant(w_u8, s_u8):
+        # vLLM gpt-oss layout: w [out, in//2] uint8 (E2M1 2/byte, low nibble->even col), s [out, in//32]
+        # uint8 e8m0 (multiplier 2^(raw-127)). Matches harness M0 (100% value-exact round-trip).
+        b = w_u8.to(dev).to(torch.int32) & 0xFF
+        out_f, inb = b.shape
+        in_f = inb * 2
+        codes = torch.empty(out_f, in_f, dtype=torch.long, device=dev)
+        codes[:, 0::2] = b & 0xF
+        codes[:, 1::2] = (b >> 4) & 0xF
+        nb = s_u8.shape[-1]
+        mult = torch.exp2(s_u8.to(dev).float() - 127.0)
+        return (fp4[codes].view(out_f, nb, 32) * mult[:, :, None]).reshape(out_f, in_f).to(torch.bfloat16)
+
+    def _pad(W):  # [out,in] -> zero-padded (out%256, in%128); exact (zero rows/cols contribute nothing)
+        o, i = W.shape
+        Wp = W.new_zeros(((o + 255) // 256) * 256, ((i + 127) // 128) * 128)
+        Wp[:o, :i] = W
+        return Wp
+
+    def _swiglu(gate, up):  # gpt-oss clamped SwiGLU (alpha=1.702, limit=7.0, beta=1.0)
+        gate = gate.clamp(max=7.0)
+        up = up.clamp(-7.0, 7.0)
+        return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
+
+    def patched_pw(self, layer):
+        sp = _load_sparse_moe()
+        global _PW_IDX
+        li = _PW_IDX
+        _PW_IDX += 1
+        layer._qbg_idx = li
+        w13, w13s = layer.w13_weight, layer.w13_weight_scale   # [E,2I,H//2] , [E,2I,H//32]
+        w2, w2s = layer.w2_weight, layer.w2_weight_scale       # [E,H,I//2]  , [E,H,I//32]
+        b13 = getattr(layer, "w13_bias", None)
+        b2 = getattr(layer, "w2_bias", None)
+        e = w13.shape[0]
+        gp, up_, dp, gb, ub, db = [], [], [], [], [], []
+        i_dim = h_dim = 0
+        for le in range(e):
+            gu = _mxfp4_dequant(w13[le], w13s[le]).float()     # [2I, H]
+            dn = _mxfp4_dequant(w2[le], w2s[le]).float()       # [H, I]
+            gw, uw = gu[0::2, :], gu[1::2, :]                  # de-interleave fused gate/up
+            i_dim, h_dim = gw.shape[0], gw.shape[1]
+            gp.append(sp.pack(_pad(gw)))
+            up_.append(sp.pack(_pad(uw)))
+            dp.append(sp.pack(_pad(dn)))
+            if b13 is not None:
+                gb.append(b13[le][0::2])
+                ub.append(b13[le][1::2])
+            if b2 is not None:
+                db.append(b2[le])
+        layer._qbg_gate, layer._qbg_up, layer._qbg_down = sp.stack(gp), sp.stack(up_), sp.stack(dp)
+        layer._qbg_e, layer._qbg_i, layer._qbg_h = e, i_dim, h_dim
+        layer._qbg_mpeI, layer._qbg_hp = ((i_dim + 255) // 256) * 256, ((h_dim + 127) // 128) * 128
+        layer._qbg_mpeH, layer._qbg_ip = ((h_dim + 255) // 256) * 256, ((i_dim + 127) // 128) * 128
+        layer._qbg_gb = torch.stack(gb).float() if gb else None
+        layer._qbg_ub = torch.stack(ub).float() if ub else None
+        layer._qbg_db = torch.stack(db).float() if db else None
+        for attr in ("w13_weight", "w13_weight_scale", "w2_weight", "w2_weight_scale"):
+            p = getattr(layer, attr, None)
+            if p is not None:
+                p.data = torch.empty(0, dtype=p.dtype, device=p.device)
+        torch.cuda.empty_cache()
+        if li == 0:
+            print(f"[qb_sm120] gpt-oss sparse MoE: e={e} I={i_dim} H={h_dim} "
+                  f"(pad gate/up out->{layer._qbg_mpeI} in->{layer._qbg_hp}, down out->{layer._qbg_mpeH} "
+                  f"in->{layer._qbg_ip}) packed 2:4 two-level-NVFP4", flush=True)
+        return None
+
+    def patched_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
+                      shared_experts_input=None):
+        if getattr(layer, "_qbg_gate", None) is None:
+            return orig_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
+                              shared_experts_input)
+        STATS["moe_calls"] += 1
+        sp = _load_sparse_moe()
+        t, h = x.shape
+        topk = topk_ids.shape[1]
+        ii, hh_dim, ee = layer._qbg_i, layer._qbg_h, layer._qbg_e
+        hp, ip = layer._qbg_hp, layer._qbg_ip
+        mpeI, mpeH = layer._qbg_mpeI, layer._qbg_mpeH
+        on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
+        assign = topk_ids.reshape(-1).to(torch.long)
+        tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
+        w_of = topk_weights.reshape(-1).to(torch.float32)
+        emap = getattr(layer, "expert_map", None)
+        if emap is not None:
+            assign = emap[assign]
+            keep = assign >= 0
+            assign, tok_of, w_of = assign[keep], tok_of[keep], w_of[keep]
+        y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+        if assign.numel() == 0:
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input)
+            return y
+        src, eblk, r_pad = sp.build_routing(assign, ee)
+        valid = src >= 0
+        srcc = src.clamp_min(0)
+        row_exp = assign[srcc]
+        xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
+        if on_input:
+            xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+        xsp = torch.zeros(r_pad, hp, device=x.device, dtype=torch.bfloat16)
+        xsp[:, :hh_dim] = xs
+        g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii].float()
+        u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii].float()
+        if layer._qbg_gb is not None:
+            g = g + layer._qbg_gb[row_exp]
+            u = u + layer._qbg_ub[row_exp]
+        hact = _swiglu(g, u)
+        hpad = torch.zeros(r_pad, ip, device=x.device, dtype=torch.bfloat16)
+        hpad[:, :ii] = hact.to(torch.bfloat16)
+        d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim].float()
+        if layer._qbg_db is not None:
+            d = d + layer._qbg_db[row_exp]
+        rw = valid.float() if on_input else (w_of[srcc] * valid.float())
+        y.index_add_(0, tok_of[srcc], (d * rw[:, None]).to(x.dtype))
+        STATS["sparse_expert_calls"] += int(valid.sum().item())
+        if shared_experts is not None and shared_experts_input is not None:
+            shared_experts(shared_experts_input)
+        return y
+
+    GptOssMxfp4MoEMethod.process_weights_after_loading = patched_pw
+    GptOssMxfp4MoEMethod.apply = patched_apply
+    print(f"[qb_sm120] patched GptOssMxfp4MoEMethod (QB_MOE={qb_moe}) pid={os.getpid()}", flush=True)
