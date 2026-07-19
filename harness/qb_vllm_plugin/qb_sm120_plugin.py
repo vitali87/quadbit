@@ -2202,7 +2202,7 @@ def _install_gptoss_moe() -> None:
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
-        hact = _swiglu(g, u).to(torch.bfloat16)
+        hact = g if _abl == "skipswiglu" else _swiglu(g, u).to(torch.bfloat16)
         hpad = hact if ip == ii else _padrows(hact, r_pad, ip, ii, x.device)
         if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
             d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.bfloat16)
