@@ -1962,19 +1962,17 @@ def _install_gptoss_moe() -> None:
         o[:, :real] = xr
         return o
 
-    def _fast_route(assign, e):
-        # EXACT build_routing, vectorized: ONE host sync (r_pad) instead of ~65 (build_routing's
-        # per-expert .item() loop). Rows sorted+128-padded per expert; same src/eblk/r_pad as
-        # sp.build_routing, so downstream math is identical (no drops, no fixed-cap waste). This is the
-        # eager overhead fix -- the per-layer host syncs, not the kernel, are what make more sparse
-        # layers slower than stock Marlin.
+    def _fast_route(assign, e, rpad_max=None):
+        # Vectorized exact routing. rpad_max=None -> exact size via ONE host sync (padc.sum().item());
+        # this sync sits EARLY in the layer and serializes the CPU with the GPU (can't queue the next
+        # layer's kernels), and it was ~43% of the measured MoE time. rpad_max set (from token count, no
+        # .item()) -> SYNC-FREE: over-allocate to the bound (actual padded rows <= rpad_max; tail slots
+        # stay -1 = invalid -> 0), ~3% waste at prefill, but lets the CPU run ahead and overlap.
         _BN = 128
-        # non-stable argsort: intra-expert row order is irrelevant (outputs scatter back by original row
-        # index), and stable sort is far slower. Routing was 43% of the MoE time, argsort the bulk of it.
-        order = torch.argsort(assign)
+        order = torch.argsort(assign)                       # non-stable: intra-expert order is irrelevant
         counts = torch.bincount(assign, minlength=e)
         padc = ((counts + _BN - 1) // _BN) * _BN
-        r_pad = int(padc.sum().item())                      # the single unavoidable host sync
+        r_pad = int(padc.sum().item()) if rpad_max is None else rpad_max
         poff = torch.cumsum(padc, 0) - padc                 # padded start per expert
         coff = torch.cumsum(counts, 0) - counts             # sorted-order start per expert
         sorted_exp = assign[order]
@@ -1984,7 +1982,7 @@ def _install_gptoss_moe() -> None:
         src[dest] = order
         ends = torch.cumsum(padc, 0)
         block_starts = torch.arange(r_pad // _BN, device=assign.device) * _BN
-        eblk = torch.bucketize(block_starts, ends, right=True).to(torch.int32)
+        eblk = torch.bucketize(block_starts, ends, right=True).clamp_max_(e - 1).to(torch.int32)
         return src, eblk, r_pad
 
     def _dense_route(xrows, wd, out_dim, row_exp, present, eblk):
@@ -2184,7 +2182,11 @@ def _install_gptoss_moe() -> None:
             def _lap(k):
                 torch.cuda.synchronize(); n = _tm.perf_counter()
                 STATS[k] = STATS.get(k, 0.0) + (n - _tt[0]); _tt[0] = n
-        src, eblk, r_pad = _fast_route(assign, ee)   # host-sync-free exact routing (1 sync vs ~65)
+        # PREFILL (many tokens): use sync-free over-allocated routing so the r_pad .item() host sync
+        # (which serializes CPU<->GPU and was ~43% of MoE time) is gone; ~3% row waste. DECODE (few
+        # tokens): the over-alloc bound e*128 dwarfs the real rows, so keep the exact 1-sync path.
+        _rmax = (((t * topk + ee * 128) + 127) // 128) * 128
+        src, eblk, r_pad = _fast_route(assign, ee, _rmax if t >= 512 else None)
         valid = src >= 0
         srcc = src.clamp_min(0)
         row_exp = assign[srcc]
