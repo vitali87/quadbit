@@ -58,7 +58,7 @@ def _ensure_so() -> None:
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
-        batch_prefill: int = 16, max_batched: int = 16384) -> None:
+        batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False) -> None:
     import time
 
     import torch
@@ -79,57 +79,58 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     llm = LLM(**kw)
     print(f"  load+init ok in {time.time() - t0:.0f}s", flush=True)
 
-    prompts = ["The capital of France is", "def fibonacci(n):",
-               "The three primary colors are", "Water is made of hydrogen and"]
-    outs = llm.generate(prompts, SamplingParams(temperature=0.0, max_tokens=32))
-    for o in outs:
-        print(f"  [gen] {o.prompt!r} -> {o.outputs[0].text!r}", flush=True)
-
-    pids = llm.get_tokenizer().encode(PASSAGE)
-    pout = llm.generate([{"prompt_token_ids": pids}],
-                        SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
-    plp = pout[0].prompt_logprobs or []
-    nlls = [-d[tid].logprob for tid, d in zip(pids[1:], plp[1:], strict=False)
-            if d and tid in d and math.isfinite(d[tid].logprob)]
-    ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
-    print(f"# PPL over {len(nlls)}-token passage: {ppl:.3f}", flush=True)
-
-    # --- throughput (prefill + decode, B=1) and peak memory ---
     tok = llm.get_tokenizer()
     base = tok.encode(PASSAGE)
-    for plen in (512, 1536):
-        gen = 64
-        plen = min(plen, max_len - gen - 8)
-        if plen <= 0:
-            continue
-        ptoks = (base * ((plen // len(base)) + 1))[:plen]
-        try:
-            tp0 = time.time()
-            llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=1))
-            prefill_s = time.time() - tp0
-            td0 = time.time()
-            dout = llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=gen))
-            dec_s = time.time() - td0
-            gtok = len(dout[0].outputs[0].token_ids)
-            dec_only = max(1e-6, dec_s - prefill_s)
-            steps = max(1, gtok - 1)
-            print(f"# serve B=1 prompt={plen}: prefill {plen / prefill_s:.0f} tok/s, "
-                  f"decode {steps / dec_only:.1f} tok/s", flush=True)
-        except Exception as e:  # noqa: BLE001 - timing must not abort the eval
-            print(f"# timing skipped prompt={plen} ({type(e).__name__}: {e})", flush=True)
-    print(f"# peak GPU mem {torch.cuda.max_memory_allocated() / 1e9:.1f} GB", flush=True)
+    ppl = float("nan")
+    if not bench_only:
+        prompts = ["The capital of France is", "def fibonacci(n):",
+                   "The three primary colors are", "Water is made of hydrogen and"]
+        outs = llm.generate(prompts, SamplingParams(temperature=0.0, max_tokens=32))
+        for o in outs:
+            print(f"  [gen] {o.prompt!r} -> {o.outputs[0].text!r}", flush=True)
+
+        pout = llm.generate([{"prompt_token_ids": base}],
+                            SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0))
+        plp = pout[0].prompt_logprobs or []
+        nlls = [-d[tid].logprob for tid, d in zip(base[1:], plp[1:], strict=False)
+                if d and tid in d and math.isfinite(d[tid].logprob)]
+        ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
+        print(f"# PPL over {len(nlls)}-token passage: {ppl:.3f}", flush=True)
+
+        # --- throughput (prefill + decode, B=1) ---
+        for plen in (512, 1536):
+            gen = 64
+            plen = min(plen, max_len - gen - 8)
+            if plen <= 0:
+                continue
+            ptoks = (base * ((plen // len(base)) + 1))[:plen]
+            try:
+                tp0 = time.time()
+                llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=1))
+                prefill_s = time.time() - tp0
+                td0 = time.time()
+                dout = llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=gen))
+                dec_s = time.time() - td0
+                gtok = len(dout[0].outputs[0].token_ids)
+                dec_only = max(1e-6, dec_s - prefill_s)
+                steps = max(1, gtok - 1)
+                print(f"# serve B=1 prompt={plen}: prefill {plen / prefill_s:.0f} tok/s, "
+                      f"decode {steps / dec_only:.1f} tok/s", flush=True)
+            except Exception as e:  # noqa: BLE001 - timing must not abort the eval
+                print(f"# timing skipped prompt={plen} ({type(e).__name__}: {e})", flush=True)
 
     # --- large-batch prefill throughput: the COMPUTE-BOUND regime where 2:4 sparse wins (many
     # tokens/expert -> large-M MoE GEMMs). B=1 above is memory-bound + overhead-bound (our worst case). ---
-    big = (base * ((max_len // len(base)) + 1))[:max_len]
+    S = max_len - 16  # leave room for the +1 output token (prompt+out must be <= max_model_len)
+    big = (base * ((S // len(base)) + 1))[:S]
     reqs = [{"prompt_token_ids": big} for _ in range(batch_prefill)]
-    ntok = batch_prefill * max_len
+    ntok = batch_prefill * S
     try:
         llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1))  # warm
         t0 = time.time()
         llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1))
         dt = time.time() - t0
-        print(f"# LARGE-BATCH prefill B={batch_prefill} S={max_len} ({ntok} tok, ~{ntok // 32} tok/expert): "
+        print(f"# LARGE-BATCH prefill B={batch_prefill} S={S} ({ntok} tok, ~{ntok // 32} tok/expert): "
               f"{ntok / dt:.0f} tok/s ({dt:.2f}s)", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"# large-batch prefill skipped ({type(e).__name__}: {e})", flush=True)
