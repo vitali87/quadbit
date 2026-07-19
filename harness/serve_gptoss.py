@@ -59,7 +59,7 @@ def _ensure_so() -> None:
               secrets=[modal.Secret.from_name("huggingface")])
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
         batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False,
-        graph: bool = False, graph_cap: int = 256) -> None:
+        graph: bool = False, graph_cap: int = 256, ablate: str = "") -> None:
     import time
 
     import torch
@@ -73,6 +73,8 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     if graph:  # capture-legal MoE path + let vLLM CUDA-graph the forward
         os.environ["QB_GRAPH"] = "1"
         os.environ["QB_GRAPH_CAP"] = str(graph_cap)
+    if ablate:
+        os.environ["QB_GPTOSS_ABLATE"] = ablate
     _ensure_so()
     print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} proj={proj} sparse_from={sparse_from} "
           f"graph={graph} cap={graph_cap if graph else 0} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
