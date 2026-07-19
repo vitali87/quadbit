@@ -840,7 +840,8 @@ __global__ void __launch_bounds__(256)
 matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
               const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
               __nv_bfloat16 *C, int M, int Mpe, int N, int Klog,
-              const float *gA, const float *gB, const int *eblk, int outT) {
+              const float *gA, const float *gB, const int *eblk, int outT,
+              const int *sc_tok, const float *sc_w, const __nv_bfloat16 *bias, float *Out, int Hout) {
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -1007,9 +1008,25 @@ matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ 
             }
         __syncthreads();
         int base_m = blockIdx.y * (2 * BM), base_n = blockIdx.x * BN;       // C is [N, Mpe] (local out)
+        if (outT == 2) {
+            // FUSED down epilogue: add per-expert bias, weight by routing coeff, scatter-add to token rows.
+            // Collapses the seg-down + (d*w) + index_add plumbing into the GEMM tail. Out[tok, Hout] is f32
+            // (pre-zeroed by caller); sc_tok[rr]<0 marks padding rows; f>=Hout are padded features (skip).
+            int e = eblk[blockIdx.x], f = base_m + tid;
+            if (f < Hout) {
+                float bb = bias ? __bfloat162float(bias[(size_t)e * Hout + f]) : 0.f;
 #pragma unroll
-        for (int col = 0; col < BN; col++)
-            C[(size_t)(base_n + col) * Mpe + base_m + tid] = Cs[col * (2 * BM) + tid];
+                for (int col = 0; col < BN; col++) {
+                    int rr = base_n + col, tok = sc_tok[rr];
+                    if (tok < 0) continue;
+                    atomicAdd(&Out[(size_t)tok * Hout + f], (__bfloat162float(Cs[col * (2 * BM) + tid]) + bb) * sc_w[rr]);
+                }
+            }
+        } else {
+#pragma unroll
+            for (int col = 0; col < BN; col++)
+                C[(size_t)(base_n + col) * Mpe + base_m + tid] = Cs[col * (2 * BM) + tid];
+        }
     }
 }
 
@@ -1021,7 +1038,9 @@ extern "C" void qb_init_moe_attrs() { std::call_once(g_moe_attr_once, set_moe_at
 // outT=1 -> C is [N, Mpe] token-major (feeds swiglu / combine).
 static inline void run_moe_mm(const void *A, const void *B, const void *scaleA, const void *scaleB,
                               const void *meta, void *C, int Mtot, int Mpe, int N, int Klog,
-                              const void *gA, const void *gB, const int *eblk, int outT, cudaStream_t stream) {
+                              const void *gA, const void *gB, const int *eblk, int outT, cudaStream_t stream,
+                              const int *sc_tok = nullptr, const float *sc_w = nullptr,
+                              const void *bias = nullptr, void *Out = nullptr, int Hout = 0) {
     int KAb = Klog / 4, KBb = Klog / 2;
     alignas(64) CUtensorMap mapA, mapB;
     mk(&mapA, (uint8_t *)A, KAb, Mtot, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
@@ -1030,12 +1049,25 @@ static inline void run_moe_mm(const void *A, const void *B, const void *scaleA, 
     dim3 grid(N / BN, Mpe / (2 * BM)), block(256);
     matmul_sp_moe<<<grid, block, SMEM, stream>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
                                                  (const uint32_t *)meta, (__nv_bfloat16 *)C, Mtot, Mpe, N, Klog,
-                                                 (const float *)gA, (const float *)gB, eblk, outT);
+                                                 (const float *)gA, (const float *)gB, eblk, outT,
+                                                 sc_tok, sc_w, (const __nv_bfloat16 *)bias, (float *)Out, Hout);
 }
 extern "C" int sparse_moe_mm_2lvl(const void *A, const void *B, const void *scaleA, const void *scaleB,
                                   const void *meta, void *C, int Mtot, int Mpe, int N, int Klog,
                                   const void *gA, const void *gB, const void *eblk, int outT, void *stream) {
     run_moe_mm(A, B, scaleA, scaleB, meta, C, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, outT, (cudaStream_t)stream);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+// FUSED down: seg-GEMM whose epilogue adds per-expert bias, applies routing weight, and scatter-adds
+// (atomic, f32) into Out[N_tok, Hout]. Caller pre-zeroes Out. Collapses down-seg + (d*w) + index_add.
+// sc_tok[rr] = destination token of routed row rr (-1 for padding); sc_w[rr] = routing weight.
+extern "C" int sparse_moe_mm_2lvl_scatter(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                          const void *meta, int Mtot, int Mpe, int N, int Klog,
+                                          const void *gA, const void *gB, const void *eblk,
+                                          const void *sc_tok, const void *sc_w, const void *bias, void *Out,
+                                          int Hout, void *stream) {
+    run_moe_mm(A, B, scaleA, scaleB, meta, nullptr, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, 2,
+               (cudaStream_t)stream, (const int *)sc_tok, (const float *)sc_w, bias, Out, Hout);
     return stream ? 0 : (int)cudaDeviceSynchronize();
 }
 
