@@ -2172,6 +2172,8 @@ def _install_gptoss_moe() -> None:
             if shared_experts is not None and shared_experts_input is not None:
                 shared_experts(shared_experts_input)
             return y
+        if os.environ.get("QB_GPTOSS_ABLATE", "") == "skipall":  # base-model timing: MoE contributes zero
+            return y                                             # (full-skipseg=quant+matmul; skipseg-skipall=gather+swiglu+scatter)
         src, eblk, r_pad = _fast_route(assign, ee)   # host-sync-free exact routing (1 sync vs ~65)
         valid = src >= 0
         srcc = src.clamp_min(0)
