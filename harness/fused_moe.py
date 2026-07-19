@@ -215,6 +215,8 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
                                                + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
                                          + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
+                                          + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.qb_init_moe_attrs()
     lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
@@ -458,6 +460,20 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     print(f"# CORRECTNESS full-fused MoE vs unfused MoE (end-to-end): cos={c_full:.5f} "
           f"{'OK' if c_full > 0.99 else 'CHECK'}", flush=True)
 
+    # bw-down correctness: fused bias+weight (coalesced, outT=3) + index_add vs the reference `ref`
+    Hw2, sH2 = gemm1_fused()
+    acd_, metad_, sAd_, gad_ = dS
+    sc_w_chk = (w_of[srcc] * valid.float()).contiguous()
+    dbuf_bw = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=dev)
+    lib.sparse_moe_mm_2lvl_bw(acd_.data_ptr(), Hw2.data_ptr(), sAd_.data_ptr(), sH2.data_ptr(), metad_.data_ptr(),
+                              dbuf_bw.data_ptr(), acd_.shape[0], mpeH, r_pad, Ip, gad_.data_ptr(), 0, eblk.data_ptr(),
+                              sc_w_chk.data_ptr(), dBias_s.data_ptr(), H, 0)
+    y_bw = torch.zeros(tokens, H, dtype=torch.bfloat16, device=dev)
+    y_bw.index_add_(0, tok_of[srcc], dbuf_bw[:, :H])
+    c_bw = F.cosine_similarity(y_bw.flatten().float(), ref.flatten().float(), dim=0).item()
+    print(f"# CORRECTNESS bw-down (coalesced bias+weight + index_add) vs unfused ref: cos={c_bw:.5f} "
+          f"{'OK' if c_bw > 0.99 else 'CHECK'}", flush=True)
+
     t_g1un = bench(gemm1_unfused)
     t_g1fu = bench(gemm1_fused)
     print(f"# TIMING GEMM1 (gate_up+swiglu+quant)  unfused={t_g1un:.3f}ms  fused={t_g1fu:.3f}ms  "
@@ -481,4 +497,66 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     t_gather = bench(gather_only)
     print(f"# TIMING gather (bbx[idx]+sbx[:,idx,:]+gbx[idx]) = {t_gather:.3f}ms  "
           f"({100 * t_gather / t_moe_fu:.0f}% of fused whole-MoE) -- the shared fast_gu/fused wall", flush=True)
+
+    # ---- TRUE serve per-phase split via CUDA EVENTS (GPU timeline, NO cpu-sync inflation that falsely
+    # blamed routing). Replicates the plugin fast_fused path exactly: route -> quant x -> gather -> GEMM1
+    # -> down(seg+bias) -> index_add. This decides which fusion actually pays before building it. ----
+    _rmax = (((tokens * topk + n_experts * 128) + 127) // 128) * 128
+    dB_stack = torch.stack(dB_)  # [E,H] float, for the bias add
+
+    def fast_route(assign):
+        order = torch.argsort(assign)
+        counts = torch.bincount(assign, minlength=n_experts)
+        padc = ((counts + 127) // 128) * 128
+        poff = torch.cumsum(padc, 0) - padc; coff = torch.cumsum(counts, 0) - counts
+        se = assign[order]; within = torch.arange(order.numel(), device=dev) - coff[se]
+        src2 = torch.full((_rmax,), -1, dtype=torch.long, device=dev)
+        src2[poff[se] + within] = order
+        ends = torch.cumsum(padc, 0)
+        eblk2 = torch.bucketize(torch.arange(_rmax // 128, device=dev) * 128, ends, right=True).clamp_max_(n_experts - 1).to(torch.int32)
+        return src2, eblk2
+
+    acg, metag, sAg, gag = guS_fused
+    acd, metad, sAd, gad = dS
+    names = ["route", "quant", "gather", "gemm1", "down", "scatter"]
+    acc_ms = [0.0] * 6
+    NREP = 20
+    for _ in range(NREP + 3):
+        ev = [torch.cuda.Event(enable_timing=True) for _ in range(7)]
+        ev[0].record()
+        assign2 = topk_ids.reshape(-1).to(torch.long)
+        tok2 = torch.arange(tokens, device=dev).repeat_interleave(topk)
+        w2 = topk_w.reshape(-1).float()
+        src2, eblk2 = fast_route(assign2)
+        valid2 = src2 >= 0; srcc2 = src2.clamp_min(0); row_exp2 = assign2[srcc2]
+        ev[1].record()
+        bbx2, sbx2, gbx2 = quant_act(x, H)
+        ev[2].record()
+        idx2 = tok2[srcc2]
+        bb_g = bbx2[idx2].contiguous(); sb_g = sbx2[:, idx2, :].contiguous()
+        gb_g = (gbx2[idx2] * valid2.float()).contiguous()
+        ev[3].record()
+        Hw = torch.empty((_rmax, Ih // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Ih // 128, _rmax, 4), dtype=torch.uint8, device=dev)
+        lib.sparse_moe_gu_swiglu(acg.data_ptr(), bb_g.data_ptr(), sAg.data_ptr(), sb_g.data_ptr(), metag.data_ptr(),
+                                 acg.shape[0], mpe_gu, _rmax, Hp, gag.data_ptr(), gb_g.data_ptr(), eblk2.data_ptr(),
+                                 guBias_fused.data_ptr(), Hw.data_ptr(), sH.data_ptr(), Ih, 0)
+        ev[4].record()
+        sc_w2 = (w2[srcc2] * valid2.float()).contiguous()
+        dbuf = torch.empty((_rmax, mpeH), dtype=torch.bfloat16, device=dev)
+        lib.sparse_moe_mm_2lvl_bw(acd.data_ptr(), Hw.data_ptr(), sAd.data_ptr(), sH.data_ptr(), metad.data_ptr(),
+                                  dbuf.data_ptr(), acd.shape[0], mpeH, _rmax, Ip, gad.data_ptr(), 0, eblk2.data_ptr(),
+                                  sc_w2.data_ptr(), dBias_s.data_ptr(), H, 0)  # down-GEMM + fused bias+weight, coalesced
+        ev[5].record()
+        y = torch.zeros(tokens, H, dtype=torch.bfloat16, device=dev)
+        y.index_add_(0, idx2, dbuf[:, :H])
+        ev[6].record()
+        torch.cuda.synchronize()
+        for i in range(6):
+            acc_ms[i] += ev[i].elapsed_time(ev[i + 1])
+    tot = sum(acc_ms)
+    print("# ===== TRUE serve per-phase (CUDA events, per-layer, median-ish over reps) =====", flush=True)
+    for nm, a in zip(names, acc_ms, strict=False):
+        print(f"#   {nm:8s} {a / (NREP + 3):6.3f}ms  ({100 * a / tot:4.1f}%)", flush=True)
+    print(f"#   TOTAL    {tot / (NREP + 3):6.3f}ms/layer   (kernels gemm1+down vs plumbing route+quant+gather+scatter)", flush=True)
     print("# fused_moe done", flush=True)

@@ -1018,6 +1018,20 @@ matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ 
                     atomicAdd(&Out[(size_t)tok * Hout + f], (__bfloat162float(Cs[col * (2 * BM) + tid]) + bb) * sc_w[rr]);
                 }
             }
+        } else if (outT == 3) {
+            // FUSED bias+weight, COALESCED (no atomics): C[row,f] = (down_out + bias[e,f]) * sc_w[row], bf16.
+            // Removes the torch bias-gather (E,H -> r_pad,H materialization) + weight-mul + fp32 convert that
+            // dominate the down side (~40% of MoE); the caller then does ONE index_add of this bf16 output.
+            // Write stays coalesced across f (tid), so it keeps outT=1's memory pattern -- unlike the outT=2
+            // atomic scatter which was uncoalesced and slower than torch index_add.
+            int e = eblk[blockIdx.x], f = base_m + tid;
+            float bval = (bias && f < Hout) ? __bfloat162float(bias[(size_t)e * Hout + f]) : 0.f;
+#pragma unroll
+            for (int col = 0; col < BN; col++) {
+                int row = base_n + col;
+                C[(size_t)row * Mpe + f] =
+                    __float2bfloat16((__bfloat162float(Cs[col * (2 * BM) + tid]) + bval) * sc_w[row]);
+            }
         } else {
 #pragma unroll
             for (int col = 0; col < BN; col++)
@@ -1064,6 +1078,17 @@ extern "C" int sparse_moe_mm_2lvl_scatter(const void *A, const void *B, const vo
                                           int Hout, void *stream) {
     run_moe_mm(A, B, scaleA, scaleB, meta, nullptr, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, 2,
                (cudaStream_t)stream, (const int *)sc_tok, (const float *)sc_w, bias, Out, Hout);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+// FUSED bias+weight down (outT=3, COALESCED): C[N,Mpe] bf16 = (down-GEMM + bias[expert,feature]) * sc_w[row].
+// Fuses the per-expert bias add + routing-weight multiply into the down GEMM's coalesced epilogue, killing the
+// torch bias-gather (E,H -> N,H) + fp32 convert + multiply. Caller then does ONE index_add(y, idx, C[:, :H]).
+extern "C" int sparse_moe_mm_2lvl_bw(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                     const void *meta, void *C, int Mtot, int Mpe, int N, int Klog,
+                                     const void *gA, const void *gB, const void *eblk, const void *sc_w,
+                                     const void *bias, int Hout, void *stream) {
+    run_moe_mm(A, B, scaleA, scaleB, meta, C, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, 3,
+               (cudaStream_t)stream, nullptr, (const float *)sc_w, bias, nullptr, Hout);
     return stream ? 0 : (int)cudaDeviceSynchronize();
 }
 

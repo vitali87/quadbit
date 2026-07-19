@@ -1063,6 +1063,8 @@ def _load_sparse_moe():
                                          + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_scatter.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
                                                + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
+                                          + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.qb_init_moe_attrs()
     lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
@@ -1246,10 +1248,19 @@ def _load_sparse_moe():
                                        eblk.data_ptr(), sc_tok.data_ptr(), sc_w.data_ptr(),
                                        bias.data_ptr() if bias is not None else 0, out.data_ptr(), hout, _st())
 
+    def seg_bw(w, bb, sb, c, mpe, r, in_f, eblk, sc_w, bias, hout):
+        # FUSED bias+weight down (COALESCED, outT=3): c[r,mpe] bf16 = (down-GEMM + bias[e,f]) * sc_w[row].
+        # Kills the torch bias-gather (E,H->r,H) + fp32 convert + weight-mul (the ~40% down-side plumbing);
+        # caller does ONE index_add of c. gB=1 (single-level h -> nullptr).
+        ac, meta, sa, ga = w
+        lib.sparse_moe_mm_2lvl_bw(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(), meta.data_ptr(),
+                                  c.data_ptr(), ac.shape[0], mpe, r, in_f, ga.data_ptr(), 0, eblk.data_ptr(),
+                                  sc_w.data_ptr(), bias.data_ptr() if bias is not None else 0, hout, _st())
+
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
                               seg_gemm=seg_gemm, build_routing=build_routing,
                               quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap,
-                              gu_swiglu=gu_swiglu, down_scatter=down_scatter)
+                              gu_swiglu=gu_swiglu, down_scatter=down_scatter, seg_bw=seg_bw)
     return _SPARSE
 
 
@@ -2255,18 +2266,15 @@ def _install_gptoss_moe() -> None:
                          eblk, layer._qbg_gu_bias_fused, ih)
             if _prof:
                 _lap("t_gu_f")
-            # DOWN: read the fused FP4 h directly (gB=1 single-level -> ones) via the proven seg_into +
-            # index_add path. The atomic scatter-into-fp32 epilogue REGRESSED serve (uncoalesced atomics +
-            # an extra fp32->bf16 pass at 130k rows) despite winning offline; keep GEMM1 fusion, proven down.
-            gb1 = torch.ones(r_pad, dtype=torch.float32, device=x.device)
+            # DOWN: fused bias+routing-weight in the down GEMM's COALESCED epilogue (seg_bw), then ONE
+            # index_add. The true per-phase split (CUDA events) showed the down-side bias-gather (db[row_exp]
+            # = r_pad x H materialization) + fp32-convert + weight-mul is ~40% of the MoE; seg_bw folds all of
+            # it into the GEMM tail (coalesced, NOT the outT=2 atomic scatter which was uncoalesced + lost).
+            sc_w = (w_of[srcc] * valid.to(torch.float32))
             dbuf = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=x.device)
-            sp.seg_into(layer._qbg_down, hw, sh, gb1, dbuf, mpeH, ip, eblk)
-            d = dbuf[:, :hh_dim]
-            if layer._qbg_db is not None:
-                d = d + layer._qbg_db[row_exp]
-            rw = (w_of[srcc] * valid.to(torch.float32))
-            y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
-            y.index_add_(0, idx, (d.float() * rw[:, None]).to(x.dtype))
+            sp.seg_bw(layer._qbg_down, hw, sh, dbuf, mpeH, r_pad, ip, eblk, sc_w, layer._qbg_db, hh_dim)
+            y = torch.zeros(t, hh_dim, dtype=torch.bfloat16, device=x.device)
+            y.index_add_(0, idx, dbuf[:, :hh_dim])
             if _prof:
                 _lap("t_down_f")
                 if STATS["moe_calls"] % 48 == 0:
