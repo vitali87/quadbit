@@ -2091,6 +2091,8 @@ def _install_gptoss_moe() -> None:
         if STATS["moe_calls"] == 1:
             print(f"[qb_sm120] gpt-oss SPARSE apply LIVE: x={tuple(x.shape)} topk={topk} experts={ee} "
                   f"I={ii} H={hh_dim} pack_gu={layer._qbg_pack_gu} pack_dn={layer._qbg_pack_dn} "
+                  f"on_input={bool(getattr(layer, 'apply_router_weight_on_input', False))} "
+                  f"apply_rw_attr={getattr(layer, 'apply_router_weight_on_input', 'MISSING')} "
                   f"pid={os.getpid()}", flush=True)
         hp, ip = layer._qbg_hp, layer._qbg_ip
         mpeI, mpeH = layer._qbg_mpeI, layer._qbg_mpeH
