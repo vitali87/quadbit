@@ -2180,7 +2180,12 @@ def _install_gptoss_moe() -> None:
             xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
         xsp = torch.zeros(r_pad, hp, device=x.device, dtype=torch.bfloat16)
         xsp[:, :hh_dim] = xs
-        if layer._qbg_pack_gu:
+        _abl = os.environ.get("QB_GPTOSS_ABLATE", "")  # skipseg -> zeros for the sparse matmul (isolates
+        # routing/quant/scatter overhead from the kernel); skipquant handled inside quant path if needed
+        if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
+            g = torch.zeros(r_pad, ii, device=x.device, dtype=torch.float32)
+            u = torch.zeros(r_pad, ii, device=x.device, dtype=torch.float32)
+        elif layer._qbg_pack_gu:
             g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii].float()
             u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii].float()
         else:  # gate_up anchored dense (the tax-carrying projection)
@@ -2192,7 +2197,9 @@ def _install_gptoss_moe() -> None:
         hact = _swiglu(g, u)
         hpad = torch.zeros(r_pad, ip, device=x.device, dtype=torch.bfloat16)
         hpad[:, :ii] = hact.to(torch.bfloat16)
-        if layer._qbg_pack_dn:
+        if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
+            d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.float32)
+        elif layer._qbg_pack_dn:
             d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim].float()
         else:  # down anchored dense
             d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present, eblk)
