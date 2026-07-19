@@ -1957,33 +1957,71 @@ def _install_gptoss_moe() -> None:
         up = up.clamp(-7.0, 7.0)
         return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
 
+    def _dense_route(xrows, wd, out_dim, row_exp, present):
+        # dense bf16 grouped matmul for an anchored (kept-dense) projection. wd [E,out,in]; xrows
+        # [R, in_pad>=in] -> [R, out] float. Expert-blocked (rows are contiguous per expert from
+        # build_routing, but we mask to be robust). Used only for the projection kept dense.
+        in_w = wd.shape[2]
+        out = torch.zeros(xrows.shape[0], out_dim, device=xrows.device, dtype=torch.float32)
+        xf = xrows[:, :in_w].to(torch.bfloat16)
+        for ex in present:
+            m = row_exp == ex
+            if bool(m.any()):
+                out[m] = (xf[m] @ wd[int(ex)].t().to(torch.bfloat16)).float()
+        return out
+
     def patched_pw(self, layer):
-        sp = _load_sparse_moe()
         global _PW_IDX
         li = _PW_IDX
         _PW_IDX += 1
         layer._qbg_idx = li
-        w13, w13s = layer.w13_weight, layer.w13_weight_scale   # [E,2I,H//2] , [E,2I,H//32]
-        w2, w2s = layer.w2_weight, layer.w2_weight_scale       # [E,H,I//2]  , [E,H,I//32]
+        sparse_from = int(os.environ.get("QB_SPARSE_FROM", "0"))   # prefix-optimal: sparsify li>=this
+        proj = os.environ.get("QB_SPARSE_PROJ", "both").lower()     # both|down|gateup (tax lives in gate_up)
+        # dense-anchor EARLY layers to the native gpt-oss MXFP4 path (stock quality, no packing).
+        if li < sparse_from:
+            orig_pw(self, layer)
+            layer._qbg_native = True
+            if li == 0:
+                print(f"[qb_sm120] gpt-oss anchor layers <{sparse_from} = native MXFP4 (dense)", flush=True)
+            return None
+        sp = _load_sparse_moe()
+        pack_gu = proj in ("both", "gateup")
+        pack_dn = proj in ("both", "down")
+        w13, w13s = layer.w13_weight, layer.w13_weight_scale
+        w2, w2s = layer.w2_weight, layer.w2_weight_scale
         b13 = getattr(layer, "w13_bias", None)
         b2 = getattr(layer, "w2_bias", None)
         e = w13.shape[0]
         gp, up_, dp, gb, ub, db = [], [], [], [], [], []
+        gd, ud, dd = [], [], []   # kept-dense bf16 weights (for the anchored projection)
         i_dim = h_dim = 0
         for le in range(e):
-            gu = _mxfp4_dequant(w13[le], w13s[le]).float()     # [2I, H]
-            dn = _mxfp4_dequant(w2[le], w2s[le]).float()       # [H, I]
-            gw, uw = gu[0::2, :], gu[1::2, :]                  # de-interleave fused gate/up
+            gu = _mxfp4_dequant(w13[le], w13s[le]).float()
+            dn = _mxfp4_dequant(w2[le], w2s[le]).float()
+            gw, uw = gu[0::2, :], gu[1::2, :]
             i_dim, h_dim = gw.shape[0], gw.shape[1]
-            gp.append(sp.pack(_pad(gw)))
-            up_.append(sp.pack(_pad(uw)))
-            dp.append(sp.pack(_pad(dn)))
+            if pack_gu:
+                gp.append(sp.pack(_pad(gw)))
+                up_.append(sp.pack(_pad(uw)))
+            else:
+                gd.append(gw.to(torch.bfloat16))
+                ud.append(uw.to(torch.bfloat16))
+            if pack_dn:
+                dp.append(sp.pack(_pad(dn)))
+            else:
+                dd.append(dn.to(torch.bfloat16))
             if b13 is not None:
                 gb.append(b13[le][0::2])
                 ub.append(b13[le][1::2])
             if b2 is not None:
                 db.append(b2[le])
-        layer._qbg_gate, layer._qbg_up, layer._qbg_down = sp.stack(gp), sp.stack(up_), sp.stack(dp)
+        layer._qbg_gate = sp.stack(gp) if pack_gu else None
+        layer._qbg_up = sp.stack(up_) if pack_gu else None
+        layer._qbg_down = sp.stack(dp) if pack_dn else None
+        layer._qbg_gate_d = torch.stack(gd) if gd else None
+        layer._qbg_up_d = torch.stack(ud) if ud else None
+        layer._qbg_down_d = torch.stack(dd) if dd else None
+        layer._qbg_pack_gu, layer._qbg_pack_dn = pack_gu, pack_dn
         layer._qbg_e, layer._qbg_i, layer._qbg_h = e, i_dim, h_dim
         layer._qbg_mpeI, layer._qbg_hp = ((i_dim + 255) // 256) * 256, ((h_dim + 127) // 128) * 128
         layer._qbg_mpeH, layer._qbg_ip = ((h_dim + 255) // 256) * 256, ((i_dim + 127) // 128) * 128
@@ -1995,15 +2033,18 @@ def _install_gptoss_moe() -> None:
             if p is not None:
                 p.data = torch.empty(0, dtype=p.dtype, device=p.device)
         torch.cuda.empty_cache()
-        if li == 0:
-            print(f"[qb_sm120] gpt-oss sparse MoE: e={e} I={i_dim} H={h_dim} "
-                  f"(pad gate/up out->{layer._qbg_mpeI} in->{layer._qbg_hp}, down out->{layer._qbg_mpeH} "
-                  f"in->{layer._qbg_ip}) packed 2:4 two-level-NVFP4", flush=True)
+        if li == sparse_from:
+            print(f"[qb_sm120] gpt-oss sparse MoE from layer {sparse_from} proj={proj}: e={e} "
+                  f"I={i_dim} H={h_dim} pack_gu={pack_gu} pack_dn={pack_dn} "
+                  f"(anchored projection kept dense bf16)", flush=True)
         return None
 
     def patched_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
                       shared_experts_input=None):
-        if getattr(layer, "_qbg_gate", None) is None:
+        if getattr(layer, "_qbg_native", False):
+            return orig_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
+                              shared_experts_input)
+        if getattr(layer, "_qbg_e", None) is None:
             return orig_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
                               shared_experts_input)
         STATS["moe_calls"] += 1
@@ -2011,9 +2052,10 @@ def _install_gptoss_moe() -> None:
         t, h = x.shape
         topk = topk_ids.shape[1]
         ii, hh_dim, ee = layer._qbg_i, layer._qbg_h, layer._qbg_e
-        if STATS["moe_calls"] == 1:  # one-time proof the sparse kernel path is LIVE (worker process)
-            print(f"[qb_sm120] gpt-oss SPARSE apply LIVE (kernel path): x={tuple(x.shape)} "
-                  f"topk={topk} experts={ee} I={ii} H={hh_dim} pid={os.getpid()}", flush=True)
+        if STATS["moe_calls"] == 1:
+            print(f"[qb_sm120] gpt-oss SPARSE apply LIVE: x={tuple(x.shape)} topk={topk} experts={ee} "
+                  f"I={ii} H={hh_dim} pack_gu={layer._qbg_pack_gu} pack_dn={layer._qbg_pack_dn} "
+                  f"pid={os.getpid()}", flush=True)
         hp, ip = layer._qbg_hp, layer._qbg_ip
         mpeI, mpeH = layer._qbg_mpeI, layer._qbg_mpeH
         on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
@@ -2034,20 +2076,28 @@ def _install_gptoss_moe() -> None:
         valid = src >= 0
         srcc = src.clamp_min(0)
         row_exp = assign[srcc]
+        present = row_exp[valid].unique() if bool(valid.any()) else row_exp[:0]
         xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
         if on_input:
             xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
         xsp = torch.zeros(r_pad, hp, device=x.device, dtype=torch.bfloat16)
         xsp[:, :hh_dim] = xs
-        g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii].float()
-        u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii].float()
+        if layer._qbg_pack_gu:
+            g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii].float()
+            u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii].float()
+        else:  # gate_up anchored dense (the tax-carrying projection)
+            g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present)
+            u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present)
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
         hact = _swiglu(g, u)
         hpad = torch.zeros(r_pad, ip, device=x.device, dtype=torch.bfloat16)
         hpad[:, :ii] = hact.to(torch.bfloat16)
-        d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim].float()
+        if layer._qbg_pack_dn:
+            d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim].float()
+        else:  # down anchored dense
+            d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present)
         if layer._qbg_db is not None:
             d = d + layer._qbg_db[row_exp]
         rw = valid.float() if on_input else (w_of[srcc] * valid.float())

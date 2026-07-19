@@ -57,7 +57,7 @@ def _ensure_so() -> None:
 
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def run(moe: str = "sparse", max_len: int = 2048) -> None:
+def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048) -> None:
     import time
 
     import torch
@@ -65,10 +65,12 @@ def run(moe: str = "sparse", max_len: int = 2048) -> None:
 
     os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     os.environ["QB_MOE"] = moe
-    os.environ["QB_SPARSE_PROJ"] = "both"
+    os.environ["QB_SPARSE_PROJ"] = proj          # both|down|gateup (tax lives in gate_up -> down recovers)
+    os.environ["QB_SPARSE_FROM"] = str(sparse_from)  # prefix-optimal: sparsify layers >= this, anchor earlier
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     _ensure_so()
-    print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+    print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} proj={proj} sparse_from={sparse_from} "
+          f"on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
 
     kw = dict(model=MODEL, tensor_parallel_size=1, enforce_eager=True, trust_remote_code=True,
               max_model_len=max_len, gpu_memory_utilization=0.90, max_num_batched_tokens=max_len)
@@ -97,4 +99,4 @@ def run(moe: str = "sparse", max_len: int = 2048) -> None:
               f"sparse_expert_calls={qb.STATS.get('sparse_expert_calls')}", flush=True)
     except Exception as ex:  # noqa: BLE001
         print(f"# STATS unavailable: {type(ex).__name__}: {ex}", flush=True)
-    print(f"# gpt-oss serve done (QB_MOE={moe}, PPL={ppl:.3f})", flush=True)
+    print(f"# gpt-oss serve done (QB_MOE={moe} proj={proj} sparse_from={sparse_from}, PPL={ppl:.3f})", flush=True)
