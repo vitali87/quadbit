@@ -2213,6 +2213,8 @@ def _install_gptoss_moe() -> None:
         if layer._qbg_db is not None:
             d = d + layer._qbg_db[row_exp]
         rw = valid.to(x.dtype) if on_input else (w_of[srcc].to(x.dtype) * valid.to(x.dtype))
+        if _abl == "skipscatter":   # everything but the final index_add (isolates scatter cost)
+            return y
         y.index_add_(0, tok_of[srcc], (d * rw[:, None]).to(x.dtype))
         # NOTE: the old `STATS["sparse_expert_calls"] += int(valid.sum().item())` was a host sync on
         # EVERY layer/forward -- pure overhead that defeated _fast_route. Dropped from the hot path.
