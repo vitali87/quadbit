@@ -125,13 +125,21 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     big = (base * ((S // len(base)) + 1))[:S]
     reqs = [{"prompt_token_ids": big} for _ in range(batch_prefill)]
     ntok = batch_prefill * S
+    one = SamplingParams(temperature=0.0, max_tokens=1)
+    iters = 20
     try:
-        llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1))  # warm
-        t0 = time.time()
-        llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1))
-        dt = time.time() - t0
-        print(f"# LARGE-BATCH prefill B={batch_prefill} S={S} ({ntok} tok, ~{ntok // 32} tok/expert): "
-              f"{ntok / dt:.0f} tok/s ({dt:.2f}s)", flush=True)
+        for _ in range(3):  # warm (kernel JIT, autotune, allocator)
+            llm.generate(reqs, one)
+        times = []
+        for _ in range(iters):
+            t0 = time.time()
+            llm.generate(reqs, one)
+            times.append(time.time() - t0)
+        times.sort()
+        med = times[len(times) // 2]
+        print(f"# LARGE-BATCH prefill B={batch_prefill} S={S} ({ntok} tok, ~{ntok // 32} tok/expert), "
+              f"median of {iters}: {ntok / med:.0f} tok/s (med {med * 1000:.1f}ms, "
+              f"min {min(times) * 1000:.1f} / max {max(times) * 1000:.1f})", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"# large-batch prefill skipped ({type(e).__name__}: {e})", flush=True)
 
