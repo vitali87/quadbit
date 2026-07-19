@@ -1969,7 +1969,9 @@ def _install_gptoss_moe() -> None:
         # eager overhead fix -- the per-layer host syncs, not the kernel, are what make more sparse
         # layers slower than stock Marlin.
         _BN = 128
-        order = torch.argsort(assign, stable=True)
+        # non-stable argsort: intra-expert row order is irrelevant (outputs scatter back by original row
+        # index), and stable sort is far slower. Routing was 43% of the MoE time, argsort the bulk of it.
+        order = torch.argsort(assign)
         counts = torch.bincount(assign, minlength=e)
         padc = ((counts + _BN - 1) // _BN) * _BN
         r_pad = int(padc.sum().item())                      # the single unavoidable host sync
