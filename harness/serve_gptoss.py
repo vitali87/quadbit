@@ -58,7 +58,8 @@ def _ensure_so() -> None:
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
-        batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False) -> None:
+        batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False,
+        graph: bool = False, graph_cap: int = 256) -> None:
     import time
 
     import torch
@@ -69,11 +70,14 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     os.environ["QB_SPARSE_PROJ"] = proj          # both|down|gateup (tax lives in gate_up -> down recovers)
     os.environ["QB_SPARSE_FROM"] = str(sparse_from)  # prefix-optimal: sparsify layers >= this, anchor earlier
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    if graph:  # capture-legal MoE path + let vLLM CUDA-graph the forward
+        os.environ["QB_GRAPH"] = "1"
+        os.environ["QB_GRAPH_CAP"] = str(graph_cap)
     _ensure_so()
     print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} proj={proj} sparse_from={sparse_from} "
-          f"on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
+          f"graph={graph} cap={graph_cap if graph else 0} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
 
-    kw = dict(model=MODEL, tensor_parallel_size=1, enforce_eager=True, trust_remote_code=True,
+    kw = dict(model=MODEL, tensor_parallel_size=1, enforce_eager=not graph, trust_remote_code=True,
               max_model_len=max_len, gpu_memory_utilization=0.90, max_num_batched_tokens=max_batched)
     t0 = time.time()
     llm = LLM(**kw)
@@ -142,6 +146,22 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
               f"min {min(times) * 1000:.1f} / max {max(times) * 1000:.1f})", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"# large-batch prefill skipped ({type(e).__name__}: {e})", flush=True)
+
+    # --- decode throughput (B=1): the launch-overhead-bound regime graph capture accelerates ---
+    dprompt = base[:32]
+    G = 128
+    try:
+        llm.generate([{"prompt_token_ids": dprompt}], SamplingParams(temperature=0.0, max_tokens=8))  # warm
+        rates = []
+        for _ in range(5):
+            td0 = time.time()
+            dout = llm.generate([{"prompt_token_ids": dprompt}], SamplingParams(temperature=0.0, max_tokens=G))
+            n = max(1, len(dout[0].outputs[0].token_ids))
+            rates.append(n / (time.time() - td0))
+        rates.sort()
+        print(f"# DECODE B=1 gen={G}: {rates[len(rates) // 2]:.1f} tok/s (median of 5)", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"# decode bench skipped ({type(e).__name__}: {e})", flush=True)
 
     try:
         import qb_sm120_plugin as qb

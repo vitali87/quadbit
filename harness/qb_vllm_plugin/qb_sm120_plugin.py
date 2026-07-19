@@ -2090,6 +2090,70 @@ def _install_gptoss_moe() -> None:
         hp, ip = layer._qbg_hp, layer._qbg_ip
         mpeI, mpeH = layer._qbg_mpeI, layer._qbg_mpeH
         on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
+
+        # ---- GRAPH-SAFE path (QB_GRAPH + QB_GRAPH_CAP): capture-legal, no host sync, fixed E*cap
+        # shapes, current-stream launches -> vLLM CUDA-graphs the whole MoE forward, killing the ~150
+        # per-step kernel launches our eager path adds. both-proj sparse only (dense anchor route isn't
+        # capture-friendly). route_fixed_cap drops per-expert overflow beyond cap (sized to avoid drops
+        # for the captured batch); row_exp is a CONSTANT arange//cap so bias gather is capture-legal. ----
+        if _GRAPH and _GRAPH_CAP > 0 and layer._qbg_pack_gu and layer._qbg_pack_dn:
+            cap = _GRAPH_CAP
+            y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+            assign_g = topk_ids.reshape(-1).to(torch.long)
+            tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
+            w_g = topk_weights.reshape(-1).to(torch.float32)
+            emap = getattr(layer, "expert_map", None)
+            if emap is not None:
+                local = emap[assign_g]
+                valid_e = local >= 0
+                local = local.clamp_min(0)
+            else:
+                local = assign_g
+                valid_e = torch.ones_like(local, dtype=torch.bool)
+            src, eblk, _drop = sp.route_fixed_cap(local, ee, cap, valid_e)
+            rp = ee * cap
+            valid = src >= 0
+            srcc = src.clamp_min(0)
+            row_exp = torch.arange(rp, device=x.device) // cap          # constant expert-per-slot
+            xs = x[tok_g[srcc]].to(torch.bfloat16) * valid[:, None]
+            if on_input:
+                xs = xs * w_g[srcc][:, None].to(torch.bfloat16)
+            xsp = torch.zeros(rp, hp, device=x.device, dtype=torch.bfloat16)
+            xsp[:, :hh_dim] = xs
+            ksh, ksi = hp // 128, ip // 128
+            bb = torch.empty((rp, hp // 2), dtype=torch.uint8, device=x.device)
+            sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=x.device)
+            gq = torch.empty((rp,), dtype=torch.float32, device=x.device)
+            sp.quant_into(xsp, bb, sb, gq)
+            gbuf = torch.empty((rp, mpeI), dtype=torch.bfloat16, device=x.device)
+            ubuf = torch.empty((rp, mpeI), dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_gate, bb, sb, gq, gbuf, mpeI, hp, eblk)
+            sp.seg_into(layer._qbg_up, bb, sb, gq, ubuf, mpeI, hp, eblk)
+            g = gbuf[:, :ii].float()
+            u = ubuf[:, :ii].float()
+            if layer._qbg_gb is not None:
+                g = g + layer._qbg_gb[row_exp]
+                u = u + layer._qbg_ub[row_exp]
+            hact = _swiglu(g, u)
+            hpad = torch.zeros(rp, ip, device=x.device, dtype=torch.bfloat16)
+            hpad[:, :ii] = hact.to(torch.bfloat16)
+            bb2 = torch.empty((rp, ip // 2), dtype=torch.uint8, device=x.device)
+            sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=x.device)
+            gq2 = torch.empty((rp,), dtype=torch.float32, device=x.device)
+            sp.quant_into(hpad, bb2, sb2, gq2)
+            dbuf = torch.empty((rp, mpeH), dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_down, bb2, sb2, gq2, dbuf, mpeH, ip, eblk)
+            d = dbuf[:, :hh_dim].float()
+            if layer._qbg_db is not None:
+                d = d + layer._qbg_db[row_exp]
+            rw = valid.float() if on_input else (w_g[srcc] * valid.float())
+            y.index_add_(0, tok_g[srcc], (d * rw[:, None]).to(x.dtype))
+            if STATS["moe_calls"] == 1:
+                print(f"[qb_sm120] gpt-oss GRAPH-SAFE apply (cap={cap} rp={rp}) pid={os.getpid()}", flush=True)
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input)
+            return y
+
         assign = topk_ids.reshape(-1).to(torch.long)
         tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
         w_of = topk_weights.reshape(-1).to(torch.float32)
