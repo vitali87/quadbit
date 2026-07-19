@@ -1957,6 +1957,29 @@ def _install_gptoss_moe() -> None:
         up = up.clamp(-7.0, 7.0)
         return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
 
+    def _fast_route(assign, e):
+        # EXACT build_routing, vectorized: ONE host sync (r_pad) instead of ~65 (build_routing's
+        # per-expert .item() loop). Rows sorted+128-padded per expert; same src/eblk/r_pad as
+        # sp.build_routing, so downstream math is identical (no drops, no fixed-cap waste). This is the
+        # eager overhead fix -- the per-layer host syncs, not the kernel, are what make more sparse
+        # layers slower than stock Marlin.
+        _BN = 128
+        order = torch.argsort(assign, stable=True)
+        counts = torch.bincount(assign, minlength=e)
+        padc = ((counts + _BN - 1) // _BN) * _BN
+        r_pad = int(padc.sum().item())                      # the single unavoidable host sync
+        poff = torch.cumsum(padc, 0) - padc                 # padded start per expert
+        coff = torch.cumsum(counts, 0) - counts             # sorted-order start per expert
+        sorted_exp = assign[order]
+        within = torch.arange(order.numel(), device=assign.device) - coff[sorted_exp]
+        dest = poff[sorted_exp] + within
+        src = torch.full((r_pad,), -1, dtype=torch.long, device=assign.device)
+        src[dest] = order
+        ends = torch.cumsum(padc, 0)
+        block_starts = torch.arange(r_pad // _BN, device=assign.device) * _BN
+        eblk = torch.bucketize(block_starts, ends, right=True).to(torch.int32)
+        return src, eblk, r_pad
+
     def _dense_route(xrows, wd, out_dim, row_exp, present, eblk):
         # dense bf16 GROUPED matmul for an anchored (kept-dense) projection. wd [E,out,in]; xrows
         # [R, in_pad>=in] -> [R, out] float. Rows are expert-CONTIGUOUS (build_routing sorts + 128-pads),
@@ -2080,7 +2103,7 @@ def _install_gptoss_moe() -> None:
             if shared_experts is not None and shared_experts_input is not None:
                 shared_experts(shared_experts_input)
             return y
-        src, eblk, r_pad = sp.build_routing(assign, ee)
+        src, eblk, r_pad = _fast_route(assign, ee)   # host-sync-free exact routing (1 sync vs ~65)
         valid = src >= 0
         srcc = src.clamp_min(0)
         row_exp = assign[srcc]
