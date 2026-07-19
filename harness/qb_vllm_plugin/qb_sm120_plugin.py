@@ -2171,7 +2171,10 @@ def _install_gptoss_moe() -> None:
         valid = src >= 0
         srcc = src.clamp_min(0)
         row_exp = assign[srcc]
-        present = row_exp[valid].unique() if bool(valid.any()) else row_exp[:0]
+        # present (unique routed experts) is ONLY needed by the dense-anchor route; computing it always
+        # (.unique() + .any()) was 2 host-syncs/layer for nothing in the both-proj-sparse path.
+        need_present = (not layer._qbg_pack_gu) or (not layer._qbg_pack_dn)
+        present = row_exp[valid].unique() if need_present else None
         xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
         if on_input:
             xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
@@ -2197,7 +2200,8 @@ def _install_gptoss_moe() -> None:
             d = d + layer._qbg_db[row_exp]
         rw = valid.float() if on_input else (w_of[srcc] * valid.float())
         y.index_add_(0, tok_of[srcc], (d * rw[:, None]).to(x.dtype))
-        STATS["sparse_expert_calls"] += int(valid.sum().item())
+        # NOTE: the old `STATS["sparse_expert_calls"] += int(valid.sum().item())` was a host sync on
+        # EVERY layer/forward -- pure overhead that defeated _fast_route. Dropped from the hot path.
         if shared_experts is not None and shared_experts_input is not None:
             shared_experts(shared_experts_input)
         return y
