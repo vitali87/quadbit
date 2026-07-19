@@ -1957,6 +1957,11 @@ def _install_gptoss_moe() -> None:
         up = up.clamp(-7.0, 7.0)
         return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
 
+    def _padrows(xr, r, wide, real, dev):  # widen [r, real] -> [r, wide] with zeros (fallback if in-dim
+        o = torch.zeros(r, wide, device=dev, dtype=torch.bfloat16)   # not 128-aligned; no-op for gpt-oss)
+        o[:, :real] = xr
+        return o
+
     def _fast_route(assign, e):
         # EXACT build_routing, vectorized: ONE host sync (r_pad) instead of ~65 (build_routing's
         # per-expert .item() loop). Rows sorted+128-padded per expert; same src/eblk/r_pad as
@@ -2178,8 +2183,9 @@ def _install_gptoss_moe() -> None:
         xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
         if on_input:
             xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
-        xsp = torch.zeros(r_pad, hp, device=x.device, dtype=torch.bfloat16)
-        xsp[:, :hh_dim] = xs
+        # vLLM pads gpt-oss dims to 128-aligned (hh_dim=3072=hp, ii=2944=ip), so the old
+        # zeros(r_pad,hp)+copy was a dead [rp x 3072] alloc+copy per layer. Use xs directly when aligned.
+        xsp = xs.contiguous() if hp == hh_dim else _padrows(xs, r_pad, hp, hh_dim, x.device)
         _abl = os.environ.get("QB_GPTOSS_ABLATE", "")  # skipseg -> zeros for the sparse matmul (isolates
         # routing/quant/scatter overhead from the kernel); skipquant handled inside quant path if needed
         if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
@@ -2194,9 +2200,8 @@ def _install_gptoss_moe() -> None:
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
-        hact = _swiglu(g, u)
-        hpad = torch.zeros(r_pad, ip, device=x.device, dtype=torch.bfloat16)
-        hpad[:, :ii] = hact.to(torch.bfloat16)
+        hact = _swiglu(g, u).to(torch.bfloat16)
+        hpad = hact if ip == ii else _padrows(hact, r_pad, ip, ii, x.device)
         if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
             d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.float32)
         elif layer._qbg_pack_dn:
