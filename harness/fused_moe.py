@@ -75,6 +75,125 @@ def profile_sass(kernels: str = "matmul_sp_moe_gu_swiglu,matmul_sp_moe") -> None
     print("# profile_sass done", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800)
+def bench_shapes(iters: int = 20) -> None:
+    """Where does the small-expert penalty flip? Times the FUSED GEMM1 (sparse_moe_gu_swiglu) at gpt-oss's
+    tiny experts vs frontier large-expert shapes (GLM-5.2 / DeepSeek-V4 class), reporting achieved TFLOP/s
+    (counting the FULL 2I*H macs, so directly comparable to Marlin's dense-bf16 math). Marlin W4A16 dequants
+    to bf16 -> bounded by the ~500 TFLOP/s bf16 tensor peak on SM120. If our sparse-FP4 kernel CLEARS 500
+    at large-expert shapes, we provably beat Marlin's math there; gpt-oss's ~1016-tok/expert 2944x3072 is the
+    worst case. Synthetic random packed weights (efficiency is shape-, not value-, dependent)."""
+    import torch
+    dev = torch.device("cuda")
+    so = "/root/sparse_fp4.so"
+    c = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                        "-o", so, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
+    if c.returncode != 0:
+        print(c.stderr, flush=True); raise SystemExit(1)
+    lib = ctypes.CDLL(so)
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.qb_init_gusw_attrs()
+    FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    cc = torch.arange(128, device=dev); e_, m_ = (cc >> 3) & 0xf, cc & 7
+    UE4M3 = torch.where(e_ == 0, m_.float() * 0.001953125, (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
+        biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):
+        out_f, in_f = w.shape; ks = in_f // 128
+        wg = w.float().view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2)
+        scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga); sdeq = UE4M3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(),
+                ga.reshape(out_f).float().contiguous())
+
+    def stack(ps):
+        return tuple(torch.cat([p[i] for p in ps], 0 if i in (0, 3) else 1).contiguous() for i in range(4))
+
+    def bench(fn):
+        for _ in range(4):
+            fn()
+        torch.cuda.synchronize()
+        s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        ts = []
+        for _ in range(iters):
+            s.record(); fn(); e.record(); torch.cuda.synchronize(); ts.append(s.elapsed_time(e))
+        ts.sort(); return ts[len(ts) // 2]
+
+    # (label, H hidden, I intermediate, E experts, tok/expert) — pad to kernel alignment inside
+    shapes = [
+        ("gpt-oss-20b   ", 3072, 2944, 32, 1016),
+        ("gpt-oss @4k/e ", 3072, 2944, 32, 4096),
+        ("GLM-class     ", 5120, 1536, 128, 2048),
+        ("DeepSeek-class", 7168, 2048, 64, 2048),
+        ("DeepSeek @8k/e", 7168, 2048, 64, 8192),
+    ]
+    print("# FUSED GEMM1 (sparse_moe_gu_swiglu) efficiency vs expert shape — Marlin bf16 ceiling ~500 TFLOP/s", flush=True)
+    for label, H, I, E, tpe in shapes:
+        Hp = ((H + 127) // 128) * 128
+        mpe_gu = ((2 * I + 255) // 256) * 256; ih = mpe_gu // 2
+        torch.manual_seed(0)
+        packs = [pack(torch.randn(mpe_gu, Hp, device=dev) * 0.05) for _ in range(E)]
+        gu = stack(packs)
+        gubias = torch.zeros(E, mpe_gu, device=dev, dtype=torch.bfloat16)
+        tok = E * tpe
+        assign = torch.randint(0, E, (tok,), device=dev)
+        order = torch.argsort(assign); counts = torch.bincount(assign, minlength=E)
+        padc = ((counts + 127) // 128) * 128; r_pad = int(padc.sum().item())
+        poff = torch.cumsum(padc, 0) - padc; coff = torch.cumsum(counts, 0) - counts
+        se = assign[order]; within = torch.arange(tok, device=dev) - coff[se]
+        src = torch.full((r_pad,), 0, dtype=torch.long, device=dev)
+        src[poff[se] + within] = order
+        ends = torch.cumsum(padc, 0)
+        eblk = torch.bucketize(torch.arange(r_pad // 128, device=dev) * 128, ends, right=True).clamp_max_(E - 1).to(torch.int32)
+        x = torch.randn(tok, Hp, device=dev, dtype=torch.bfloat16) * 0.1
+        ks = Hp // 128
+        bb = torch.empty((tok, Hp // 2), dtype=torch.uint8, device=dev)
+        sb = torch.empty((ks, tok, 4), dtype=torch.uint8, device=dev)
+        gb = torch.empty((tok,), dtype=torch.float32, device=dev)
+        lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), tok, Hp)
+        idx = src
+        bb_g = bb[idx].contiguous(); sb_g = sb[:, idx, :].contiguous(); gb_g = gb[idx].contiguous()
+        hw = torch.empty((r_pad, ih // 2), dtype=torch.uint8, device=dev)
+        sh = torch.empty((ih // 128, r_pad, 4), dtype=torch.uint8, device=dev)
+        ac, meta, sA, ga = gu
+
+        def g1():
+            lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb_g.data_ptr(), sA.data_ptr(), sb_g.data_ptr(),
+                                     meta.data_ptr(), ac.shape[0], mpe_gu, r_pad, Hp, ga.data_ptr(),
+                                     gb_g.data_ptr(), eblk.data_ptr(), gubias.data_ptr(), hw.data_ptr(),
+                                     sh.data_ptr(), ih, 0)
+        ms = bench(g1)
+        flop = 2.0 * r_pad * mpe_gu * Hp   # full 2I*H macs x2
+        tflops = flop / 1e12 / (ms / 1e3)
+        beat = "BEATS bf16" if tflops > 500 else "below bf16"
+        print(f"# {label} H={H} I={I} E={E} tok/e={tpe:5d} r_pad={r_pad:7d}: {ms:6.2f}ms  "
+              f"{tflops:6.0f} TFLOP/s  ({beat} ~500)", flush=True)
+    print("# bench_shapes done", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4, iters: int = 30) -> None:
