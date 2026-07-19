@@ -1066,6 +1066,7 @@ def _load_sparse_moe():
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                           + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
+    lib.moe_route.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.qb_init_moe_attrs()
     lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
@@ -1249,6 +1250,21 @@ def _load_sparse_moe():
                                        eblk.data_ptr(), sc_tok.data_ptr(), sc_w.data_ptr(),
                                        bias.data_ptr() if bias is not None else 0, out.data_ptr(), hout, _st())
 
+    def route(assign, e, rmax):
+        # counting-sort routing kernel (single-rank / emap-None): groups routed slots by expert in one launch,
+        # replacing torch argsort + within + dest-scatter. Over-allocated to rmax (sync-free). Grouping exact
+        # (validated 130048/130048); intra-expert order is arbitrary (irrelevant to seg-GEMM + inverse combine).
+        ai = assign.to(torch.int32)
+        counts = torch.bincount(assign, minlength=e)
+        padc = ((counts + _BN - 1) // _BN) * _BN
+        poff = (torch.cumsum(padc, 0) - padc).to(torch.int64)
+        src = torch.full((rmax,), -1, dtype=torch.int32, device=ai.device)
+        counter = torch.empty(e, dtype=torch.int32, device=ai.device)
+        lib.moe_route(ai.data_ptr(), poff.data_ptr(), counter.data_ptr(), src.data_ptr(), ai.numel(), e, _st())
+        ends = torch.cumsum(padc, 0)
+        eblk = torch.bucketize(torch.arange(rmax // _BN, device=ai.device) * _BN, ends, right=True).clamp_max_(e - 1).to(torch.int32)
+        return src.long(), eblk, rmax
+
     def combine(dbuf, inverse, y, t, hout, topk, mpe):
         # inverse-index top-k combine (replaces torch index_add): y[tok,f] = sum_k dbuf[inverse[tok,k],f].
         # Coalesced write, no atomics -> ~1.6GB->1GB traffic vs index_add.
@@ -1266,7 +1282,8 @@ def _load_sparse_moe():
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
                               seg_gemm=seg_gemm, build_routing=build_routing,
                               quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap,
-                              gu_swiglu=gu_swiglu, down_scatter=down_scatter, seg_bw=seg_bw, combine=combine)
+                              gu_swiglu=gu_swiglu, down_scatter=down_scatter, seg_bw=seg_bw, combine=combine,
+                              route=route)
     return _SPARSE
 
 
@@ -2238,7 +2255,10 @@ def _install_gptoss_moe() -> None:
         # (which serializes CPU<->GPU and was ~43% of MoE time) is gone; ~3% row waste. DECODE (few
         # tokens): the over-alloc bound e*128 dwarfs the real rows, so keep the exact 1-sync path.
         _rmax = (((t * topk + ee * 128) + 127) // 128) * 128
-        src, eblk, r_pad = _fast_route(assign, ee, _rmax if t >= 512 else None)
+        if emap is None and t >= 512:   # single-rank prefill: counting-sort routing kernel (1.57x vs torch)
+            src, eblk, r_pad = sp.route(assign, ee, _rmax)
+        else:
+            src, eblk, r_pad = _fast_route(assign, ee, _rmax if t >= 512 else None)
         valid = src >= 0
         srcc = src.clamp_min(0)
         row_exp = assign[srcc]
