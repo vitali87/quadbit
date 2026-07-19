@@ -1065,6 +1065,7 @@ def _load_sparse_moe():
                                                + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                           + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
     lib.qb_init_moe_attrs()
     lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
@@ -1248,6 +1249,11 @@ def _load_sparse_moe():
                                        eblk.data_ptr(), sc_tok.data_ptr(), sc_w.data_ptr(),
                                        bias.data_ptr() if bias is not None else 0, out.data_ptr(), hout, _st())
 
+    def combine(dbuf, inverse, y, t, hout, topk, mpe):
+        # inverse-index top-k combine (replaces torch index_add): y[tok,f] = sum_k dbuf[inverse[tok,k],f].
+        # Coalesced write, no atomics -> ~1.6GB->1GB traffic vs index_add.
+        lib.moe_combine_topk(dbuf.data_ptr(), inverse.data_ptr(), y.data_ptr(), t, hout, topk, mpe, _st())
+
     def seg_bw(w, bb, sb, c, mpe, r, in_f, eblk, sc_w, bias, hout):
         # FUSED bias+weight down (COALESCED, outT=3): c[r,mpe] bf16 = (down-GEMM + bias[e,f]) * sc_w[row].
         # Kills the torch bias-gather (E,H->r,H) + fp32 convert + weight-mul (the ~40% down-side plumbing);
@@ -1260,7 +1266,7 @@ def _load_sparse_moe():
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
                               seg_gemm=seg_gemm, build_routing=build_routing,
                               quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap,
-                              gu_swiglu=gu_swiglu, down_scatter=down_scatter, seg_bw=seg_bw)
+                              gu_swiglu=gu_swiglu, down_scatter=down_scatter, seg_bw=seg_bw, combine=combine)
     return _SPARSE
 
 
@@ -2273,8 +2279,16 @@ def _install_gptoss_moe() -> None:
             sc_w = (w_of[srcc] * valid.to(torch.float32))
             dbuf = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=x.device)
             sp.seg_bw(layer._qbg_down, hw, sh, dbuf, mpeH, r_pad, ip, eblk, sc_w, layer._qbg_db, hh_dim)
-            y = torch.zeros(t, hh_dim, dtype=torch.bfloat16, device=x.device)
-            y.index_add_(0, idx, dbuf[:, :hh_dim])
+            if emap is None:
+                # inverse-index coalesced combine (no atomics). src[rr]=flat token*topk+k (single rank);
+                # inverse[flat]=rr -> combine sums the <=topk routed rows per token. ~1.6x less traffic.
+                inverse = torch.full((t * topk,), -1, dtype=torch.int32, device=x.device)
+                inverse[src[valid].long()] = torch.arange(r_pad, dtype=torch.int32, device=x.device)[valid]
+                y = torch.empty(t, hh_dim, dtype=torch.bfloat16, device=x.device)
+                sp.combine(dbuf, inverse, y, t, hh_dim, topk, mpeH)
+            else:  # EP shard: src indexes the filtered assign, not token*topk+k -> keep index_add
+                y = torch.zeros(t, hh_dim, dtype=torch.bfloat16, device=x.device)
+                y.index_add_(0, idx, dbuf[:, :hh_dim])
             if _prof:
                 _lap("t_down_f")
                 if STATS["moe_calls"] % 48 == 0:

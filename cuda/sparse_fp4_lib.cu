@@ -1043,6 +1043,33 @@ matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ 
 static std::once_flag g_moe_attr_once;
 static void set_moe_attr() { cudaFuncSetAttribute(matmul_sp_moe, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); }
 extern "C" void qb_init_moe_attrs() { std::call_once(g_moe_attr_once, set_moe_attr); }
+
+// Inverse-index top-k COMBINE: y[token,f] = sum_k dbuf[inverse[token,k], f] (skip -1). Replaces the torch
+// index_add scatter (top-4 combine of the bias+weight-fused down output). index_add moves ~1.6GB (800MB read
+// + 800MB SCATTERED atomic-add); this moves ~1GB (gathered read + COALESCED write, no atomics). One block per
+// token loads its <=topk row indices to smem, threads stride over features (coalesced). dbuf is [r_pad, Mpe].
+__global__ void moe_combine(const __nv_bfloat16 *dbuf, const int *inverse, __nv_bfloat16 *y,
+                            int H, int topk, int Mpe) {
+    int token = blockIdx.x;
+    extern __shared__ int rows[];
+    if (threadIdx.x < topk) rows[threadIdx.x] = inverse[token * topk + threadIdx.x];
+    __syncthreads();
+    for (int f = threadIdx.x; f < H; f += blockDim.x) {
+        float acc = 0.f;
+#pragma unroll 4
+        for (int k = 0; k < topk; k++) {
+            int r = rows[k];
+            if (r >= 0) acc += __bfloat162float(dbuf[(size_t)r * Mpe + f]);
+        }
+        y[(size_t)token * H + f] = __float2bfloat16(acc);
+    }
+}
+extern "C" int moe_combine_topk(const void *dbuf, const void *inverse, void *y, int t, int H, int topk,
+                                int Mpe, void *stream) {
+    moe_combine<<<t, 256, (size_t)topk * sizeof(int), (cudaStream_t)stream>>>(
+        (const __nv_bfloat16 *)dbuf, (const int *)inverse, (__nv_bfloat16 *)y, H, topk, Mpe);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
 // Segmented routed-row sparse MoE GEMM. A: stacked [Mtot=E*Mpe, Klog/4] packed; scaleA/meta step-major
 // over Mtot; gA over Mtot. B/scaleB/gB: routed rows (N, must be %BN). eblk[N/BN]=expert per col-block.
 // outT=1 -> C is [N, Mpe] token-major (feeds swiglu / combine).

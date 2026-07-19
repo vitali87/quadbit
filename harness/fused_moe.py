@@ -217,6 +217,7 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
                                          + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                           + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
     lib.qb_init_moe_attrs()
     lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
@@ -474,6 +475,15 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     print(f"# CORRECTNESS bw-down (coalesced bias+weight + index_add) vs unfused ref: cos={c_bw:.5f} "
           f"{'OK' if c_bw > 0.99 else 'CHECK'}", flush=True)
 
+    # combine kernel correctness: inverse-index top-k combine must MATCH index_add exactly (same bf16 sum)
+    inv_chk = torch.full((tokens * topk,), -1, dtype=torch.int32, device=dev)
+    inv_chk[src[valid].long()] = torch.arange(r_pad, dtype=torch.int32, device=dev)[valid]
+    y_comb = torch.empty(tokens, H, dtype=torch.bfloat16, device=dev)
+    lib.moe_combine_topk(dbuf_bw.data_ptr(), inv_chk.data_ptr(), y_comb.data_ptr(), tokens, H, topk, mpeH, 0)
+    c_comb = F.cosine_similarity(y_comb.flatten().float(), y_bw.flatten().float(), dim=0).item()
+    print(f"# CORRECTNESS moe_combine vs index_add: cos={c_comb:.6f} "
+          f"{'OK' if c_comb > 0.999 else 'MISMATCH'}", flush=True)
+
     t_g1un = bench(gemm1_unfused)
     t_g1fu = bench(gemm1_fused)
     print(f"# TIMING GEMM1 (gate_up+swiglu+quant)  unfused={t_g1un:.3f}ms  fused={t_g1fu:.3f}ms  "
@@ -548,8 +558,10 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
                                   dbuf.data_ptr(), acd.shape[0], mpeH, _rmax, Ip, gad.data_ptr(), 0, eblk2.data_ptr(),
                                   sc_w2.data_ptr(), dBias_s.data_ptr(), H, 0)  # down-GEMM + fused bias+weight, coalesced
         ev[5].record()
-        y = torch.zeros(tokens, H, dtype=torch.bfloat16, device=dev)
-        y.index_add_(0, idx2, dbuf[:, :H])
+        inverse2 = torch.full((tokens * topk,), -1, dtype=torch.int32, device=dev)
+        inverse2[src2[valid2].long()] = torch.arange(_rmax, dtype=torch.int32, device=dev)[valid2]
+        y = torch.empty(tokens, H, dtype=torch.bfloat16, device=dev)
+        lib.moe_combine_topk(dbuf.data_ptr(), inverse2.data_ptr(), y.data_ptr(), tokens, H, topk, mpeH, 0)
         ev[6].record()
         torch.cuda.synchronize()
         for i in range(6):
