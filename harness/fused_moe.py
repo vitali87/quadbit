@@ -30,6 +30,51 @@ app = modal.App("quadbit-fused-moe", image=image)
 vol = modal.Volume.from_name("quadbit-hf-cache", create_if_missing=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800)
+def profile_sass(kernels: str = "matmul_sp_moe_gu_swiglu,matmul_sp_moe") -> None:
+    """Deterministic kernel resource + SASS profile (ncu is blocked on Modal, see quadbit-perf-bottleneck).
+    nvcc --ptxas-options=-v gives regs/spills/smem per kernel (the occupancy signal); cuobjdump -sass gives
+    the opcode histogram (OMMA% = tensor-core utilization; if OMMA is a tiny fraction, we're issue/latency
+    bound on address+scale arithmetic, the known wall). No clock-noise: these are compile-time facts."""
+    import re
+    import subprocess
+    from collections import Counter
+
+    cub = "/root/k.cubin"
+    c = subprocess.run(["nvcc", "-arch=sm_120a", "-cubin", "--ptxas-options=-v", "-O3",
+                        "-o", cub, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
+    print("# ===== ptxas -v (registers / spills / smem per kernel) =====", flush=True)
+    for ln in c.stderr.splitlines():
+        if "Function properties" in ln or "registers" in ln or "spill" in ln or "bytes smem" in ln or "Compiling entry" in ln:
+            print("  " + ln.strip(), flush=True)
+    if c.returncode != 0:
+        print(c.stderr[-2000:], flush=True); raise SystemExit(1)
+    full = subprocess.run(["cuobjdump", "-sass", cub], capture_output=True, text=True).stdout
+    knames = kernels.split(",")
+    blocks = {}
+    cur = None
+    for ln in full.splitlines():
+        if "Function :" in ln or ".text." in ln:
+            cur = next((k for k in knames if k in ln), None)
+            if cur:
+                blocks.setdefault(cur, Counter())
+        m = re.search(r"/\*[0-9a-f]+\*/\s+@?!?P?\d?\s*([A-Z][A-Z0-9_]+)", ln)
+        if m and cur:
+            blocks[cur][m.group(1)] += 1
+    for kname in kernels.split(","):
+        ops = blocks.get(kname)
+        if not ops:
+            print(f"# {kname}: (not found; have {list(blocks)[:6]})", flush=True); continue
+        tot = sum(ops.values())
+        omma = sum(v for k, v in ops.items() if "MMA" in k)
+        ldsm = sum(v for k, v in ops.items() if k.startswith("LDSM"))
+        ldg = sum(v for k, v in ops.items() if k in ("LDG", "LD", "UTMALDG"))
+        print(f"# {kname}: {tot} SASS insts | MMA {omma} ({100*omma/tot:.1f}%) "
+              f"LDSM {ldsm} LDG/TMA {ldg} | top: "
+              + " ".join(f"{k}={v}" for k, v in ops.most_common(10)), flush=True)
+    print("# profile_sass done", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4, iters: int = 30) -> None:
