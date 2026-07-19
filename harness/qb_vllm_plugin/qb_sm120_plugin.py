@@ -2174,6 +2174,14 @@ def _install_gptoss_moe() -> None:
             return y
         if os.environ.get("QB_GPTOSS_ABLATE", "") == "skipall":  # base-model timing: MoE contributes zero
             return y                                             # (full-skipseg=quant+matmul; skipseg-skipall=gather+swiglu+scatter)
+        _prof = os.environ.get("QB_GPTOSS_PROF") == "1"          # WORKER-side timing (driver profiler sees nothing)
+        if _prof:
+            import time as _tm
+            torch.cuda.synchronize(); _tt = [_tm.perf_counter()]
+
+            def _lap(k):
+                torch.cuda.synchronize(); n = _tm.perf_counter()
+                STATS[k] = STATS.get(k, 0.0) + (n - _tt[0]); _tt[0] = n
         src, eblk, r_pad = _fast_route(assign, ee)   # host-sync-free exact routing (1 sync vs ~65)
         valid = src >= 0
         srcc = src.clamp_min(0)
@@ -2182,6 +2190,8 @@ def _install_gptoss_moe() -> None:
         # (.unique() + .any()) was 2 host-syncs/layer for nothing in the both-proj-sparse path.
         need_present = (not layer._qbg_pack_gu) or (not layer._qbg_pack_dn)
         present = row_exp[valid].unique() if need_present else None
+        if _prof:
+            _lap("t_route")
         _abl = os.environ.get("QB_GPTOSS_ABLATE", "")
         # FAST gate/up path (both-proj sparse, no router-on-input): the bf16 permutation gather
         # x[tok_of[srcc]] (~400MB/layer, random-access) was ~65% of the MoE time. Quant is PER-TOKEN, so
@@ -2215,10 +2225,14 @@ def _install_gptoss_moe() -> None:
             else:  # gate_up anchored dense (the tax-carrying projection)
                 g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk).to(torch.bfloat16)
                 u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk).to(torch.bfloat16)
+        if _prof:
+            _lap("t_gu")
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
         hact = g if _abl == "skipswiglu" else _swiglu(g, u).to(torch.bfloat16)
+        if _prof:
+            _lap("t_act")
         hpad = hact if ip == ii else _padrows(hact, r_pad, ip, ii, x.device)
         if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
             d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.bfloat16)
@@ -2228,10 +2242,18 @@ def _install_gptoss_moe() -> None:
             d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present, eblk).to(torch.bfloat16)
         if layer._qbg_db is not None:
             d = d + layer._qbg_db[row_exp]
+        if _prof:
+            _lap("t_down")
         rw = valid.to(x.dtype) if on_input else (w_of[srcc].to(x.dtype) * valid.to(x.dtype))
         if _abl == "skipscatter":   # everything but the final index_add (isolates scatter cost)
             return y
         y.index_add_(0, tok_of[srcc], (d * rw[:, None]).to(x.dtype))
+        if _prof:
+            _lap("t_scatter")
+            if STATS["moe_calls"] % 48 == 0:
+                print("[qb_prof] " + " ".join(f"{k}={STATS[k] * 1000:.0f}ms"
+                      for k in ("t_route", "t_gu", "t_act", "t_down", "t_scatter") if k in STATS)
+                      + f" (over {STATS['moe_calls']} calls)", flush=True)
         # NOTE: the old `STATS["sparse_expert_calls"] += int(valid.sum().item())` was a host sync on
         # EVERY layer/forward -- pure overhead that defeated _fast_route. Dropped from the hot path.
         if shared_experts is not None and shared_experts_input is not None:
