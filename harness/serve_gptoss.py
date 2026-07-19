@@ -57,7 +57,8 @@ def _ensure_so() -> None:
 
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
-def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048) -> None:
+def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
+        batch_prefill: int = 16, max_batched: int = 16384) -> None:
     import time
 
     import torch
@@ -73,7 +74,7 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
           f"on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
 
     kw = dict(model=MODEL, tensor_parallel_size=1, enforce_eager=True, trust_remote_code=True,
-              max_model_len=max_len, gpu_memory_utilization=0.90, max_num_batched_tokens=max_len)
+              max_model_len=max_len, gpu_memory_utilization=0.90, max_num_batched_tokens=max_batched)
     t0 = time.time()
     llm = LLM(**kw)
     print(f"  load+init ok in {time.time() - t0:.0f}s", flush=True)
@@ -117,6 +118,21 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
         except Exception as e:  # noqa: BLE001 - timing must not abort the eval
             print(f"# timing skipped prompt={plen} ({type(e).__name__}: {e})", flush=True)
     print(f"# peak GPU mem {torch.cuda.max_memory_allocated() / 1e9:.1f} GB", flush=True)
+
+    # --- large-batch prefill throughput: the COMPUTE-BOUND regime where 2:4 sparse wins (many
+    # tokens/expert -> large-M MoE GEMMs). B=1 above is memory-bound + overhead-bound (our worst case). ---
+    big = (base * ((max_len // len(base)) + 1))[:max_len]
+    reqs = [{"prompt_token_ids": big} for _ in range(batch_prefill)]
+    ntok = batch_prefill * max_len
+    try:
+        llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1))  # warm
+        t0 = time.time()
+        llm.generate(reqs, SamplingParams(temperature=0.0, max_tokens=1))
+        dt = time.time() - t0
+        print(f"# LARGE-BATCH prefill B={batch_prefill} S={max_len} ({ntok} tok, ~{ntok // 32} tok/expert): "
+              f"{ntok / dt:.0f} tok/s ({dt:.2f}s)", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"# large-batch prefill skipped ({type(e).__name__}: {e})", flush=True)
 
     try:
         import qb_sm120_plugin as qb
