@@ -1071,6 +1071,225 @@ extern "C" int sparse_moe_mm_2lvl_scatter(const void *A, const void *B, const vo
     return stream ? 0 : (int)cudaDeviceSynchronize();
 }
 
+// ================= FUSED GEMM1: gate_up -> clamped-SwiGLU -> MXFP4-quant, one kernel =================
+// Computes the gpt-oss expert gate_up seg-GEMM AND applies bias + clamped-SwiGLU + single-level MXFP4
+// quant of the intermediate h in the epilogue, writing FP4 h (Hwords) + per-32 e8m0 scaleH directly in
+// the down-GEMM's B-side layout. Kills the 771MB bf16 gate_up materialization + the swiglu 3-pass +
+// the separate quant. KEY: gpt-oss's native fused gate_up is pairwise-interleaved [g0,u0,g1,u1,...], so
+// each CTA's 2*BM=256 out-rows are 128 (gate,up) pairs -> 128 consecutive h-dims = 4 e8m0 blocks the CTA
+// quantizes LOCALLY (no cross-CTA reduction; hence single-level, gB=1 for the down GEMM). Mainloop is a
+// verbatim clone of matmul_sp_moe (battle-tested); only the epilogue is new. guBias is [E, Mpe] bf16
+// (padded rows 0). Ih = Mpe/2 = h-dim count = down in_f. scaleH step-major [Ih/128][N][4].
+__global__ void __launch_bounds__(256)
+matmul_sp_moe_gu_swiglu(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+                        const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+                        int M, int Mpe, int N, int Klog, const float *gA, const float *gB, const int *eblk,
+                        const __nv_bfloat16 *guBias, uint32_t *Hwords, uint8_t *scaleH, int Ih) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STAGES * ASZ;
+    uint8_t *b_s = smem + 2 * STAGES * ASZ;
+    uint8_t *scA_sm = b_s + STAGES * BSZ;
+    uint8_t *scB_sm = scA_sm + STAGES * WK * SCA;
+    uint8_t *met_sm = scB_sm + STAGES * WK * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STAGES * WK * MET);
+    uint64_t *empty = full + STAGES;
+
+    int erow = eblk[blockIdx.x] * Mpe;
+    int block_row = blockIdx.y * (2 * BM) + wg * BM;
+    int a_load_row = blockIdx.y * (2 * BM) + erow;
+    int block_col = blockIdx.x * BN;
+    int chunks = Klog / (128 * WK);
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[4], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_rowt[mt] = wm * 64 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[4], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_sidx[mt] = wg * 128 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[4];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) m_sidx[mt] = (wg * 128 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[32][4];
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STAGES; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ + BSZ + WK * SCA + WK * SCB + WK * MET)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STAGES * ASZ + s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row + BM), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ])), "l"(&mapB), "r"(chunk * BW_), "r"(block_col), "r"(bar));
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            int step = chunk * WK + sub;
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[(s * WK + sub) * SCA])), "l"(scaleA + (size_t)(step * M + a_load_row) * 4), "r"((uint32_t)SCA), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[(s * WK + sub) * SCB])), "l"(scaleB + (size_t)(step * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&met_sm[(s * WK + sub) * MET])), "l"((const uint8_t *)meta + (size_t)(step * M + a_load_row) * 8), "r"((uint32_t)MET), "r"(bar));
+        }
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STAGES; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STAGES; uint32_t par = (chunk / STAGES) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWG:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WG;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ, boff = s * BSZ;
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            const uint32_t *scA = (const uint32_t *)(scA_sm + (s * WK + sub) * SCA);
+            const uint32_t *scB = (const uint32_t *)(scB_sm + (s * WK + sub) * SCB);
+            const uint32_t *mtA = (const uint32_t *)(met_sm + (s * WK + sub) * MET);
+            uint32_t sav[4], sbv[8], ev[4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+            for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+            uint32_t af[4][4], bf[8][4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) {
+                int ao = (a_rowt[mt] + arow) * AW + sub * AROWB + acblk * 16; ao ^= ((ao >> 7) & 3) << 4;
+                uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+            }
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int bo = (b_col[n] + nrow) * BW_ + sub * BROWB + bsub * 16; bo ^= ((bo >> 7) & 7) << 4;
+                uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+            }
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    int idx = mt * 8 + n; float d0, d1, d2, d3;
+                    asm volatile(
+                        "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%12,%13,%14,%15}, %16, 0x0, {%17},{%18,%19}, {%20},{%21,%22};"
+                        : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                        : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                          "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                          "f"(acc[idx][0]), "f"(acc[idx][1]), "f"(acc[idx][2]), "f"(acc[idx][3]),
+                          "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+                    acc[idx][0] = d0; acc[idx][1] = d1; acc[idx][2] = d2; acc[idx][3] = d3;
+                }
+        }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STAGES;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWEG:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WEG;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    // --- epilogue: gate_up out -> smem (token-major, +bias) -> pairwise clamped-SwiGLU -> MXFP4 quant ---
+    __nv_bfloat16 *Cs = (__nv_bfloat16 *)smem;   // Cs[lc*(2*BM)+lr], lr=out-row(0..255), lc=token(0..127)
+    __syncthreads();
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int idx = mt * 8 + n;
+            int lr = wg * BM + a_rowt[mt] + (lane >> 2);
+            int lc = b_col[n] + (lane & 3) * 2;
+            int wrow = block_row + a_rowt[mt] + (lane >> 2) + erow;   // gA + guBias index (stacked)
+            int gc = block_col + lc;
+            float ga0 = gA ? gA[wrow] : 1.f, ga1 = gA ? gA[wrow + 8] : 1.f;
+            float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;
+            float bg0 = guBias ? __bfloat162float(guBias[wrow]) : 0.f;
+            float bg1 = guBias ? __bfloat162float(guBias[wrow + 8]) : 0.f;
+            Cs[lc * (2 * BM) + lr] = __float2bfloat16_rn(acc[idx][0] * ga0 * gb0 + bg0);
+            Cs[(lc + 1) * (2 * BM) + lr] = __float2bfloat16_rn(acc[idx][1] * ga0 * gb1 + bg0);
+            Cs[lc * (2 * BM) + lr + 8] = __float2bfloat16_rn(acc[idx][2] * ga1 * gb0 + bg1);
+            Cs[(lc + 1) * (2 * BM) + lr + 8] = __float2bfloat16_rn(acc[idx][3] * ga1 * gb1 + bg1);
+        }
+    __syncthreads();
+    // 128 tokens x 4 blocks of 32 h-dims = 512 units; each unit does one (token, 32-block) MXFP4 quant.
+    int base_n = blockIdx.x * BN;
+    for (int unit = tid; unit < BN * 4; unit += 256) {
+        int lc = unit & (BN - 1), db = unit >> 7;   // token 0..127, block 0..3
+        int tokg = base_n + lc;
+        float val[32], amax = 0.f;
+#pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int d = db * 32 + i;                     // local h-dim; out-rows 2d (gate), 2d+1 (up)
+            float gate = __bfloat162float(Cs[lc * (2 * BM) + 2 * d]);
+            float up = __bfloat162float(Cs[lc * (2 * BM) + 2 * d + 1]);
+            gate = fminf(gate, 7.f); up = fmaxf(fminf(up, 7.f), -7.f);   // gpt-oss clamped SwiGLU
+            float h = (gate / (1.f + __expf(-1.702f * gate))) * (up + 1.f);
+            val[i] = h; amax = fmaxf(amax, fabsf(h));
+        }
+        uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
+        int hblk = blockIdx.y * 4 + db;              // global 32-block; step=blockIdx.y, kb=db
+        scaleH[((long)blockIdx.y * N + tokg) * 4 + db] = sc;
+        float inv = 1.f / dec_ue4m3(sc);
+        uint32_t w[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i = 0; i < 16; i++) {
+            uint32_t byte = q_fp4(val[2 * i] * inv) | (q_fp4(val[2 * i + 1] * inv) << 4);
+            w[i >> 2] |= byte << ((i & 3) * 8);
+        }
+        *reinterpret_cast<uint4 *>(Hwords + (long)tokg * (Ih / 8) + hblk * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+    }
+}
+static std::once_flag g_gusw_attr_once;
+static void set_gusw_attr() { cudaFuncSetAttribute(matmul_sp_moe_gu_swiglu, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); }
+extern "C" void qb_init_gusw_attrs() { std::call_once(g_gusw_attr_once, set_gusw_attr); }
+// Fused gate_up+swiglu+quant. A: stacked pairwise-interleaved gate_up weights [E*Mpe, Klog/4]; B: routed
+// x (2-level nvfp4, from quant_act_2lvl); writes Hwords[N, Ih/2] FP4 + scaleH[Ih/128, N, 4] e8m0 (the
+// down GEMM reads these with gB=1). Klog = padded hidden (Hp). Mpe = padded 2*I (mpe_gu). Ih = Mpe/2.
+extern "C" int sparse_moe_gu_swiglu(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                    const void *meta, int Mtot, int Mpe, int N, int Klog, const void *gA,
+                                    const void *gB, const void *eblk, const void *guBias, void *Hwords,
+                                    void *scaleH, int Ih, void *stream) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, Mtot, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    std::call_once(g_gusw_attr_once, set_gusw_attr);
+    dim3 grid(N / BN, Mpe / (2 * BM)), block(256);
+    matmul_sp_moe_gu_swiglu<<<grid, block, SMEM, (cudaStream_t)stream>>>(
+        mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB, (const uint32_t *)meta, Mtot, Mpe, N,
+        Klog, (const float *)gA, (const float *)gB, (const int *)eblk, (const __nv_bfloat16 *)guBias,
+        (uint32_t *)Hwords, (uint8_t *)scaleH, Ih);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+
 extern "C" int fused_mlp_2lvl_skdown(const void *x, const void *gu_Ac, const void *gu_scaleA, const void *gu_meta,
                                      const void *gu_gA, const void *dn_Ac, const void *dn_scaleA, const void *dn_meta,
                                      const void *dn_gA, void *Bb, void *sBg, void *gBg, void *Cgu, void *Hb,

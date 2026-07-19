@@ -49,7 +49,10 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
                                        + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_scatter.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
                                                + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.qb_init_moe_attrs()
+    lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
     _BN = 128
 
@@ -168,16 +171,23 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     dnBias = get(f"model.layers.{layer}.mlp.experts.down_proj_bias").to(dev).float()
 
     gW, uW, dW, gB_, uB_, dB_, gp, up_, dp = [], [], [], [], [], [], [], [], []
+    gfu, gfu_bias = [], []   # native pairwise-interleaved gate_up (no de-interleave) for fused GEMM1
     for e in range(n_experts):
         gu = mxfp4_dequant(guB[e], guS[e]).float(); dn = mxfp4_dequant(dnB[e], dnS[e]).float()
         g, u = gu[0::2, :], gu[1::2, :]
         gW.append(g); uW.append(u); dW.append(dn)
         gB_.append(guBias[e][0::2]); uB_.append(guBias[e][1::2]); dB_.append(dnBias[e])
         gp.append(pack(pad_w(g))); up_.append(pack(pad_w(u))); dp.append(pack(pad_w(dn)))
+        gfu.append(pack(pad_w(gu)))                                 # [2I,H]->pad[mpe_gu,Hp]
+        gfu_bias.append(F.pad(guBias[e], (0, pad_w(gu).shape[0] - gu.shape[0])))
     I, H = gW[0].shape[0], gW[0].shape[1]
     Ip, Hp = pad_w(dW[0]).shape[1], pad_w(gW[0]).shape[1]
     mpeI, mpeH = pad_w(gW[0]).shape[0], pad_w(dW[0]).shape[0]
+    mpe_gu = pad_w(mxfp4_dequant(guB[0], guS[0]).float()).shape[0]  # 5888
+    Ih = mpe_gu // 2                                                # h-dim count = down in_f = Ip
     gS, uS_, dS = stack(gp), stack(up_), stack(dp)
+    guS_fused = stack(gfu)
+    guBias_fused = torch.stack(gfu_bias).to(torch.bfloat16).contiguous()  # [E, mpe_gu]
     gBias_s = torch.stack(gB_); uBias_s = torch.stack(uB_)
     dBias_s = torch.stack(dB_).to(torch.bfloat16).contiguous()  # [E,H] for the fused epilogue
 
@@ -238,4 +248,59 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     t_fu = bench(fused_down)
     print(f"# TIMING down-side  unfused={t_un:.3f}ms  fused={t_fu:.3f}ms  "
           f"speedup={t_un / t_fu:.2f}x  (r_pad={r_pad} rows)", flush=True)
+
+    # ================= INCREMENT 3: fused GEMM1 (gate_up -> swiglu -> MXFP4 quant) =================
+    def deq_h(Hw, sH):  # single-level FP4 h -> float [r_pad, Ih] (gB=1)
+        r = Hw.shape[0]; b = Hw.to(torch.long)
+        vals = FP4[torch.stack([b & 0xF, (b >> 4) & 0xF], dim=-1).reshape(r, Ih)]
+        nblk = Ih // 32; bl = torch.arange(nblk, device=dev)
+        scale = UE4M3[sH[bl // 4, :, bl % 4].long()].transpose(0, 1)  # [r, nblk]
+        return (vals.reshape(r, nblk, 32) * scale[..., None]).reshape(r, Ih)
+
+    def gemm1_fused():
+        bb, sb, gb = quant_act(xsp, Hp)
+        Hw = torch.empty((r_pad, Ih // 2), dtype=torch.uint8, device=dev)
+        sH = torch.empty((Ih // 128, r_pad, 4), dtype=torch.uint8, device=dev)
+        ac, meta, sA, ga = guS_fused
+        lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(),
+                                 ac.shape[0], mpe_gu, r_pad, Hp, ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(),
+                                 guBias_fused.data_ptr(), Hw.data_ptr(), sH.data_ptr(), Ih, 0)
+        return Hw, sH
+
+    def gemm1_unfused():  # current path: 2 seg-GEMMs + torch swiglu + quant
+        gg = seg_gemm(xsp, gS, mpeI, Hp, eblk)[:, :I].float() + gBias_s[row_exp]
+        uu = seg_gemm(xsp, uS_, mpeI, Hp, eblk)[:, :I].float() + uBias_s[row_exp]
+        h_ = swiglu(gg, uu)
+        hp_ = torch.zeros(r_pad, Ip, device=dev, dtype=torch.bfloat16); hp_[:, :I] = h_.to(torch.bfloat16)
+        return quant_act(hp_, Ip)
+
+    Hw, sH = gemm1_fused()
+    h_fused = deq_h(Hw, sH)[:, :I]
+    c_h = F.cosine_similarity(h_fused.flatten(), h.flatten(), dim=0).item()  # vs reference swiglu h
+    print(f"# CORRECTNESS fused-GEMM1 h vs reference swiglu-h: cos={c_h:.5f} "
+          f"{'OK' if c_h > 0.98 else 'LAYOUT-BUG' if c_h < 0.5 else 'CHECK'}  (single-level FP4 quant tax)", flush=True)
+
+    def fused_full():
+        Hw, sH = gemm1_fused()
+        out = torch.zeros(tokens, H, device=dev)
+        ac, meta, sA, ga = dS
+        lib.sparse_moe_mm_2lvl_scatter(ac.data_ptr(), Hw.data_ptr(), sA.data_ptr(), sH.data_ptr(), meta.data_ptr(),
+                                       ac.shape[0], mpeH, r_pad, Ip, ga.data_ptr(), 0, eblk.data_ptr(),
+                                       sc_tok.data_ptr(), sc_w.data_ptr(), dBias_s.data_ptr(), out.data_ptr(), H, 0)
+        return out
+
+    ff = fused_full()
+    c_full = F.cosine_similarity(ff.flatten(), ref.flatten(), dim=0).item()  # end-to-end vs 2-level unfused
+    print(f"# CORRECTNESS full-fused MoE vs unfused MoE (end-to-end): cos={c_full:.5f} "
+          f"{'OK' if c_full > 0.99 else 'CHECK'}", flush=True)
+
+    t_g1un = bench(gemm1_unfused)
+    t_g1fu = bench(gemm1_fused)
+    print(f"# TIMING GEMM1 (gate_up+swiglu+quant)  unfused={t_g1un:.3f}ms  fused={t_g1fu:.3f}ms  "
+          f"speedup={t_g1un / t_g1fu:.2f}x", flush=True)
+    # whole-MoE: unfused = gate_up-unfused + down-unfused ; fused = gemm1_fused + down-scatter
+    t_moe_un = bench(lambda: (gemm1_unfused(), unfused_down()))
+    t_moe_fu = bench(fused_full)
+    print(f"# TIMING whole-MoE  unfused={t_moe_un:.3f}ms  fused={t_moe_fu:.3f}ms  "
+          f"speedup={t_moe_un / t_moe_fu:.2f}x  (T={tokens} topk={topk}, r_pad={r_pad})", flush=True)
     print("# fused_moe done", flush=True)
