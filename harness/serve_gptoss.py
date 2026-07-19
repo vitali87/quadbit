@@ -43,9 +43,8 @@ def _ensure_so() -> None:
     # compute_120a,sm_120a (a plain -arch=sm_120a drops the 'a' and ptxas rejects the block-scale mma).
     import subprocess
     so = "/cache/sparse_fp4.so"
-    if os.path.exists(so):
-        print(f"# {so} present", flush=True)
-        return
+    # Always rebuild: the .so lives on the volume and outlives image rebuilds, and add_local_dir mtimes
+    # are unreliable as a freshness gate. ~90s compile is cheap insurance that kernel edits take effect.
     print(f"# building {so} (CUDA-13 gencode compute_120a,sm_120a)", flush=True)
     c = subprocess.run(["nvcc", "-gencode=arch=compute_120a,code=sm_120a", "-O3", "-shared",
                         "-Xcompiler", "-fPIC", "-o", so, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"],
@@ -60,7 +59,7 @@ def _ensure_so() -> None:
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
         batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False,
         graph: bool = False, graph_cap: int = 256, ablate: str = "", torchprof: bool = False,
-        prof: bool = False) -> None:
+        prof: bool = False, fused: bool = True) -> None:
     import time
 
     import torch
@@ -80,6 +79,7 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
         os.environ["QB_TORCHPROF"] = "1"
     if prof:
         os.environ["QB_GPTOSS_PROF"] = "1"
+    os.environ["QB_GPTOSS_FUSED"] = "1" if fused else "0"   # fully-fused MoE (GEMM1 + down-scatter)
     _ensure_so()
     print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} proj={proj} sparse_from={sparse_from} "
           f"graph={graph} cap={graph_cap if graph else 0} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)

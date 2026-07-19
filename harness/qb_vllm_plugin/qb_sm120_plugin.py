@@ -1058,7 +1058,13 @@ def _load_sparse_moe():
     lib.quantize_act_nvfp4_2lvl_s.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                        + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    # FUSED MoE kernels (gpt-oss throughput): GEMM1 gate_up+swiglu+quant, and down+scatter+combine.
+    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl_scatter.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
+                                               + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.qb_init_moe_attrs()
+    lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
 
     fp4 = torch.tensor(_FP4_VALS, device=dev)
@@ -1222,9 +1228,28 @@ def _load_sparse_moe():
         dropped = real - keep.sum()
         return src, eblk, dropped
 
+    def gu_swiglu(w, bb, sb, gb, hw, sh, mpe, r, in_f, eblk, gu_bias, ih):
+        # FUSED GEMM1: gate_up seg-GEMM + clamped-swiglu + single-level MXFP4 quant of h in one launch.
+        # w = pack of the NATIVE pairwise-interleaved gate_up (no de-interleave). bb/sb/gb = 2-level x
+        # (B-side). Writes hw[r, ih/2] FP4 + sh[ih/128, r, 4] e8m0 (the down GEMM reads these with gB=1).
+        ac, meta, sa, ga = w
+        lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(), meta.data_ptr(),
+                                 ac.shape[0], mpe, r, in_f, ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(),
+                                 gu_bias.data_ptr(), hw.data_ptr(), sh.data_ptr(), ih, _st())
+
+    def down_scatter(w, bb, sb, out, mpe, r, in_f, eblk, sc_tok, sc_w, bias, hout):
+        # FUSED down: seg-GEMM whose epilogue adds bias, weights by routing coeff, scatter-adds into
+        # out[t, hout] (f32, pre-zeroed). bb/sb = pre-quantized h (gB=1 single-level -> nullptr gB).
+        ac, meta, sa, ga = w
+        lib.sparse_moe_mm_2lvl_scatter(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(),
+                                       meta.data_ptr(), ac.shape[0], mpe, r, in_f, ga.data_ptr(), 0,
+                                       eblk.data_ptr(), sc_tok.data_ptr(), sc_w.data_ptr(),
+                                       bias.data_ptr() if bias is not None else 0, out.data_ptr(), hout, _st())
+
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
                               seg_gemm=seg_gemm, build_routing=build_routing,
-                              quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap)
+                              quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap,
+                              gu_swiglu=gu_swiglu, down_scatter=down_scatter)
     return _SPARSE
 
 
@@ -2030,6 +2055,7 @@ def _install_gptoss_moe() -> None:
         e = w13.shape[0]
         gp, up_, dp, gb, ub, db = [], [], [], [], [], []
         gd, ud, dd = [], [], []   # kept-dense bf16 weights (for the anchored projection)
+        gfu, gfu_bias = [], []    # native pairwise-interleaved gate_up pack + padded bias (fused GEMM1)
         i_dim = h_dim = 0
         for le in range(e):
             gu = _mxfp4_dequant(w13[le], w13s[le]).float()
@@ -2039,6 +2065,9 @@ def _install_gptoss_moe() -> None:
             if pack_gu:
                 gp.append(sp.pack(_pad(gw)))
                 up_.append(sp.pack(_pad(uw)))
+                gfu.append(sp.pack(_pad(gu)))   # gu is native [2I,H] interleaved -> fused GEMM1 weight
+                if b13 is not None:
+                    gfu_bias.append(F.pad(b13[le], (0, _pad(gu).shape[0] - gu.shape[0])))
             else:
                 gd.append(gw.to(torch.bfloat16))
                 ud.append(uw.to(torch.bfloat16))
@@ -2053,6 +2082,10 @@ def _install_gptoss_moe() -> None:
                 db.append(b2[le])
         layer._qbg_gate = sp.stack(gp) if pack_gu else None
         layer._qbg_up = sp.stack(up_) if pack_gu else None
+        layer._qbg_gu_fused = sp.stack(gfu) if gfu else None
+        layer._qbg_gu_bias_fused = torch.stack(gfu_bias).to(torch.bfloat16) if gfu_bias else None
+        layer._qbg_mpe_gu = (((2 * i_dim) + 255) // 256) * 256
+        layer._qbg_ih = layer._qbg_mpe_gu // 2
         layer._qbg_down = sp.stack(dp) if pack_dn else None
         layer._qbg_gate_d = torch.stack(gd) if gd else None
         layer._qbg_up_d = torch.stack(ud) if ud else None
@@ -2199,6 +2232,50 @@ def _install_gptoss_moe() -> None:
         if _prof:
             _lap("t_route")
         _abl = os.environ.get("QB_GPTOSS_ABLATE", "")
+        # FULLY-FUSED path (both-proj sparse, no router-on-input): the whole expert MLP is 3 launches --
+        # quant x once, GEMM1 (gate_up+clamped-swiglu+MXFP4-quant of h in one kernel), down+scatter+combine
+        # in one kernel. Kills the 771MB bf16 gate_up materialization + the swiglu 3-pass + the gather/
+        # combine/index_add plumbing (~40ms/6.5x offline @ T=4096). h is single-level MXFP4 (per-token
+        # global spans CTAs); end-to-end cos vs the 2-level path 0.996. Opt out with QB_GPTOSS_FUSED=0.
+        fast_fused = (os.environ.get("QB_GPTOSS_FUSED", "1") != "0" and layer._qbg_pack_gu
+                      and layer._qbg_pack_dn and not on_input and _abl == ""
+                      and getattr(layer, "_qbg_gu_fused", None) is not None)
+        if fast_fused:
+            bbx, sbx, gbx = sp.quant_act(x.to(torch.bfloat16))     # per-token 2-level FP4, once
+            idx = tok_of[srcc]
+            bb_g = bbx[idx].contiguous()
+            sb_g = sbx[:, idx, :].contiguous()
+            gb_g = (gbx[idx] * valid.to(torch.float32)).contiguous()
+            if _prof:
+                _lap("t_gather")
+            ih = layer._qbg_ih
+            hw = torch.empty((r_pad, ih // 2), dtype=torch.uint8, device=x.device)
+            sh = torch.empty((ih // 128, r_pad, 4), dtype=torch.uint8, device=x.device)
+            sp.gu_swiglu(layer._qbg_gu_fused, bb_g, sb_g, gb_g, hw, sh, layer._qbg_mpe_gu, r_pad, hp,
+                         eblk, layer._qbg_gu_bias_fused, ih)
+            if _prof:
+                _lap("t_gu_f")
+            # DOWN: read the fused FP4 h directly (gB=1 single-level -> ones) via the proven seg_into +
+            # index_add path. The atomic scatter-into-fp32 epilogue REGRESSED serve (uncoalesced atomics +
+            # an extra fp32->bf16 pass at 130k rows) despite winning offline; keep GEMM1 fusion, proven down.
+            gb1 = torch.ones(r_pad, dtype=torch.float32, device=x.device)
+            dbuf = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_down, hw, sh, gb1, dbuf, mpeH, ip, eblk)
+            d = dbuf[:, :hh_dim]
+            if layer._qbg_db is not None:
+                d = d + layer._qbg_db[row_exp]
+            rw = (w_of[srcc] * valid.to(torch.float32))
+            y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+            y.index_add_(0, idx, (d.float() * rw[:, None]).to(x.dtype))
+            if _prof:
+                _lap("t_down_f")
+                if STATS["moe_calls"] % 48 == 0:
+                    print("[qb_prof-fused] " + " ".join(f"{k}={STATS[k] * 1000:.0f}ms"
+                          for k in ("t_route", "t_gather", "t_gu_f", "t_down_f") if k in STATS)
+                          + f" (over {STATS['moe_calls']} calls)", flush=True)
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input)
+            return y
         # FAST gate/up path (both-proj sparse, no router-on-input): the bf16 permutation gather
         # x[tok_of[srcc]] (~400MB/layer, random-access) was ~65% of the MoE time. Quant is PER-TOKEN, so
         # quantize x ONCE (t rows), then gather the FP4 rep (1/4 the bytes) and SHARE it across gate+up.
