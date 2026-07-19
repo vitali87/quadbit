@@ -145,16 +145,14 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
                 for (int n = 0; n < 8; n++) {
-                    int idx = mt * 8 + n; float d0, d1, d2, d3;
+                    int idx = mt * 8 + n;   // in-place accumulate: D and C both = %0-%3 (drops the acc<-d copies -> fewer MOVs/regs)
                     asm volatile(
                         "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
-                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%12,%13,%14,%15}, %16, 0x0, {%17},{%18,%19}, {%20},{%21,%22};"
-                        : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
                         : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
                           "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
-                          "f"(acc[idx][0]), "f"(acc[idx][1]), "f"(acc[idx][2]), "f"(acc[idx][3]),
                           "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
-                    acc[idx][0] = d0; acc[idx][1] = d1; acc[idx][2] = d2; acc[idx][3] = d3;
                 }
         }
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
@@ -955,16 +953,14 @@ matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ 
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
                 for (int n = 0; n < 8; n++) {
-                    int idx = mt * 8 + n; float d0, d1, d2, d3;
+                    int idx = mt * 8 + n;   // in-place accumulate: D and C both = %0-%3 (drops the acc<-d copies -> fewer MOVs/regs)
                     asm volatile(
                         "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
-                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%12,%13,%14,%15}, %16, 0x0, {%17},{%18,%19}, {%20},{%21,%22};"
-                        : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
                         : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
                           "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
-                          "f"(acc[idx][0]), "f"(acc[idx][1]), "f"(acc[idx][2]), "f"(acc[idx][3]),
                           "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
-                    acc[idx][0] = d0; acc[idx][1] = d1; acc[idx][2] = d2; acc[idx][3] = d3;
                 }
         }
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
@@ -1198,16 +1194,14 @@ matmul_sp_moe_gu_swiglu(const __grid_constant__ CUtensorMap mapA, const __grid_c
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
                 for (int n = 0; n < 8; n++) {
-                    int idx = mt * 8 + n; float d0, d1, d2, d3;
+                    int idx = mt * 8 + n;   // in-place accumulate: D and C both = %0-%3 (drops the acc<-d copies -> fewer MOVs/regs)
                     asm volatile(
                         "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
-                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%12,%13,%14,%15}, %16, 0x0, {%17},{%18,%19}, {%20},{%21,%22};"
-                        : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
                         : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
                           "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
-                          "f"(acc[idx][0]), "f"(acc[idx][1]), "f"(acc[idx][2]), "f"(acc[idx][3]),
                           "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
-                    acc[idx][0] = d0; acc[idx][1] = d1; acc[idx][2] = d2; acc[idx][3] = d3;
                 }
         }
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
