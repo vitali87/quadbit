@@ -194,6 +194,133 @@ def bench_shapes(iters: int = 20) -> None:
     print("# bench_shapes done", flush=True)
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=1800)
+def bench_moe_vs_bf16(iters: int = 20) -> None:
+    """PROVE the large-expert win: our FULL fused W4A4 monolith MoE (route+quant+gather+gu_swiglu+seg_bw+
+    combine) vs a Marlin-class W4A16 baseline (bf16 grouped GEMM, NO activation-quant -- the honest Marlin
+    compute) across gpt-oss-small -> GLM/DeepSeek-large expert dims, SAME invocation (no clock noise). Shows
+    the crossover: Marlin's W4A16 wins gpt-oss's tiny experts; our sparse-FP4 monolith wins the frontier
+    large-expert shapes where the 2:4 mma advantage dominates. Both paths share routing + inverse combine."""
+    import torch
+    dev = torch.device("cuda")
+    so = "/root/sparse_fp4.so"
+    c = subprocess.run(["nvcc", "-arch=sm_120a", "-O3", "-shared", "-Xcompiler", "-fPIC",
+                        "-o", so, "/root/cuda/sparse_fp4_lib.cu", "-lcuda"], capture_output=True, text=True)
+    if c.returncode != 0:
+        print(c.stderr, flush=True); raise SystemExit(1)
+    lib = ctypes.CDLL(so)
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4 + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4 + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
+    lib.moe_route.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
+    lib.qb_init_moe_attrs(); lib.qb_init_gusw_attrs()
+    FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    cc = torch.arange(128, device=dev); e_, m_ = (cc >> 3) & 0xf, cc & 7
+    UE4M3 = torch.where(e_ == 0, m_.float() * 0.001953125, (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
+        biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):
+        out_f, in_f = w.shape; ks = in_f // 128
+        wg = w.float().view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2)
+        scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga); sdeq = UE4M3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(), ga.reshape(out_f).float().contiguous())
+
+    def stack(ps):
+        return tuple(torch.cat([p[i] for p in ps], 0 if i in (0, 3) else 1).contiguous() for i in range(4))
+
+    def bench(fn):
+        for _ in range(4):
+            fn()
+        torch.cuda.synchronize()
+        s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True); ts = []
+        for _ in range(iters):
+            s.record(); fn(); e.record(); torch.cuda.synchronize(); ts.append(s.elapsed_time(e))
+        ts.sort(); return ts[len(ts) // 2]
+
+    shapes = [("gpt-oss-20b   ", 3072, 2944, 32, 1016), ("GLM-5.2-class ", 5120, 1536, 128, 2048),
+              ("DeepSeek-V4   ", 7168, 2048, 64, 2048), ("DeepSeek @8k/e", 7168, 2048, 64, 8192)]
+    print("# PROVE large-expert win: fused W4A4 monolith MoE vs Marlin-class W4A16 bf16 grouped-GEMM (same invocation)", flush=True)
+    for label, H, I, E, tpe in shapes:
+        Hp = ((H + 127) // 128) * 128; mpe_gu = ((2 * I + 255) // 256) * 256; Ih = mpe_gu // 2
+        Ip = ((I + 127) // 128) * 128; mpeH = ((H + 255) // 256) * 256
+        torch.manual_seed(1)
+        guS = stack([pack(torch.randn(mpe_gu, Hp, device=dev) * 0.05) for _ in range(E)])
+        dS = stack([pack(torch.randn(mpeH, Ip, device=dev) * 0.05) for _ in range(E)])
+        gu_bf = (torch.randn(E, Hp, mpe_gu, device=dev) * 0.05).to(torch.bfloat16)   # [E,K,N] for grouped_mm
+        dn_bf = (torch.randn(E, Ip, mpeH, device=dev) * 0.05).to(torch.bfloat16)
+        gubias = torch.zeros(E, mpe_gu, device=dev, dtype=torch.bfloat16)
+        tok = E * tpe; topk = 1
+        assign = torch.randint(0, E, (tok,), device=dev)
+        counts = torch.bincount(assign, minlength=E); padc = ((counts + 127) // 128) * 128
+        poff = (torch.cumsum(padc, 0) - padc).to(torch.int64); r_pad = int(padc.sum().item())
+        offs = torch.cumsum(padc, 0).to(torch.int32)
+        src = torch.full((r_pad,), -1, dtype=torch.int32, device=dev); counter = torch.empty(E, dtype=torch.int32, device=dev)
+        lib.moe_route(assign.to(torch.int32).data_ptr(), poff.data_ptr(), counter.data_ptr(), src.data_ptr(), tok, E, 0)
+        ends = torch.cumsum(padc, 0)
+        eblk = torch.bucketize(torch.arange(r_pad // 128, device=dev) * 128, ends, right=True).clamp_max_(E - 1).to(torch.int32)
+        valid = src >= 0; srcc = src.clamp_min(0).long()
+        x = torch.randn(tok, Hp, device=dev, dtype=torch.bfloat16) * 0.1
+        inv = torch.full((tok * topk + 1,), -1, dtype=torch.int32, device=dev)
+        inv.scatter_(0, torch.where(valid, src, torch.full_like(src, tok * topk)).long(), torch.arange(r_pad, dtype=torch.int32, device=dev))
+        inv = inv[:tok * topk].contiguous()
+        acg, mg, sAg, gag = guS; acd, md, sAd, gad = dS
+
+        def fused_moe():
+            bb = torch.empty((tok, Hp // 2), dtype=torch.uint8, device=dev); sb = torch.empty((Hp // 128, tok, 4), dtype=torch.uint8, device=dev); gb = torch.empty((tok,), dtype=torch.float32, device=dev)
+            lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), tok, Hp)
+            bbg = bb[srcc].contiguous(); sbg = sb[:, srcc, :].contiguous(); gbg = (gb[srcc] * valid.float()).contiguous()
+            hw = torch.empty((r_pad, Ih // 2), dtype=torch.uint8, device=dev); sh = torch.empty((Ih // 128, r_pad, 4), dtype=torch.uint8, device=dev)
+            lib.sparse_moe_gu_swiglu(acg.data_ptr(), bbg.data_ptr(), sAg.data_ptr(), sbg.data_ptr(), mg.data_ptr(), acg.shape[0], mpe_gu, r_pad, Hp, gag.data_ptr(), gbg.data_ptr(), eblk.data_ptr(), gubias.data_ptr(), hw.data_ptr(), sh.data_ptr(), Ih, 0)
+            scw = valid.float().contiguous(); dbuf = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=dev)
+            lib.sparse_moe_mm_2lvl_bw(acd.data_ptr(), hw.data_ptr(), sAd.data_ptr(), sh.data_ptr(), md.data_ptr(), dbuf.data_ptr(), acd.shape[0], mpeH, r_pad, Ip, gad.data_ptr(), 0, eblk.data_ptr(), scw.data_ptr(), 0, H, 0)
+            y = torch.empty(tok, H, dtype=torch.bfloat16, device=dev)
+            lib.moe_combine_topk(dbuf.data_ptr(), inv.data_ptr(), y.data_ptr(), tok, H, topk, mpeH, 0)
+            return y
+
+        def bf16_moe():  # Marlin-class W4A16 compute: bf16 grouped GEMM, NO act-quant
+            xs = x[srcc] * valid[:, None]                                  # gather bf16 (no quant)
+            gu = torch._grouped_mm(xs, gu_bf, offs=offs)                   # [r_pad, mpe_gu]
+            g, u = gu[:, 0::2], gu[:, 1::2]
+            h = (g * torch.sigmoid(1.702 * g)) * (u + 1.0)                 # swiglu
+            hp = torch.zeros(r_pad, Ip, device=dev, dtype=torch.bfloat16); hp[:, :Ih] = h.to(torch.bfloat16)
+            d = torch._grouped_mm(hp, dn_bf, offs=offs)[:, :H]             # [r_pad, H]
+            y = torch.empty(tok, H, dtype=torch.bfloat16, device=dev)
+            lib.moe_combine_topk(d.contiguous().data_ptr(), inv.data_ptr(), y.data_ptr(), tok, H, topk, H, 0)
+            return y
+
+        try:
+            tf = bench(fused_moe); tb = bench(bf16_moe)
+            win = "quadbit WINS" if tf < tb else "Marlin wins"
+            print(f"# {label} H={H} I={I} E={E} tok/e={tpe:5d}: fused-W4A4 {tf:6.2f}ms | bf16-W4A16 {tb:6.2f}ms | "
+                  f"{tb / tf:.2f}x  ({win})", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"# {label}: skipped ({type(ex).__name__}: {ex})", flush=True)
+    print("# bench_moe_vs_bf16 done", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000", timeout=3600, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4, iters: int = 30) -> None:
