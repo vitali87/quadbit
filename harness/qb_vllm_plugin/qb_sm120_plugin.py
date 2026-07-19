@@ -2282,10 +2282,14 @@ def _install_gptoss_moe() -> None:
             if emap is None:
                 # inverse-index coalesced combine (no atomics). src[rr]=flat token*topk+k (single rank);
                 # inverse[flat]=rr -> combine sums the <=topk routed rows per token. ~1.6x less traffic.
-                inverse = torch.full((t * topk,), -1, dtype=torch.int32, device=x.device)
-                inverse[src[valid].long()] = torch.arange(r_pad, dtype=torch.int32, device=x.device)[valid]
+                # SYNC-FREE build: scatter rr to inverse[src], padding rows (src=-1) -> a sink slot (sliced
+                # off). NO boolean indexing (src[valid] would call nonzero() = data-dependent host sync).
+                rr = torch.arange(r_pad, dtype=torch.int32, device=x.device)
+                src_idx = torch.where(valid, src, torch.full_like(src, t * topk))
+                inverse = torch.full((t * topk + 1,), -1, dtype=torch.int32, device=x.device)
+                inverse.scatter_(0, src_idx, rr)
                 y = torch.empty(t, hh_dim, dtype=torch.bfloat16, device=x.device)
-                sp.combine(dbuf, inverse, y, t, hh_dim, topk, mpeH)
+                sp.combine(dbuf, inverse[:t * topk], y, t, hh_dim, topk, mpeH)
             else:  # EP shard: src indexes the filtered assign, not token*topk+k -> keep index_add
                 y = torch.zeros(t, hh_dim, dtype=torch.bfloat16, device=x.device)
                 y.index_add_(0, idx, dbuf[:, :hh_dim])

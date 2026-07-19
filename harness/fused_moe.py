@@ -558,10 +558,12 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
                                   dbuf.data_ptr(), acd.shape[0], mpeH, _rmax, Ip, gad.data_ptr(), 0, eblk2.data_ptr(),
                                   sc_w2.data_ptr(), dBias_s.data_ptr(), H, 0)  # down-GEMM + fused bias+weight, coalesced
         ev[5].record()
-        inverse2 = torch.full((tokens * topk,), -1, dtype=torch.int32, device=dev)
-        inverse2[src2[valid2].long()] = torch.arange(_rmax, dtype=torch.int32, device=dev)[valid2]
+        rr2 = torch.arange(_rmax, dtype=torch.int32, device=dev)
+        src_idx2 = torch.where(valid2, src2, torch.full_like(src2, tokens * topk))
+        inverse2 = torch.full((tokens * topk + 1,), -1, dtype=torch.int32, device=dev)
+        inverse2.scatter_(0, src_idx2, rr2)
         y = torch.empty(tokens, H, dtype=torch.bfloat16, device=dev)
-        lib.moe_combine_topk(dbuf.data_ptr(), inverse2.data_ptr(), y.data_ptr(), tokens, H, topk, mpeH, 0)
+        lib.moe_combine_topk(dbuf.data_ptr(), inverse2[:tokens * topk].data_ptr(), y.data_ptr(), tokens, H, topk, mpeH, 0)
         ev[6].record()
         torch.cuda.synchronize()
         for i in range(6):
