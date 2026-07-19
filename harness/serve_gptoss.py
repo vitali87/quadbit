@@ -59,7 +59,7 @@ def _ensure_so() -> None:
               secrets=[modal.Secret.from_name("huggingface")])
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
         batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False,
-        graph: bool = False, graph_cap: int = 256, ablate: str = "") -> None:
+        graph: bool = False, graph_cap: int = 256, ablate: str = "", torchprof: bool = False) -> None:
     import time
 
     import torch
@@ -75,6 +75,8 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
         os.environ["QB_GRAPH_CAP"] = str(graph_cap)
     if ablate:
         os.environ["QB_GPTOSS_ABLATE"] = ablate
+    if torchprof:
+        os.environ["QB_TORCHPROF"] = "1"
     _ensure_so()
     print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} proj={proj} sparse_from={sparse_from} "
           f"graph={graph} cap={graph_cap if graph else 0} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
@@ -132,6 +134,13 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     reqs = [{"prompt_token_ids": big} for _ in range(batch_prefill)]
     ntok = batch_prefill * S
     one = SamplingParams(temperature=0.0, max_tokens=1)
+    if os.environ.get("QB_TORCHPROF") == "1":
+        from torch.profiler import ProfilerActivity, profile
+        llm.generate(reqs, one)  # warm
+        with profile(activities=[ProfilerActivity.CUDA]) as prof:
+            llm.generate(reqs, one)
+        print("# ===== TORCH PROFILER (large-batch prefill, top CUDA ops) =====", flush=True)
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30), flush=True)
     iters = 20
     try:
         for _ in range(3):  # warm (kernel JIT, autotune, allocator)
