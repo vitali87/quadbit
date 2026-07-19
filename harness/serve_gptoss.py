@@ -93,6 +93,31 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     ppl = math.exp(sum(nlls) / len(nlls)) if nlls else float("nan")
     print(f"# PPL over {len(nlls)}-token passage: {ppl:.3f}", flush=True)
 
+    # --- throughput (prefill + decode, B=1) and peak memory ---
+    tok = llm.get_tokenizer()
+    base = tok.encode(PASSAGE)
+    for plen in (512, 1536):
+        gen = 64
+        plen = min(plen, max_len - gen - 8)
+        if plen <= 0:
+            continue
+        ptoks = (base * ((plen // len(base)) + 1))[:plen]
+        try:
+            tp0 = time.time()
+            llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=1))
+            prefill_s = time.time() - tp0
+            td0 = time.time()
+            dout = llm.generate([{"prompt_token_ids": ptoks}], SamplingParams(temperature=0.0, max_tokens=gen))
+            dec_s = time.time() - td0
+            gtok = len(dout[0].outputs[0].token_ids)
+            dec_only = max(1e-6, dec_s - prefill_s)
+            steps = max(1, gtok - 1)
+            print(f"# serve B=1 prompt={plen}: prefill {plen / prefill_s:.0f} tok/s, "
+                  f"decode {steps / dec_only:.1f} tok/s", flush=True)
+        except Exception as e:  # noqa: BLE001 - timing must not abort the eval
+            print(f"# timing skipped prompt={plen} ({type(e).__name__}: {e})", flush=True)
+    print(f"# peak GPU mem {torch.cuda.max_memory_allocated() / 1e9:.1f} GB", flush=True)
+
     try:
         import qb_sm120_plugin as qb
         print(f"# STATS moe_calls={qb.STATS.get('moe_calls')} "

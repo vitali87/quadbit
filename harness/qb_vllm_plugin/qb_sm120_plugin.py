@@ -1957,18 +1957,26 @@ def _install_gptoss_moe() -> None:
         up = up.clamp(-7.0, 7.0)
         return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
 
-    def _dense_route(xrows, wd, out_dim, row_exp, present):
-        # dense bf16 grouped matmul for an anchored (kept-dense) projection. wd [E,out,in]; xrows
-        # [R, in_pad>=in] -> [R, out] float. Expert-blocked (rows are contiguous per expert from
-        # build_routing, but we mask to be robust). Used only for the projection kept dense.
+    def _dense_route(xrows, wd, out_dim, row_exp, present, eblk):
+        # dense bf16 GROUPED matmul for an anchored (kept-dense) projection. wd [E,out,in]; xrows
+        # [R, in_pad>=in] -> [R, out] float. Rows are expert-CONTIGUOUS (build_routing sorts + 128-pads),
+        # so torch._grouped_mm with per-expert row offsets does it in ONE launch (no python loop). Falls
+        # back to the masked per-expert loop if _grouped_mm is unavailable. Invalid/padded rows carry
+        # x=0 (xsp zeroed) -> out 0, masked downstream.
         in_w = wd.shape[2]
-        out = torch.zeros(xrows.shape[0], out_dim, device=xrows.device, dtype=torch.float32)
-        xf = xrows[:, :in_w].to(torch.bfloat16)
-        for ex in present:
-            m = row_exp == ex
-            if bool(m.any()):
-                out[m] = (xf[m] @ wd[int(ex)].t().to(torch.bfloat16)).float()
-        return out
+        xg = xrows[:, :in_w].contiguous().to(torch.bfloat16)
+        try:
+            uniq, counts = torch.unique_consecutive(eblk, return_counts=True)  # experts in row order
+            offs = (torch.cumsum(counts, 0) * 128).to(torch.int32)             # cumulative row ends
+            b = wd[uniq].transpose(1, 2).contiguous().to(torch.bfloat16)       # [G, in, out]
+            return torch._grouped_mm(xg, b, offs=offs).float()
+        except Exception:  # noqa: BLE001 - grouped_mm unavailable/unsupported -> correct-but-slow loop
+            out = torch.zeros(xrows.shape[0], out_dim, device=xrows.device, dtype=torch.float32)
+            for ex in present:
+                m = row_exp == ex
+                if bool(m.any()):
+                    out[m] = (xg[m] @ wd[int(ex)].t()).float()
+            return out
 
     def patched_pw(self, layer):
         global _PW_IDX
@@ -2086,8 +2094,8 @@ def _install_gptoss_moe() -> None:
             g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii].float()
             u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii].float()
         else:  # gate_up anchored dense (the tax-carrying projection)
-            g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present)
-            u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present)
+            g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk)
+            u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk)
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
@@ -2097,7 +2105,7 @@ def _install_gptoss_moe() -> None:
         if layer._qbg_pack_dn:
             d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim].float()
         else:  # down anchored dense
-            d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present)
+            d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present, eblk)
         if layer._qbg_db is not None:
             d = d + layer._qbg_db[row_exp]
         rw = valid.float() if on_input else (w_of[srcc] * valid.float())
