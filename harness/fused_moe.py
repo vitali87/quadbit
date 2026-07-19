@@ -218,6 +218,7 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                           + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
+    lib.moe_route.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.qb_init_moe_attrs()
     lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
@@ -573,4 +574,31 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     for nm, a in zip(names, acc_ms, strict=False):
         print(f"#   {nm:8s} {a / (NREP + 3):6.3f}ms  ({100 * a / tot:4.1f}%)", flush=True)
     print(f"#   TOTAL    {tot / (NREP + 3):6.3f}ms/layer   (kernels gemm1+down vs plumbing route+quant+gather+scatter)", flush=True)
+
+    # ---- MONOLITH increment: fused routing kernel (counting sort) vs torch _fast_route ----
+    def route_kernel(assign_i):
+        counts = torch.bincount(assign_i, minlength=n_experts)
+        padc = ((counts + 127) // 128) * 128
+        poff = (torch.cumsum(padc, 0) - padc).to(torch.int64)
+        srck = torch.full((_rmax,), -1, dtype=torch.int32, device=dev)
+        counter = torch.empty(n_experts, dtype=torch.int32, device=dev)
+        lib.moe_route(assign_i.data_ptr(), poff.data_ptr(), counter.data_ptr(), srck.data_ptr(),
+                      assign_i.numel(), n_experts, 0)
+        ends = torch.cumsum(padc, 0)
+        eblkk = torch.bucketize(torch.arange(_rmax // 128, device=dev) * 128, ends, right=True).clamp_max_(n_experts - 1).to(torch.int32)
+        return srck, eblkk
+
+    assign_i = topk_ids.reshape(-1).to(torch.int32)
+    srck, eblkk = route_kernel(assign_i)
+    validk = srck >= 0
+    placed_exp = assign_i[srck.clamp_min(0).long()]
+    block_exp = eblkk[torch.arange(_rmax, device=dev) // 128]
+    ok_route = bool((placed_exp[validk] == block_exp[validk]).all().item())
+    cnt_match = int(validk.sum().item()) == tokens * topk
+    print(f"# CORRECTNESS moe_route grouping: {'OK' if ok_route and cnt_match else 'MISMATCH'} "
+          f"(placed {int(validk.sum().item())}/{tokens * topk})", flush=True)
+    t_tr = bench(lambda: fast_route(topk_ids.reshape(-1).to(torch.long)))
+    t_kr = bench(lambda: route_kernel(topk_ids.reshape(-1).to(torch.int32)))
+    print(f"# TIMING routing  torch _fast_route={t_tr:.3f}ms  kernel counting-sort={t_kr:.3f}ms  "
+          f"speedup={t_tr / t_kr:.2f}x", flush=True)
     print("# fused_moe done", flush=True)

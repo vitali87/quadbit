@@ -1064,6 +1064,29 @@ __global__ void moe_combine(const __nv_bfloat16 *dbuf, const int *inverse, __nv_
         y[(size_t)token * H + f] = __float2bfloat16(acc);
     }
 }
+// Fused routing (counting sort): group routed slots by expert in ONE kernel, replacing torch argsort +
+// bincount + cumsum + within + dest-scatter (~10 small ops). Few experts (32) -> a counting sort (per-expert
+// atomic slot counter) beats a comparison/radix sort. src[poff[e]+slot] = original slot i; intra-expert order
+// is arbitrary (irrelevant to the seg GEMM + inverse combine). poff = exclusive-cumsum of the 128-padded
+// per-expert counts (host/torch precompute, cheap). counter[E] zeroed here; src pre-filled with -1 by caller
+// (padding slots stay -1). assign[i] = expert of slot i (-1 = masked/off-rank, skipped).
+__global__ void moe_route_scatter(const int *assign, const long *poff, int *counter, int *src, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+    int e = assign[i];
+    if (e < 0) return;
+    int slot = atomicAdd(&counter[e], 1);
+    src[poff[e] + slot] = i;
+}
+extern "C" int moe_route(const void *assign, const void *poff, void *counter, void *src, int N, int E,
+                         void *stream) {
+    cudaStream_t s = (cudaStream_t)stream;
+    cudaMemsetAsync(counter, 0, (size_t)E * sizeof(int), s);
+    int tpb = 256;
+    moe_route_scatter<<<(N + tpb - 1) / tpb, tpb, 0, s>>>(
+        (const int *)assign, (const long *)poff, (int *)counter, (int *)src, N);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
 extern "C" int moe_combine_topk(const void *dbuf, const void *inverse, void *y, int t, int H, int topk,
                                 int Mpe, void *stream) {
     moe_combine<<<t, 256, (size_t)topk * sizeof(int), (cudaStream_t)stream>>>(
