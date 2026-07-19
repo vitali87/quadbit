@@ -303,4 +303,18 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     t_moe_fu = bench(fused_full)
     print(f"# TIMING whole-MoE  unfused={t_moe_un:.3f}ms  fused={t_moe_fu:.3f}ms  "
           f"speedup={t_moe_un / t_moe_fu:.2f}x  (T={tokens} topk={topk}, r_pad={r_pad})", flush=True)
+
+    # ---- gather cost (the shared wall): serve does bbx[idx] + sbx[:,idx,:] + gbx[idx] per layer ----
+    bbx, sbx, gbx = quant_act(x.to(torch.bfloat16), H)   # per-token quant (t rows), once
+    idx = tok_of[srcc]
+
+    def gather_only():
+        _bb = bbx[idx].contiguous()
+        _sb = sbx[:, idx, :].contiguous()
+        _gb = (gbx[idx] * valid.float()).contiguous()
+        return _bb, _sb, _gb
+
+    t_gather = bench(gather_only)
+    print(f"# TIMING gather (bbx[idx]+sbx[:,idx,:]+gbx[idx]) = {t_gather:.3f}ms  "
+          f"({100 * t_gather / t_moe_fu:.0f}% of fused whole-MoE) -- the shared fast_gu/fused wall", flush=True)
     print("# fused_moe done", flush=True)
