@@ -2182,23 +2182,39 @@ def _install_gptoss_moe() -> None:
         # (.unique() + .any()) was 2 host-syncs/layer for nothing in the both-proj-sparse path.
         need_present = (not layer._qbg_pack_gu) or (not layer._qbg_pack_dn)
         present = row_exp[valid].unique() if need_present else None
-        xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
-        if on_input:
-            xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
-        # vLLM pads gpt-oss dims to 128-aligned (hh_dim=3072=hp, ii=2944=ip), so the old
-        # zeros(r_pad,hp)+copy was a dead [rp x 3072] alloc+copy per layer. Use xs directly when aligned.
-        xsp = xs.contiguous() if hp == hh_dim else _padrows(xs, r_pad, hp, hh_dim, x.device)
-        _abl = os.environ.get("QB_GPTOSS_ABLATE", "")  # skipseg -> zeros for the sparse matmul (isolates
-        # routing/quant/scatter overhead from the kernel); skipquant handled inside quant path if needed
-        if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
-            g = torch.zeros(r_pad, ii, device=x.device, dtype=torch.float32)
-            u = torch.zeros(r_pad, ii, device=x.device, dtype=torch.float32)
-        elif layer._qbg_pack_gu:  # keep bf16 throughout (the fp32 g/u/d were ~770MB each, pure BW waste)
-            g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii]
-            u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii]
-        else:  # gate_up anchored dense (the tax-carrying projection)
-            g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk).to(torch.bfloat16)
-            u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk).to(torch.bfloat16)
+        _abl = os.environ.get("QB_GPTOSS_ABLATE", "")
+        # FAST gate/up path (both-proj sparse, no router-on-input): the bf16 permutation gather
+        # x[tok_of[srcc]] (~400MB/layer, random-access) was ~65% of the MoE time. Quant is PER-TOKEN, so
+        # quantize x ONCE (t rows), then gather the FP4 rep (1/4 the bytes) and SHARE it across gate+up.
+        # Bit-identical to gather-then-quant (per-row quant is position-independent). Invalid slots zeroed
+        # via the per-row global scale.
+        fast_gu = layer._qbg_pack_gu and layer._qbg_pack_dn and not on_input and _abl == ""
+        if fast_gu:
+            bbx, sbx, gbx = sp.quant_act(x.to(torch.bfloat16))    # per-token FP4, once
+            idx = tok_of[srcc]
+            bb_g = bbx[idx].contiguous()
+            sb_g = sbx[:, idx, :].contiguous()
+            gb_g = (gbx[idx] * valid.to(torch.float32)).contiguous()
+            g = torch.empty(r_pad, mpeI, dtype=torch.bfloat16, device=x.device)
+            u = torch.empty(r_pad, mpeI, dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_gate, bb_g, sb_g, gb_g, g, mpeI, hp, eblk)
+            sp.seg_into(layer._qbg_up, bb_g, sb_g, gb_g, u, mpeI, hp, eblk)
+            g = g[:, :ii]
+            u = u[:, :ii]
+        else:
+            xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
+            if on_input:
+                xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+            xsp = xs.contiguous() if hp == hh_dim else _padrows(xs, r_pad, hp, hh_dim, x.device)
+            if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
+                g = torch.zeros(r_pad, ii, device=x.device, dtype=torch.bfloat16)
+                u = torch.zeros(r_pad, ii, device=x.device, dtype=torch.bfloat16)
+            elif layer._qbg_pack_gu:
+                g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii]
+                u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii]
+            else:  # gate_up anchored dense (the tax-carrying projection)
+                g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk).to(torch.bfloat16)
+                u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk).to(torch.bfloat16)
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
