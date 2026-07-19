@@ -2016,6 +2016,17 @@ def _install_gptoss_moe() -> None:
         up = up.clamp(-7.0, 7.0)
         return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
 
+    _ab_mode = os.environ.get("QB_AB") == "1"   # same-invocation A/B: driver toggles /dev/shm/qb_fused,
+
+    def _fused_flag():  # worker reads it per-apply (driver's os.environ doesn't reach the EngineCore worker)
+        if _ab_mode:
+            try:
+                with open("/dev/shm/qb_fused") as f:
+                    return f.read(1) != "0"
+            except OSError:
+                pass
+        return os.environ.get("QB_GPTOSS_FUSED", "1") != "0"
+
     def _padrows(xr, r, wide, real, dev):  # widen [r, real] -> [r, wide] with zeros (fallback if in-dim
         o = torch.zeros(r, wide, device=dev, dtype=torch.bfloat16)   # not 128-aligned; no-op for gpt-oss)
         o[:, :real] = xr
@@ -2274,7 +2285,7 @@ def _install_gptoss_moe() -> None:
         # in one kernel. Kills the 771MB bf16 gate_up materialization + the swiglu 3-pass + the gather/
         # combine/index_add plumbing (~40ms/6.5x offline @ T=4096). h is single-level MXFP4 (per-token
         # global spans CTAs); end-to-end cos vs the 2-level path 0.996. Opt out with QB_GPTOSS_FUSED=0.
-        fast_fused = (os.environ.get("QB_GPTOSS_FUSED", "1") != "0" and layer._qbg_pack_gu
+        fast_fused = (_fused_flag() and layer._qbg_pack_gu
                       and layer._qbg_pack_dn and not on_input and _abl == ""
                       and getattr(layer, "_qbg_gu_fused", None) is not None)
         if fast_fused:

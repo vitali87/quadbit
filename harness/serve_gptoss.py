@@ -59,7 +59,7 @@ def _ensure_so() -> None:
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
         batch_prefill: int = 16, max_batched: int = 16384, bench_only: bool = False,
         graph: bool = False, graph_cap: int = 256, ablate: str = "", torchprof: bool = False,
-        prof: bool = False, fused: bool = True) -> None:
+        prof: bool = False, fused: bool = True, ab: bool = False) -> None:
     import time
 
     import torch
@@ -80,6 +80,8 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
     if prof:
         os.environ["QB_GPTOSS_PROF"] = "1"
     os.environ["QB_GPTOSS_FUSED"] = "1" if fused else "0"   # fully-fused MoE (GEMM1 + down-scatter)
+    if ab:  # same-invocation A/B: plugin reads /dev/shm/qb_fused per-apply (must be set BEFORE worker fork)
+        os.environ["QB_AB"] = "1"
     _ensure_so()
     print(f"# gpt-oss serve: {MODEL} QB_MOE={moe} proj={proj} sparse_from={sparse_from} "
           f"graph={graph} cap={graph_cap if graph else 0} on {torch.cuda.device_count()}x RTX-PRO-6000", flush=True)
@@ -160,6 +162,33 @@ def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: 
               f"min {min(times) * 1000:.1f} / max {max(times) * 1000:.1f})", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"# large-batch prefill skipped ({type(e).__name__}: {e})", flush=True)
+
+    # --- SAME-INVOCATION A/B: interleave fused vs unfused large-batch prefill (alternate every iter so GPU
+    # clock drift affects both equally -> the delta is real, unlike ±6% cross-run noise). The plugin worker
+    # reads /dev/shm/qb_fused per apply; we toggle it from the driver (shared tmpfs, same container). ---
+    if ab:
+        def _setflag(v):
+            with open("/dev/shm/qb_fused", "w") as f:
+                f.write(v)
+        try:
+            for v in ("1", "0"):  # warm both paths (JIT/autotune/allocator)
+                _setflag(v)
+                for _ in range(3):
+                    llm.generate(reqs, one)
+            tf, tu = [], []
+            for _ in range(iters):
+                _setflag("1"); t0 = time.time(); llm.generate(reqs, one); tf.append(time.time() - t0)
+                _setflag("0"); t0 = time.time(); llm.generate(reqs, one); tu.append(time.time() - t0)
+            tf.sort(); tu.sort()
+            mf, mu = tf[len(tf) // 2], tu[len(tu) // 2]
+            print(f"# ===== SAME-INVOCATION A/B (interleaved, same clock, {iters} each) =====", flush=True)
+            print(f"#   FUSED (monolith)  {ntok / mf:.0f} tok/s ({mf * 1000:.1f}ms med, "
+                  f"{min(tf) * 1000:.1f}/{max(tf) * 1000:.1f} min/max)", flush=True)
+            print(f"#   UNFUSED (fast_gu) {ntok / mu:.0f} tok/s ({mu * 1000:.1f}ms med, "
+                  f"{min(tu) * 1000:.1f}/{max(tu) * 1000:.1f} min/max)", flush=True)
+            print(f"#   fused/unfused speedup = {mu / mf:.3f}x  (RELIABLE: same GPU clock, interleaved)", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"# A/B skipped ({type(e).__name__}: {e})", flush=True)
 
     # --- decode throughput (B=1): the launch-overhead-bound regime graph capture accelerates ---
     dprompt = base[:32]
