@@ -2061,9 +2061,9 @@ def _install_gptoss_moe() -> None:
         layer._qbg_e, layer._qbg_i, layer._qbg_h = e, i_dim, h_dim
         layer._qbg_mpeI, layer._qbg_hp = ((i_dim + 255) // 256) * 256, ((h_dim + 127) // 128) * 128
         layer._qbg_mpeH, layer._qbg_ip = ((h_dim + 255) // 256) * 256, ((i_dim + 127) // 128) * 128
-        layer._qbg_gb = torch.stack(gb).float() if gb else None
-        layer._qbg_ub = torch.stack(ub).float() if ub else None
-        layer._qbg_db = torch.stack(db).float() if db else None
+        layer._qbg_gb = torch.stack(gb).to(torch.bfloat16) if gb else None
+        layer._qbg_ub = torch.stack(ub).to(torch.bfloat16) if ub else None
+        layer._qbg_db = torch.stack(db).to(torch.bfloat16) if db else None
         for attr in ("w13_weight", "w13_weight_scale", "w2_weight", "w2_weight_scale"):
             p = getattr(layer, attr, None)
             if p is not None:
@@ -2191,26 +2191,26 @@ def _install_gptoss_moe() -> None:
         if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
             g = torch.zeros(r_pad, ii, device=x.device, dtype=torch.float32)
             u = torch.zeros(r_pad, ii, device=x.device, dtype=torch.float32)
-        elif layer._qbg_pack_gu:
-            g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii].float()
-            u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii].float()
+        elif layer._qbg_pack_gu:  # keep bf16 throughout (the fp32 g/u/d were ~770MB each, pure BW waste)
+            g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii]
+            u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii]
         else:  # gate_up anchored dense (the tax-carrying projection)
-            g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk)
-            u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk)
+            g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk).to(torch.bfloat16)
+            u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk).to(torch.bfloat16)
         if layer._qbg_gb is not None:
             g = g + layer._qbg_gb[row_exp]
             u = u + layer._qbg_ub[row_exp]
         hact = _swiglu(g, u).to(torch.bfloat16)
         hpad = hact if ip == ii else _padrows(hact, r_pad, ip, ii, x.device)
         if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
-            d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.float32)
+            d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.bfloat16)
         elif layer._qbg_pack_dn:
-            d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim].float()
+            d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim]   # bf16
         else:  # down anchored dense
-            d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present, eblk)
+            d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present, eblk).to(torch.bfloat16)
         if layer._qbg_db is not None:
             d = d + layer._qbg_db[row_exp]
-        rw = valid.float() if on_input else (w_of[srcc] * valid.float())
+        rw = valid.to(x.dtype) if on_input else (w_of[srcc].to(x.dtype) * valid.to(x.dtype))
         y.index_add_(0, tok_of[srcc], (d * rw[:, None]).to(x.dtype))
         # NOTE: the old `STATS["sparse_expert_calls"] += int(valid.sum().item())` was a host sync on
         # EVERY layer/forward -- pure overhead that defeated _fast_route. Dropped from the hot path.
