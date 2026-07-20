@@ -46,6 +46,9 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
     uint64_t *full = (uint64_t *)(met_sm + STAGES * WK * MET);
     uint64_t *empty = full + STAGES;
 
+    // NOTE: L2-aware grouped CTA rasterization was tried here (cutlass-style, group=8) and measured NEUTRAL --
+    // the default order (x=col fastest) already reuses the A/weight tile across consecutive CTAs and the working
+    // set fits the 128MB L2, so memory scheduling is not the lever. Reverted. See quadbit-gptoss-campaign memory.
     int block_row = blockIdx.y * (2 * BM) + wg * BM;
     int a_load_row = blockIdx.y * (2 * BM), block_col = blockIdx.x * BN;
     int chunks = Klog / (128 * WK);

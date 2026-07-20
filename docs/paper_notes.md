@@ -508,8 +508,18 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
   mma-feed but MORE L2/DRAM tile re-reads (throughput scaled ~with reuse: 256x128 4x-reuse=1020, 128x128
   2x-reuse=790). LEVER AXIS is memory, not compute: pipeline depth (STAGES) for latency hiding on a smaller tile
   that fits it, occupancy tuning, L2-aware CTA swizzle. Consistent with the decode ceilings above (fp4's small byte
-  footprint tips these ops latency/L2-bound). OPEN, ACTIVE. (Caveat still true: b12x/trtllm/cudnn don't run mm_fp4
-  at cap 120, only cutlass — so cutlass is the SOTA to beat.)
+  footprint tips these ops latency/L2-bound). RESOLVED — the dense-throughput win is **physically unavailable on
+  sm120**, not a tuning gap. Levers measured: warp-spec is impossible (sm120 has **no TMEM/tcgen05** — register-acc
+  `mma.sp` only, confirmed vs NVIDIA/Colfax/ptxas-reverse-eng; cutlass sm120 is unified-role too); L2 grouped CTA
+  swizzle = neutral (default order already L2-optimal, working set < 128MB L2); 128×128 tile = worse (halved reuse);
+  STAGES=3 on the small tile = +5.5% but still below the high-reuse floor; coalesced epilogue = neutral. Root wall:
+  128 register accumulators pin 1 CTA/SM (8 warps), a shallow STAGES-2 pipeline can't hide TMA latency at that
+  occupancy, and the 2:4 metadata + block-scale smem/bandwidth tax (which dense does NOT pay) blocks fitting
+  STAGES≥3 on the high-reuse tile — exactly the smem cutlass-dense spends on pipeline depth to reach 71%. So the 2×
+  sparse FLOP saving is structurally eaten by occupancy + the metadata tax; sparse GEMM lands near cutlass-dense
+  wall-clock and cannot beat it on this silicon. **quadbit's throughput win is the sparse Pareto (training-free
+  quality recovery + ~24% memory) and the large-M collapse, not dense-shape raw GEMM speed.** (Caveat still true:
+  b12x/trtllm/cudnn don't run mm_fp4 at cap 120, only cutlass — so cutlass is the SOTA to beat.)
 - **A-without-swizzle** (2577k), **asymmetric-A WK=4** (2463k): both < 2731k symmetric wide-swz.
 - **Dense wide-TMA** (1515k, neutral) and **dense all-ldmatrix-then-all-mma ILP reorder** (1523k,
   neutral): dense is compute-bound; ptxas already schedules the mma stream optimally.
