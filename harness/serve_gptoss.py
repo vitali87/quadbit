@@ -54,6 +54,153 @@ def _ensure_so() -> None:
     vol.commit()
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=15 * MIN, volumes={"/cache": vol})
+def marlin_probe() -> None:
+    """Probe vLLM's real Marlin MoE API (signatures + import paths) so bench_vs_marlin can call it correctly."""
+    import importlib
+    import inspect
+    for path, name in [
+        ("vllm.model_executor.layers.fused_moe.fused_marlin_moe", "fused_marlin_moe"),
+        ("vllm.model_executor.layers.quantization.utils.marlin_utils_test", "marlin_quantize"),
+        ("vllm.model_executor.layers.quantization.utils.marlin_utils", "marlin_make_workspace"),
+        ("vllm.model_executor.layers.fused_moe", "fused_experts"),
+    ]:
+        try:
+            m = importlib.import_module(path)
+            obj = getattr(m, name)
+            print(f"# OK {path}.{name}: {inspect.signature(obj)}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"# FAIL {path}.{name}: {type(e).__name__}: {e}", flush=True)
+    try:
+        from vllm.scalar_type import scalar_types
+        print(f"# scalar_types.uint4b8 = {scalar_types.uint4b8}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"# FAIL scalar_types: {e}", flush=True)
+    import vllm
+    print(f"# vllm {vllm.__version__}", flush=True)
+    # find the real Marlin W4A16 GEMM + workspace helpers (for a pure-GEMM real-Marlin comparison)
+    import inspect as _ins
+    try:
+        from vllm import _custom_ops as _ops
+        for nm in dir(_ops):
+            if "marlin" in nm.lower() and "gemm" in nm.lower():
+                try:
+                    print(f"# _custom_ops.{nm}: {_ins.signature(getattr(_ops, nm))}", flush=True)
+                except (ValueError, TypeError):
+                    print(f"# _custom_ops.{nm}: (builtin, no sig)", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"# FAIL _custom_ops: {e}", flush=True)
+    for path in ["vllm.model_executor.layers.quantization.utils.marlin_utils"]:
+        try:
+            m = importlib.import_module(path)
+            hits = [n for n in dir(m) if "workspace" in n.lower() or "permute_scales" in n.lower() or n == "MARLIN_SUPPORTED_GROUP_SIZES"]
+            print(f"# {path} helpers: {hits}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"# FAIL {path}: {e}", flush=True)
+    print("# marlin_probe done", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=20 * MIN, volumes={"/cache": vol})
+def bench_vs_marlin(iters: int = 30, mrows: int = 8192) -> None:
+    M = mrows
+    """(b) DEFINITIVE real-Marlin GEMM comparison, same invocation: our 2:4-sparse-FP4 GEMM vs vLLM's real
+    Marlin W4A16 GEMM (_custom_ops.marlin_gemm) at gpt-oss/GLM/DeepSeek gate_up dims [M, N=2I, K=H]. Same
+    M/N/K/FLOPs. Marlin = the actual tuned kernel Marlin serves (bf16 mma after 4-bit dequant), so this
+    settles whether our GEMM really beats Marlin's, not just its bf16 ceiling. No clock noise (interleaved)."""
+    import ctypes
+    import time
+
+    import torch
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_make_workspace_new
+    from vllm.model_executor.layers.quantization.utils.marlin_utils_test import marlin_quantize
+    from vllm.scalar_type import scalar_types
+
+    _ensure_so()
+    dev = torch.device("cuda")
+    lib = ctypes.CDLL("/cache/sparse_fp4.so")
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    cc = torch.arange(128, device=dev); e_, m_ = (cc >> 3) & 0xf, cc & 7
+    UE4M3 = torch.where(e_ == 0, m_.float() * 0.001953125, (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
+        biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code)
+        code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):  # bf16 [out,in] -> our 2:4 two-level nvfp4 buffers
+        out_f, in_f = w.shape; ks = in_f // 128
+        wg = w.float().view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2)
+        scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga); sdeq = UE4M3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(), ga.reshape(out_f).float().contiguous())
+
+    def bench(fn):
+        for _ in range(5):
+            fn()
+        torch.cuda.synchronize()
+        s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True); ts = []
+        for _ in range(iters):
+            s.record(); fn(); e.record(); torch.cuda.synchronize(); ts.append(s.elapsed_time(e))
+        ts.sort(); return ts[len(ts) // 2]
+
+    shapes = [("gpt-oss   ", 3072, 2944), ("GLM-5.2   ", 5120, 1536), ("DeepSeek  ", 7168, 2048)]
+    print(f"# (b) our 2:4-sparse-FP4 GEMM vs REAL Marlin W4A16 GEMM (_custom_ops.marlin_gemm), M={M}, gate_up [M,2I,K=H]", flush=True)
+    for label, H, I in shapes:
+        K = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256   # our alignment
+        Kw = ((H + 127) // 128) * 128
+        x = torch.randn(M, Kw, device=dev, dtype=torch.bfloat16) * 0.1
+        # ---- ours: pack weight [N, K], quant x, sparse_fp4_mm_2lvl -> [N, M] ----
+        ac, meta, sA, ga = pack(torch.randn(N, Kw, device=dev) * 0.05)
+        bb = torch.empty((M, Kw // 2), dtype=torch.uint8, device=dev); sb = torch.empty((Kw // 128, M, 4), dtype=torch.uint8, device=dev); gb = torch.empty((M,), dtype=torch.float32, device=dev)
+        C = torch.empty((N, M), dtype=torch.bfloat16, device=dev)
+
+        def ours():
+            lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), M, Kw)
+            lib.sparse_fp4_mm_2lvl(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(), C.data_ptr(), N, M, Kw, ga.data_ptr(), gb.data_ptr())
+
+        # ---- real Marlin W4A16: marlin_quantize weight [K, N], marlin_gemm(x[M,K]) -> [M, N] ----
+        try:
+            w_bf = torch.randn(Kw, N, device=dev, dtype=torch.bfloat16) * 0.05
+            _wref, q_w, s_m, g_idx, sort_idx, _ = marlin_quantize(w_bf, scalar_types.uint4b8, 128, False)
+            ws = marlin_make_workspace_new(dev)
+            xm = x.contiguous()
+
+            def marlin():
+                ops.marlin_gemm(xm, None, q_w, None, s_m, None, None, None, g_idx, sort_idx, ws,
+                                scalar_types.uint4b8, M, N, Kw, True)
+            to = bench(ours); tm = bench(marlin)
+            flop = 2.0 * M * N * Kw
+            tfo = flop / 1e12 / (to / 1e3); tfm = flop / 1e12 / (tm / 1e3)
+            win = "quadbit WINS" if to < tm else "Marlin wins"
+            print(f"# {label} N={N} K={Kw}: ours {to:.3f}ms ({tfo:.0f} TF/s) | Marlin {tm:.3f}ms ({tfm:.0f} TF/s) | "
+                  f"{tm / to:.2f}x  ({win})", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            import traceback
+            print(f"# {label} Marlin FAIL: {type(ex).__name__}: {ex}", flush=True)
+            print(traceback.format_exc()[-800:], flush=True)
+    print("# bench_vs_marlin done", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000", timeout=30 * MIN, volumes={"/cache": vol},
               secrets=[modal.Secret.from_name("huggingface")])
 def run(moe: str = "sparse", proj: str = "both", sparse_from: int = 0, max_len: int = 2048,
