@@ -494,16 +494,22 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
   and cross-CTA pipeline deadlocked. FP4 multicast is not for consumer Blackwell.
 - **Bigger accumulator tile**: register spill (128 acc regs/thread already pins occupancy).
 - **STAGES-3 deployable / scatter scales**: smem-capped (1946k < 2116k staged STAGES-2).
-- **MoE sparse-FP4 vs FlashInfer-cutlass on sm120 (2026-07)** — the ~1020 TF/s plateau is NOT a dead-end; it is
-  MMA-FEED STARVATION. Roofline (`mma_peak.cu`): pure register-only sparse mma.sp m16n8k128 = **3738 TF/s**,
-  dense mma.sync m16n8k64 = 1869 (ratio 2.000x, full sparse speedup on consumer Blackwell). Our kernel = 1020 =
-  **27% of the sparse-mma ceiling**; cutlass-dense = 71% of its dense ceiling. Two probes that regressed
-  (WK1/STAGES4 0.84→0.71x; narrow-BN, regs 246→144 + STAGES3, 0.84→0.70x) only prove narrow/deep is the WRONG
-  axis (they trade away intensity / TMA latency) — the bottleneck is the inner-loop overhead (mma is 4% of the
-  SASS stream; address-math + ldmatrix + scale/meta prep + MOV choke the tensor core). Target: crush non-mma
-  inner-loop instructions + overlap them with the mma stream, 27%→70%+ feed => ~2650 TF/s (~2x cutlass). OPEN,
-  ACTIVE. (Caveat still true: b12x/trtllm/cudnn don't run mm_fp4 at cap 120, only cutlass — so cutlass is the
-  SOTA to beat.)
+- **MoE sparse-FP4 vs FlashInfer-cutlass on sm120 (2026-07)** — the ~1020 TF/s plateau is MEMORY/latency-bound,
+  NOT compute-feed-bound (an earlier "mma-feed starvation" reading here was FALSIFIED). Roofline (`mma_peak.cu`):
+  register-only sparse mma.sp m16n8k128 = **3653 TF/s**, dense mma.sync m16n8k64 = 1826 (ratio 2.001x, full sparse
+  speedup on consumer Blackwell). Our kernel = 1020 = **28% of the sparse-mma ceiling**. The decisive probe is
+  `peak_fed` (same file): the EXACT register-only sparse mma stream (128 acc/thread, 196 regs) but paying the REAL
+  per-iteration feed — 4 af + 8 bf ldmatrix from swizzled smem + full mma.sp metadata/block-scale operands, single
+  warp role, smem tile reused (no DRAM/TMA/barrier) — runs at **3571 TF/s = 97.7% of the register-only peak**. So
+  the ldmatrix + address-swizzle ALU + metadata feed costs only **2.3%**: the tensor core is NOT starved by inner-
+  loop overhead. The real 3.5x gap is entirely upstream of compute — DRAM→smem TMA traffic + mbarrier try_wait
+  latency + LOW OCCUPANCY (STAGES-2 × the 78KB A+B+scale+meta footprint pins 1 CTA/SM = 8 warps; a shallow 2-deep
+  pipeline can't cover TMA latency at that occupancy). This also re-explains the 128x128-tile regression: not worse
+  mma-feed but MORE L2/DRAM tile re-reads (throughput scaled ~with reuse: 256x128 4x-reuse=1020, 128x128
+  2x-reuse=790). LEVER AXIS is memory, not compute: pipeline depth (STAGES) for latency hiding on a smaller tile
+  that fits it, occupancy tuning, L2-aware CTA swizzle. Consistent with the decode ceilings above (fp4's small byte
+  footprint tips these ops latency/L2-bound). OPEN, ACTIVE. (Caveat still true: b12x/trtllm/cudnn don't run mm_fp4
+  at cap 120, only cutlass — so cutlass is the SOTA to beat.)
 - **A-without-swizzle** (2577k), **asymmetric-A WK=4** (2463k): both < 2731k symmetric wide-swz.
 - **Dense wide-TMA** (1515k, neutral) and **dense all-ldmatrix-then-all-mma ILP reorder** (1523k,
   neutral): dense is compute-bound; ptxas already schedules the mma stream optimally.
