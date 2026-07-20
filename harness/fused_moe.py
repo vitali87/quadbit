@@ -93,7 +93,7 @@ def bench_shapes(iters: int = 20) -> None:
     lib = ctypes.CDLL(so)
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
-                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_void_p])
     lib.qb_init_gusw_attrs()
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
     BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
@@ -184,7 +184,7 @@ def bench_shapes(iters: int = 20) -> None:
             lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb_g.data_ptr(), sA.data_ptr(), sb_g.data_ptr(),
                                      meta.data_ptr(), ac.shape[0], mpe_gu, r_pad, Hp, ga.data_ptr(),
                                      gb_g.data_ptr(), eblk.data_ptr(), gubias.data_ptr(), hw.data_ptr(),
-                                     sh.data_ptr(), ih, 0)
+                                     sh.data_ptr(), ih, 0, 0)
         ms = bench(g1)
         flop = 2.0 * r_pad * mpe_gu * Hp   # full 2I*H macs x2
         tflops = flop / 1e12 / (ms / 1e3)
@@ -210,7 +210,7 @@ def bench_moe_vs_bf16(iters: int = 20) -> None:
         print(c.stderr, flush=True); raise SystemExit(1)
     lib = ctypes.CDLL(so)
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
-    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4 + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4 + [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4 + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
     lib.moe_route.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
@@ -293,7 +293,7 @@ def bench_moe_vs_bf16(iters: int = 20) -> None:
             lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), tok, Hp)
             bbg = bb[srcc].contiguous(); sbg = sb[:, srcc, :].contiguous(); gbg = (gb[srcc] * valid.float()).contiguous()
             hw = torch.empty((r_pad, Ih // 2), dtype=torch.uint8, device=dev); sh = torch.empty((Ih // 128, r_pad, 4), dtype=torch.uint8, device=dev)
-            lib.sparse_moe_gu_swiglu(acg.data_ptr(), bbg.data_ptr(), sAg.data_ptr(), sbg.data_ptr(), mg.data_ptr(), acg.shape[0], mpe_gu, r_pad, Hp, gag.data_ptr(), gbg.data_ptr(), eblk.data_ptr(), gubias.data_ptr(), hw.data_ptr(), sh.data_ptr(), Ih, 0)
+            lib.sparse_moe_gu_swiglu(acg.data_ptr(), bbg.data_ptr(), sAg.data_ptr(), sbg.data_ptr(), mg.data_ptr(), acg.shape[0], mpe_gu, r_pad, Hp, gag.data_ptr(), gbg.data_ptr(), eblk.data_ptr(), gubias.data_ptr(), hw.data_ptr(), sh.data_ptr(), Ih, 0, 0)
             scw = valid.float().contiguous(); dbuf = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=dev)
             lib.sparse_moe_mm_2lvl_bw(acd.data_ptr(), hw.data_ptr(), sAd.data_ptr(), sh.data_ptr(), md.data_ptr(), dbuf.data_ptr(), acd.shape[0], mpeH, r_pad, Ip, gad.data_ptr(), 0, eblk.data_ptr(), scw.data_ptr(), 0, H, 0)
             y = torch.empty(tok, H, dtype=torch.bfloat16, device=dev)
@@ -341,7 +341,7 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
     lib.sparse_moe_mm_2lvl_scatter.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
                                                + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
-                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                           + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
@@ -559,7 +559,7 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
         ac, meta, sA, ga = guS_fused
         lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(),
                                  ac.shape[0], mpe_gu, r_pad, Hp, ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(),
-                                 guBias_fused.data_ptr(), Hw.data_ptr(), sH.data_ptr(), Ih, 0)
+                                 guBias_fused.data_ptr(), Hw.data_ptr(), sH.data_ptr(), Ih, 0, 0)
         return Hw, sH
 
     def gemm1_unfused():  # current path: 2 seg-GEMMs + torch swiglu + quant
@@ -678,7 +678,7 @@ def run(layer: int = 11, n_experts: int = 32, tokens: int = 4096, topk: int = 4,
         sH = torch.empty((Ih // 128, _rmax, 4), dtype=torch.uint8, device=dev)
         lib.sparse_moe_gu_swiglu(acg.data_ptr(), bb_g.data_ptr(), sAg.data_ptr(), sb_g.data_ptr(), metag.data_ptr(),
                                  acg.shape[0], mpe_gu, _rmax, Hp, gag.data_ptr(), gb_g.data_ptr(), eblk2.data_ptr(),
-                                 guBias_fused.data_ptr(), Hw.data_ptr(), sH.data_ptr(), Ih, 0)
+                                 guBias_fused.data_ptr(), Hw.data_ptr(), sH.data_ptr(), Ih, 0, 0)
         ev[4].record()
         sc_w2 = (w2[srcc2] * valid2.float()).contiguous()
         dbuf = torch.empty((_rmax, mpeH), dtype=torch.bfloat16, device=dev)

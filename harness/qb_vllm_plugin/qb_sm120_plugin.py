@@ -1060,7 +1060,7 @@ def _load_sparse_moe():
                                        + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
     # FUSED MoE kernels (gpt-oss throughput): GEMM1 gate_up+swiglu+quant, and down+scatter+combine.
     lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
-                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] + [ctypes.c_void_p])
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_scatter.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
                                                + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
     lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
@@ -1232,14 +1232,14 @@ def _load_sparse_moe():
         dropped = real - keep.sum()
         return src, eblk, dropped
 
-    def gu_swiglu(w, bb, sb, gb, hw, sh, mpe, r, in_f, eblk, gu_bias, ih):
-        # FUSED GEMM1: gate_up seg-GEMM + clamped-swiglu + single-level MXFP4 quant of h in one launch.
-        # w = pack of the NATIVE pairwise-interleaved gate_up (no de-interleave). bb/sb/gb = 2-level x
-        # (B-side). Writes hw[r, ih/2] FP4 + sh[ih/128, r, 4] e8m0 (the down GEMM reads these with gB=1).
+    def gu_swiglu(w, bb, sb, gb, hw, sh, mpe, r, in_f, eblk, gu_bias, ih, act=0):
+        # FUSED GEMM1: gate_up seg-GEMM + swiglu + single-level MXFP4 quant of h in one launch. act=0 =
+        # gpt-oss clamped SwiGLU; act=1 = plain silu(gate)*up (GLM-5.2 / DeepSeek-V4). w = pack of the NATIVE
+        # pairwise-interleaved gate_up. bb/sb/gb = 2-level x. Writes hw[r,ih/2] FP4 + sh[ih/128,r,4] e8m0.
         ac, meta, sa, ga = w
         lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(), meta.data_ptr(),
                                  ac.shape[0], mpe, r, in_f, ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(),
-                                 gu_bias.data_ptr(), hw.data_ptr(), sh.data_ptr(), ih, _st())
+                                 gu_bias.data_ptr(), hw.data_ptr(), sh.data_ptr(), ih, act, _st())
 
     def down_scatter(w, bb, sb, out, mpe, r, in_f, eblk, sc_tok, sc_w, bias, hout):
         # FUSED down: seg-GEMM whose epilogue adds bias, weights by routing coeff, scatter-adds into

@@ -1155,7 +1155,7 @@ __global__ void __launch_bounds__(256)
 matmul_sp_moe_gu_swiglu(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
                         const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
                         int M, int Mpe, int N, int Klog, const float *gA, const float *gB, const int *eblk,
-                        const __nv_bfloat16 *guBias, uint32_t *Hwords, uint8_t *scaleH, int Ih) {
+                        const __nv_bfloat16 *guBias, uint32_t *Hwords, uint8_t *scaleH, int Ih, int act) {
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -1319,8 +1319,13 @@ matmul_sp_moe_gu_swiglu(const __grid_constant__ CUtensorMap mapA, const __grid_c
             int d = db * 32 + i;                     // local h-dim; out-rows 2d (gate), 2d+1 (up)
             float gate = __bfloat162float(Cs[lc * (2 * BM) + 2 * d]);
             float up = __bfloat162float(Cs[lc * (2 * BM) + 2 * d + 1]);
-            gate = fminf(gate, 7.f); up = fmaxf(fminf(up, 7.f), -7.f);   // gpt-oss clamped SwiGLU
-            float h = (gate / (1.f + __expf(-1.702f * gate))) * (up + 1.f);
+            float h;
+            if (act == 0) {   // gpt-oss clamped SwiGLU (alpha=1.702, limit=7, beta=1)
+                gate = fminf(gate, 7.f); up = fmaxf(fminf(up, 7.f), -7.f);
+                h = (gate / (1.f + __expf(-1.702f * gate))) * (up + 1.f);
+            } else {          // plain SwiGLU: silu(gate)*up  (GLM-5.2 / DeepSeek-V4)
+                h = (gate / (1.f + __expf(-gate))) * up;
+            }
             val[i] = h; amax = fmaxf(amax, fabsf(h));
         }
         uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
@@ -1345,7 +1350,7 @@ extern "C" void qb_init_gusw_attrs() { std::call_once(g_gusw_attr_once, set_gusw
 extern "C" int sparse_moe_gu_swiglu(const void *A, const void *B, const void *scaleA, const void *scaleB,
                                     const void *meta, int Mtot, int Mpe, int N, int Klog, const void *gA,
                                     const void *gB, const void *eblk, const void *guBias, void *Hwords,
-                                    void *scaleH, int Ih, void *stream) {
+                                    void *scaleH, int Ih, int act, void *stream) {
     int KAb = Klog / 4, KBb = Klog / 2;
     alignas(64) CUtensorMap mapA, mapB;
     mk(&mapA, (uint8_t *)A, KAb, Mtot, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
@@ -1355,7 +1360,7 @@ extern "C" int sparse_moe_gu_swiglu(const void *A, const void *B, const void *sc
     matmul_sp_moe_gu_swiglu<<<grid, block, SMEM, (cudaStream_t)stream>>>(
         mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB, (const uint32_t *)meta, Mtot, Mpe, N,
         Klog, (const float *)gA, (const float *)gB, (const int *)eblk, (const __nv_bfloat16 *)guBias,
-        (uint32_t *)Hwords, (uint8_t *)scaleH, Ih);
+        (uint32_t *)Hwords, (uint8_t *)scaleH, Ih, act);
     return stream ? 0 : (int)cudaDeviceSynchronize();
 }
 
