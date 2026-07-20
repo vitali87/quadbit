@@ -512,10 +512,14 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
   sm120**, not a tuning gap. Levers measured: warp-spec is impossible (sm120 has **no TMEM/tcgen05** — register-acc
   `mma.sp` only, confirmed vs NVIDIA/Colfax/ptxas-reverse-eng; cutlass sm120 is unified-role too); L2 grouped CTA
   swizzle = neutral (default order already L2-optimal, working set < 128MB L2); 128×128 tile = worse (halved reuse);
-  STAGES=3 on the small tile = +5.5% but still below the high-reuse floor; coalesced epilogue = neutral. Root wall:
-  128 register accumulators pin 1 CTA/SM (8 warps), a shallow STAGES-2 pipeline can't hide TMA latency at that
-  occupancy, and the 2:4 metadata + block-scale smem/bandwidth tax (which dense does NOT pay) blocks fitting
-  STAGES≥3 on the high-reuse tile — exactly the smem cutlass-dense spends on pipeline depth to reach 71%. So the 2×
+  STAGES=3 on the small tile = +5.5% but still below the high-reuse floor; coalesced epilogue = neutral; **2 CTA/SM
+  occupancy** (WK=1 kernel, 28KB smem, 126 regs, `matmul_sp_diag_wk1`) = **confirmed reached but only +5%** (869→910,
+  same as the deep-pipe gain), still ~25% below the 256×128 floor. Root wall (sm120 smem = 100KB/SM): 128 register
+  accumulators pin the high-reuse tile to 1 CTA/SM (246 regs, register-bound — WK=1 can't help it), and the only way
+  to 2 CTA/SM is the 128×128 tile which loses half the reuse; the +5% occupancy/latency gain is worth far less than
+  the −25% reuse loss, so they trade off and neither combination wins. The 2:4 metadata + block-scale smem/bandwidth
+  tax (which dense does NOT pay) is the extra footprint that keeps the high-reuse sparse tile at 1 CTA/SM where
+  cutlass-dense spends the same smem on the depth/occupancy that reaches 71%. So the 2×
   sparse FLOP saving is structurally eaten by occupancy + the metadata tax; sparse GEMM lands near cutlass-dense
   wall-clock and cannot beat it on this silicon. **quadbit's throughput win is the sparse Pareto (training-free
   quality recovery + ~24% memory) and the large-M collapse, not dense-shape raw GEMM speed.** (Caveat still true:

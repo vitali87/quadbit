@@ -73,7 +73,7 @@ def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto", pro
     lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
     lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
     lib.sparse_fp4_mm_diag.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
-    lib.sparse_fp4_mm_diag_opt.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
+    lib.sparse_fp4_mm_diag_wk1.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3
     FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
     BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
     cc = torch.arange(128, device=dev); e_, m_ = (cc >> 3) & 0xf, cc & 7
@@ -142,9 +142,9 @@ def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto", pro
             lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gbq.data_ptr(), M, Kw)
             lib.sparse_fp4_mm_diag(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(), C.data_ptr(), N, M, Kw)
 
-        def diago():  # 128x128 tile + STAGES_OPT=3 deep pipeline: does deeper pipelining hide the TMA latency (peak_fed = memory-bound, not feed)?
+        def diago():  # WK=1 128x128 @ 2 CTA/SM: does doubling occupancy (16 warps/SM) hide the TMA latency that 1-CTA/SM exposes?
             lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gbq.data_ptr(), M, Kw)
-            lib.sparse_fp4_mm_diag_opt(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(), C.data_ptr(), N, M, Kw)
+            lib.sparse_fp4_mm_diag_wk1(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(), C.data_ptr(), N, M, Kw)
 
         try:
             w = torch.randn(N, Kw, device=dev, dtype=torch.bfloat16) * 0.05
@@ -163,7 +163,7 @@ def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto", pro
             v = "quadbit-sparse WINS" if to < tf else "FlashInfer-dense wins"
             print(f"# {label} M={M} N={N} K={Kw}: ours-sparse {to:.3f}ms ({tfo:.0f} TF/s) | FlashInfer-dense {tf:.3f}ms ({tff:.0f} TF/s) | {tf / to:.2f}x  ({v})", flush=True)
             print(f"#   ^ M={M} mainloop-only floor (no epilogue) {td:.3f}ms | epilogue costs {to - td:.3f}ms ({100 * (to - td) / to:.0f}% of ours) | floor-vs-FlashInfer {tf / td:.2f}x", flush=True)
-            print(f"#   ^ M={M} 128x128+S3 floor {tdo:.3f}ms ({flop / 1e12 / (tdo / 1e3):.0f} TF/s) | vs base floor {td / tdo:.3f}x (>1 = faster) | deep-pipe-vs-FlashInfer {tf / tdo:.2f}x", flush=True)
+            print(f"#   ^ M={M} WK1-2CTA floor {tdo:.3f}ms ({flop / 1e12 / (tdo / 1e3):.0f} TF/s) | vs base floor {td / tdo:.3f}x (>1 = faster) | wk1-vs-FlashInfer {tf / tdo:.2f}x", flush=True)
         except Exception as ex:  # noqa: BLE001
             import traceback
             print(f"# {label} FlashInfer FAIL: {type(ex).__name__}: {ex}", flush=True)

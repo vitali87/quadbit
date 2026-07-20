@@ -379,8 +379,14 @@ matmul_sp_diag(const __grid_constant__ CUtensorMap mapA, const __grid_constant__
 // per-stage opt footprint = 28KB (2*ASZ2 A + BSZ B + WK*(SCA2+SCB+MET2) scale/meta). STAGES_OPT-deep pipeline
 // to hide TMA/DRAM latency at low occupancy (the real bottleneck, per peak_fed). S3=84KB fits the 99KB opt-in.
 #define SMEM_OPTN(ST) (2 * (ST) * ASZ2 + (ST) * BSZ + (ST) * WK * SCA2 + (ST) * WK * SCB + (ST) * WK * MET2 + 2 * (ST) * 8 + 128)
+// MINBLK = requested min CTAs/SM. STAGES_OPT=2 (56KB) x 2 CTAs = 112KB < 128KB/SM smem, so 2 CTA/SM is
+// smem-legal; __launch_bounds__(256,2) forces ptxas to cap regs at 128 (opt is ~140, needs a ~12-reg trim /
+// minor spill) so 2 CTAs actually co-reside => 16 warps/SM to hide TMA latency (the real 1-CTA/SM wall).
+#ifndef MINBLK
+#define MINBLK 2
+#endif
 template <int STAGESO>
-__global__ void __launch_bounds__(256)
+__global__ void __launch_bounds__(256, MINBLK)
 matmul_sp_diag_opt(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
           const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
           __nv_bfloat16 *C, int M, int N, int Klog) {
@@ -508,6 +514,149 @@ matmul_sp_diag_opt(const __grid_constant__ CUtensorMap mapA, const __grid_consta
         int next = chunk + STAGESO;
         if (tid == 0 && next < chunks) {
             asm volatile("{\n\t.reg .pred p;\nWE:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WE;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    float r = 0.f;
+#pragma unroll
+    for (int i = 0; i < NMT * 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) r += acc[i][j];
+    C[(size_t)(blockIdx.y * gridDim.x + blockIdx.x) * 256 + tid] = __float2bfloat16_rn(r);
+}
+
+// ===== WK=1 128x128 kernel: 14KB/stage => STAGES=2 = 28KB => 2 CTA/SM (smem 56KB<100KB AND regs<=128).
+// The ONLY config that reaches 2 CTA/SM while keeping BN=128 token-reuse. Tests whether doubling occupancy
+// (16 warps/SM) hides the TMA latency that 1-CTA/SM leaves exposed. SWIZZLE_NONE + linear ldmatrix (no XOR):
+// addressing is provably in-bounds; bank-conflict cost is part of the (cheap, per peak_fed) feed, common to
+// both 1- and 2-CTA cases, so it does not mask the occupancy delta. One k128-slice/chunk (no sub loop).
+#define AW1 AROWB          // 32
+#define BW1 BROWB          // 64
+#define ASZ1 (BM2 * AW1)   // 2048
+#define BSZ1 (BN * BW1)    // 8192
+#define SMEM_WK1(ST) (2 * (ST) * ASZ1 + (ST) * BSZ1 + (ST) * SCA2 + (ST) * SCB + (ST) * MET2 + 2 * (ST) * 8 + 128)
+template <int STG>
+__global__ void __launch_bounds__(256, 2)
+matmul_sp_diag_wk1(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+          const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+          __nv_bfloat16 *C, int M, int N, int Klog) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STG * ASZ1;
+    uint8_t *b_s = smem + 2 * STG * ASZ1;
+    uint8_t *scA_sm = b_s + STG * BSZ1;
+    uint8_t *scB_sm = scA_sm + STG * SCA2;
+    uint8_t *met_sm = scB_sm + STG * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STG * MET2);
+    uint64_t *empty = full + STG;
+
+    int a_load_row = blockIdx.y * (2 * BM2), block_col = blockIdx.x * BN;
+    int chunks = Klog / 128;                              // WK=1: one k128-slice per chunk
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[NMT], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) a_rowt[mt] = wm * 32 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[NMT], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) a_sidx[mt] = wg * 64 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[NMT];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) m_sidx[mt] = (wg * 64 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[NMT * 8][4];
+#pragma unroll
+    for (int i = 0; i < NMT * 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STG; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ1 + BSZ1 + SCA2 + SCB + MET2)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ1])), "l"(&mapA), "r"(chunk * AW1), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STG * ASZ1 + s * ASZ1])), "l"(&mapA), "r"(chunk * AW1), "r"(a_load_row + BM2), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ1])), "l"(&mapB), "r"(chunk * BW1), "r"(block_col), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[s * SCA2])), "l"(scaleA + (size_t)(chunk * M + a_load_row) * 4), "r"((uint32_t)SCA2), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[s * SCB])), "l"(scaleB + (size_t)(chunk * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&met_sm[s * MET2])), "l"((const uint8_t *)meta + (size_t)(chunk * M + a_load_row) * 8), "r"((uint32_t)MET2), "r"(bar));
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STG; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STG; uint32_t par = (chunk / STG) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWW:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WW;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ1, boff = s * BSZ1;
+        const uint32_t *scA = (const uint32_t *)(scA_sm + s * SCA2);
+        const uint32_t *scB = (const uint32_t *)(scB_sm + s * SCB);
+        const uint32_t *mtA = (const uint32_t *)(met_sm + s * MET2);
+        uint32_t sav[NMT], sbv[8], ev[NMT];
+#pragma unroll
+        for (int mt = 0; mt < NMT; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+        for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+        uint32_t af[NMT][4], bf[8][4];
+#pragma unroll
+        for (int mt = 0; mt < NMT; mt++) {
+            int ao = (a_rowt[mt] + arow) * AW1 + acblk * 16;
+            uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+            asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                         : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+        }
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int bo = (b_col[n] + nrow) * BW1 + bsub * 16;
+            uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+            asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                         : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+        }
+#pragma unroll
+        for (int mt = 0; mt < NMT; mt++)
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int idx = mt * 8 + n;
+                asm volatile(
+                    "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                    : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
+                    : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                      "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                      "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+            }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STG;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWX:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WX;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
             issue(s, next);
         }
     }
@@ -914,7 +1063,7 @@ extern "C" int sparse_fp4_mm_diag(const void *A, const void *B, const void *scal
 // STAGES_OPT-deep pipeline: 28KB/stage => S2=56KB, S3=84KB (both <99KB opt-in). Tests whether deeper
 // pipelining hides the TMA/DRAM latency that peak_fed proved is the real bottleneck (not compute feed).
 #ifndef STAGES_OPT
-#define STAGES_OPT 3
+#define STAGES_OPT 2
 #endif
 static std::once_flag g_diago_attr_once;
 extern "C" int sparse_fp4_mm_diag_opt(const void *A, const void *B, const void *scaleA, const void *scaleB,
@@ -923,9 +1072,36 @@ extern "C" int sparse_fp4_mm_diag_opt(const void *A, const void *B, const void *
     alignas(64) CUtensorMap mapA, mapB;
     mk(&mapA, (uint8_t *)A, KAb, M, AW, BM2, CU_TENSOR_MAP_SWIZZLE_64B);
     mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
-    std::call_once(g_diago_attr_once, [] { cudaFuncSetAttribute(matmul_sp_diag_opt<STAGES_OPT>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_OPTN(STAGES_OPT)); });
+    std::call_once(g_diago_attr_once, [] {
+        cudaFuncSetAttribute(matmul_sp_diag_opt<STAGES_OPT>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_OPTN(STAGES_OPT));
+        int nb = 0; cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, matmul_sp_diag_opt<STAGES_OPT>, 256, SMEM_OPTN(STAGES_OPT));
+        cudaFuncAttributes fa; cudaFuncGetAttributes(&fa, matmul_sp_diag_opt<STAGES_OPT>);
+        printf("# [occupancy] diag_opt S%d MINBLK%d: %d regs, %d B smem, %d CTA/SM\n", STAGES_OPT, MINBLK, fa.numRegs, (int)SMEM_OPTN(STAGES_OPT), nb);
+    });
     dim3 grid(N / BN, M / (2 * BM2)), block(256);
     matmul_sp_diag_opt<STAGES_OPT><<<grid, block, SMEM_OPTN(STAGES_OPT), 0>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
+    return (int)cudaDeviceSynchronize();
+}
+// WK=1 2-CTA/SM probe entry: A box = AW1=32B, B box = BW1=64B, SWIZZLE_NONE.
+#ifndef STAGES_WK1
+#define STAGES_WK1 2
+#endif
+static std::once_flag g_wk1_attr_once;
+extern "C" int sparse_fp4_mm_diag_wk1(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                      const void *meta, void *C, int M, int N, int Klog) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW1, BM2, CU_TENSOR_MAP_SWIZZLE_NONE);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW1, BN, CU_TENSOR_MAP_SWIZZLE_NONE);
+    std::call_once(g_wk1_attr_once, [] {
+        cudaFuncSetAttribute(matmul_sp_diag_wk1<STAGES_WK1>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_WK1(STAGES_WK1));
+        int nb = 0; cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, matmul_sp_diag_wk1<STAGES_WK1>, 256, SMEM_WK1(STAGES_WK1));
+        cudaFuncAttributes fa; cudaFuncGetAttributes(&fa, matmul_sp_diag_wk1<STAGES_WK1>);
+        printf("# [occupancy] diag_wk1 S%d: %d regs, %d B smem, %d CTA/SM\n", STAGES_WK1, fa.numRegs, (int)SMEM_WK1(STAGES_WK1), nb);
+    });
+    dim3 grid(N / BN, M / (2 * BM2)), block(256);
+    matmul_sp_diag_wk1<STAGES_WK1><<<grid, block, SMEM_WK1(STAGES_WK1), 0>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
                                                      (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
     return (int)cudaDeviceSynchronize();
 }
