@@ -163,36 +163,42 @@ def bench_vs_marlin(iters: int = 30, mrows: int = 8192) -> None:
             s.record(); fn(); e.record(); torch.cuda.synchronize(); ts.append(s.elapsed_time(e))
         ts.sort(); return ts[len(ts) // 2]
 
+    def swig(gu):  # plain SwiGLU silu(gate)*up on [M, 2I] -> [M, I]
+        return (gu[:, 0::2] * torch.sigmoid(gu[:, 0::2])) * gu[:, 1::2]
+
     shapes = [("gpt-oss   ", 3072, 2944), ("GLM-5.2   ", 5120, 1536), ("DeepSeek  ", 7168, 2048)]
-    print(f"# (b) our 2:4-sparse-FP4 GEMM vs REAL Marlin W4A16 GEMM (_custom_ops.marlin_gemm), M={M}, gate_up [M,2I,K=H]", flush=True)
+    print(f"# (a) FULL MoE (gate_up+swiglu+down): our 2:4-sparse-FP4 (2 GEMMs+quant) vs REAL Marlin W4A16 (2 marlin_gemm), M={M}", flush=True)
     for label, H, I in shapes:
-        K = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256   # our alignment
-        Kw = ((H + 127) // 128) * 128
+        Kw = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256; Ih = N // 2   # gate_up [M,N,Kw], h [M,Ih]
+        Ndn = ((H + 255) // 256) * 256                                                  # down out; in = Ih
         x = torch.randn(M, Kw, device=dev, dtype=torch.bfloat16) * 0.1
-        # ---- ours: pack weight [N, K], quant x, sparse_fp4_mm_2lvl -> [N, M] ----
-        ac, meta, sA, ga = pack(torch.randn(N, Kw, device=dev) * 0.05)
+        gu_ac, gu_m, gu_sA, gu_ga = pack(torch.randn(N, Kw, device=dev) * 0.05)         # our gate_up [N, Kw]
+        dn_ac, dn_m, dn_sA, dn_ga = pack(torch.randn(Ndn, Ih, device=dev) * 0.05)       # our down [Ndn, Ih]
         bb = torch.empty((M, Kw // 2), dtype=torch.uint8, device=dev); sb = torch.empty((Kw // 128, M, 4), dtype=torch.uint8, device=dev); gb = torch.empty((M,), dtype=torch.float32, device=dev)
-        C = torch.empty((N, M), dtype=torch.bfloat16, device=dev)
+        b2 = torch.empty((M, Ih // 2), dtype=torch.uint8, device=dev); s2 = torch.empty((Ih // 128, M, 4), dtype=torch.uint8, device=dev); g2 = torch.empty((M,), dtype=torch.float32, device=dev)
+        Cgu = torch.empty((N, M), dtype=torch.bfloat16, device=dev); Cdn = torch.empty((Ndn, M), dtype=torch.bfloat16, device=dev)
 
         def ours():
             lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gb.data_ptr(), M, Kw)
-            lib.sparse_fp4_mm_2lvl(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(), C.data_ptr(), N, M, Kw, ga.data_ptr(), gb.data_ptr())
+            lib.sparse_fp4_mm_2lvl(gu_ac.data_ptr(), bb.data_ptr(), gu_sA.data_ptr(), sb.data_ptr(), gu_m.data_ptr(), Cgu.data_ptr(), N, M, Kw, gu_ga.data_ptr(), gb.data_ptr())
+            h = swig(Cgu.t()).contiguous()
+            lib.quantize_act_nvfp4_2lvl(h.data_ptr(), b2.data_ptr(), s2.data_ptr(), g2.data_ptr(), M, Ih)
+            lib.sparse_fp4_mm_2lvl(dn_ac.data_ptr(), b2.data_ptr(), dn_sA.data_ptr(), s2.data_ptr(), dn_m.data_ptr(), Cdn.data_ptr(), Ndn, M, Ih, dn_ga.data_ptr(), g2.data_ptr())
 
-        # ---- real Marlin W4A16: marlin_quantize weight [K, N], marlin_gemm(x[M,K]) -> [M, N] ----
         try:
-            w_bf = torch.randn(Kw, N, device=dev, dtype=torch.bfloat16) * 0.05
-            _wref, q_w, s_m, g_idx, sort_idx, _ = marlin_quantize(w_bf, scalar_types.uint4b8, 128, False)
-            ws = marlin_make_workspace_new(dev)
-            xm = x.contiguous()
+            _r1, gu_qw, gu_sm, gu_gi, gu_si, _ = marlin_quantize(torch.randn(Kw, N, device=dev, dtype=torch.bfloat16) * 0.05, scalar_types.uint4b8, 128, False)
+            _r2, dn_qw, dn_sm, dn_gi, dn_si, _ = marlin_quantize(torch.randn(Ih, Ndn, device=dev, dtype=torch.bfloat16) * 0.05, scalar_types.uint4b8, 128, False)
+            ws = marlin_make_workspace_new(dev); xm = x.contiguous()
 
             def marlin():
-                ops.marlin_gemm(xm, None, q_w, None, s_m, None, None, None, g_idx, sort_idx, ws,
-                                scalar_types.uint4b8, M, N, Kw, True)
+                gu = ops.marlin_gemm(xm, None, gu_qw, None, gu_sm, None, None, None, gu_gi, gu_si, ws, scalar_types.uint4b8, M, N, Kw, True)
+                h = swig(gu).contiguous()
+                ops.marlin_gemm(h, None, dn_qw, None, dn_sm, None, None, None, dn_gi, dn_si, ws, scalar_types.uint4b8, M, Ndn, Ih, True)
             to = bench(ours); tm = bench(marlin)
-            flop = 2.0 * M * N * Kw
+            flop = 2.0 * M * (N * Kw + Ndn * Ih)
             tfo = flop / 1e12 / (to / 1e3); tfm = flop / 1e12 / (tm / 1e3)
             win = "quadbit WINS" if to < tm else "Marlin wins"
-            print(f"# {label} N={N} K={Kw}: ours {to:.3f}ms ({tfo:.0f} TF/s) | Marlin {tm:.3f}ms ({tfm:.0f} TF/s) | "
+            print(f"# {label} H={H} I={I}: ours {to:.3f}ms ({tfo:.0f} TF/s) | Marlin {tm:.3f}ms ({tfm:.0f} TF/s) | "
                   f"{tm / to:.2f}x  ({win})", flush=True)
         except Exception as ex:  # noqa: BLE001
             import traceback
