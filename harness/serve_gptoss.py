@@ -55,7 +55,7 @@ def _ensure_so() -> None:
 
 
 @app.function(gpu="RTX-PRO-6000", timeout=20 * MIN, volumes={"/cache": vol})
-def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto") -> None:
+def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto", proj: str = "gate_up") -> None:
     """SOTA comparison (per always-benchmark-vs-sota): our 2:4-sparse-FP4 GEMM vs FlashInfer's DENSE FP4 GEMM
     (flashinfer.mm_fp4, the real b12x/trtllm/cutlass SOTA -- same FP4 tensor cores, W4A4), same invocation, at
     gpt-oss/GLM/DeepSeek gate_up [M,N=2I,K=H]. HONEST framing: ours is 2:4-SPARSE (half the mma work, lossy);
@@ -118,13 +118,15 @@ def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto") -> 
     # to separate wave-quantization from a per-iteration mainloop deficit -- if the floor-vs-FlashInfer
     # ratio oscillates with M (peaks near integer waves, dips at fractional tails) it is wave quant.
     if mrows == 0:
-        shapes = [("DeepSeek  ", 7168, 2048)]
-        Ms = [6016, 6784, 7520, 8192, 9024, 9408, 10528]
+        Ms = [8192, 16384, 24576, 32768, 49152]  # collapse hunt: push M up, watch cutlass fold + our margin widen
     else:
         Ms = [mrows]
-    print(f"# SOTA: our 2:4-SPARSE-FP4 GEMM vs FlashInfer DENSE-FP4 (mm_fp4 backend={backend}), M={Ms}, [M,N=2I,K=H]", flush=True)
+    print(f"# SOTA: our 2:4-SPARSE-FP4 GEMM vs FlashInfer DENSE-FP4 (mm_fp4 backend={backend}), proj={proj}, M={Ms}", flush=True)
     for label, H, I in shapes:
-      Kw = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256
+      # gate_up: weights[2I,H] -> N=2I,K=H (square-ish, cutlass-favored).  down: weights[H,I] -> N=H,K=I
+      # (large-N/small-K = the large-M regime where FlashInfer collapses; our WIN front per leaderboard).
+      Kw, N = (((H + 127) // 128) * 128, ((2 * I + 255) // 256) * 256) if proj == "gate_up" \
+          else (((I + 127) // 128) * 128, ((H + 255) // 256) * 256)
       ac, meta, sA, ga = pack(torch.randn(N, Kw, device=dev) * 0.05)
       for M in Ms:  # noqa: PLR1704
         x = torch.randn(M, Kw, device=dev, dtype=torch.bfloat16) * 0.1
