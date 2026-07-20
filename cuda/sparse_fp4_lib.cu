@@ -30,8 +30,8 @@
 __global__ void __launch_bounds__(256)
 matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
           const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
-          __nv_bfloat16 *C, int M, int N, int Klog,
-          const float *gA, const float *gB,     // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
+          __nv_bfloat16 *__restrict__ C, int M, int N, int Klog,
+          const float *__restrict__ gA, const float *__restrict__ gB,   // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
                                                  // nullptr -> single-level (mma-applied local scales only)
           int outT) {                            // outT: 0 -> C is [M,N]; 1 -> C is [N,M] (token-major, contiguous for vLLM)
     extern __shared__ __align__(128) uint8_t smem[];
@@ -163,14 +163,27 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
         }
     }
     if (!outT) {
+        // Two-level global rescale (mma applied locals; globals here). gA[gr] depends only on mt, gB[gc]
+        // only on n -> hoist both out of the mt*n loop (was 128 redundant loads/thread -> 24). The epilogue
+        // was 10-25% of wall-clock, almost all its R2UR address-math + redundant LDG (see quadbit campaign).
+        float gav0[4], gav1[4], gbv0[8], gbv1[8];
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++) {
+            int gr = block_row + a_rowt[mt] + (lane >> 2);
+            gav0[mt] = gA ? gA[gr] : 1.f; gav1[mt] = gA ? gA[gr + 8] : 1.f;
+        }
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int gc = block_col + b_col[n] + (lane & 3) * 2;
+            gbv0[n] = gB ? gB[gc] : 1.f; gbv1[n] = gB ? gB[gc + 1] : 1.f;
+        }
 #pragma unroll
         for (int mt = 0; mt < 4; mt++)
 #pragma unroll
             for (int n = 0; n < 8; n++) {
                 int idx = mt * 8 + n;
                 int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + b_col[n] + (lane & 3) * 2;
-                float ga0 = gA ? gA[gr] : 1.f, ga1 = gA ? gA[gr + 8] : 1.f;   // two-level global rescale:
-                float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;   // mma applied locals, globals here
+                float ga0 = gav0[mt], ga1 = gav1[mt], gb0 = gbv0[n], gb1 = gbv1[n];
                 *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0] * ga0 * gb0, acc[idx][1] * ga0 * gb1);
                 *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2] * ga1 * gb0, acc[idx][3] * ga1 * gb1);
             }
@@ -202,6 +215,151 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
         for (int col = 0; col < BN; col++)
             C[(size_t)(base_n + col) * M + base_m + tid] = Cs[col * (2 * BM) + tid];
     }
+}
+
+// ---- DIAGNOSTIC (throwaway, not committed): byte-identical mainloop to matmul_sp, epilogue stripped to a
+// bare reduction store (no gA/gB loads, no per-element FMUL, no F2FP/coalesced STG). Purpose: isolate whether
+// the 255-reg / R2UR-shuffle pressure is mainloop-driven (PTX rewrite is the only lever) or epilogue-driven
+// (a cheap epilogue split wins). Compare ptxas -v regs + R2UR count vs matmul_sp.
+__global__ void __launch_bounds__(256)
+matmul_sp_diag(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+          const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+          __nv_bfloat16 *C, int M, int N, int Klog) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STAGES * ASZ;
+    uint8_t *b_s = smem + 2 * STAGES * ASZ;
+    uint8_t *scA_sm = b_s + STAGES * BSZ;
+    uint8_t *scB_sm = scA_sm + STAGES * WK * SCA;
+    uint8_t *met_sm = scB_sm + STAGES * WK * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STAGES * WK * MET);
+    uint64_t *empty = full + STAGES;
+
+    int a_load_row = blockIdx.y * (2 * BM), block_col = blockIdx.x * BN;
+    int chunks = Klog / (128 * WK);
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[4], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_rowt[mt] = wm * 64 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[4], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_sidx[mt] = wg * 128 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[4];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) m_sidx[mt] = (wg * 128 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[32][4];
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STAGES; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ + BSZ + WK * SCA + WK * SCB + WK * MET)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STAGES * ASZ + s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row + BM), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ])), "l"(&mapB), "r"(chunk * BW_), "r"(block_col), "r"(bar));
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            int step = chunk * WK + sub;
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[(s * WK + sub) * SCA])), "l"(scaleA + (size_t)(step * M + a_load_row) * 4), "r"((uint32_t)SCA), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[(s * WK + sub) * SCB])), "l"(scaleB + (size_t)(step * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&met_sm[(s * WK + sub) * MET])), "l"((const uint8_t *)meta + (size_t)(step * M + a_load_row) * 8), "r"((uint32_t)MET), "r"(bar));
+        }
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STAGES; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STAGES; uint32_t par = (chunk / STAGES) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWA:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WA;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ, boff = s * BSZ;
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            const uint32_t *scA = (const uint32_t *)(scA_sm + (s * WK + sub) * SCA);
+            const uint32_t *scB = (const uint32_t *)(scB_sm + (s * WK + sub) * SCB);
+            const uint32_t *mtA = (const uint32_t *)(met_sm + (s * WK + sub) * MET);
+            uint32_t sav[4], sbv[8], ev[4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+            for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+            uint32_t af[4][4], bf[8][4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) {
+                int ao = (a_rowt[mt] + arow) * AW + sub * AROWB + acblk * 16; ao ^= ((ao >> 7) & 3) << 4;
+                uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+            }
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int bo = (b_col[n] + nrow) * BW_ + sub * BROWB + bsub * 16; bo ^= ((bo >> 7) & 7) << 4;
+                uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+            }
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    int idx = mt * 8 + n;
+                    asm volatile(
+                        "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
+                        : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                          "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                          "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+                }
+        }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STAGES;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWE:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WE;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    // STRIPPED epilogue: bare reduction store, no gA/gB, no per-element rescale. Keeps all 128 accs live
+    // through the loop (real mainloop pressure) but drops all epilogue arithmetic.
+    float r = 0.f;
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) r += acc[i][j];
+    C[(size_t)(blockIdx.y * 256 + blockIdx.x) * 256 + tid] = __float2bfloat16_rn(r);
 }
 
 static void mk(CUtensorMap *m, uint8_t *p, int inner, int outer, int bi, int bo, CUtensorMapSwizzle sw) {
@@ -578,6 +736,21 @@ static inline void run_sp_mm(const void *A, const void *B, const void *scaleA, c
 extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
                              const void *scaleB, const void *meta, void *C, int M, int N, int Klog) {
     run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, nullptr, nullptr, 0, 0);
+    return (int)cudaDeviceSynchronize();
+}
+// DIAGNOSTIC timing entry (throwaway): mainloop-only, stripped epilogue. Same TMA/launch as run_sp_mm,
+// no gA/gB, output is garbage -- used ONLY to time the bare mainloop floor vs FlashInfer.
+static std::once_flag g_diag_attr_once;
+extern "C" int sparse_fp4_mm_diag(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                  const void *meta, void *C, int M, int N, int Klog) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    std::call_once(g_diag_attr_once, [] { cudaFuncSetAttribute(matmul_sp_diag, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); });
+    dim3 grid(N / BN, M / (2 * BM)), block(256);
+    matmul_sp_diag<<<grid, block, SMEM, 0>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                             (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
     return (int)cudaDeviceSynchronize();
 }
 // TWO-LEVEL entry: same kernel, plus per-row(M=weight-row) gA and per-col(N=token) gB fp32 globals.
