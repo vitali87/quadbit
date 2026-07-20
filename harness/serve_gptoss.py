@@ -114,11 +114,20 @@ def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto") -> 
         ts.sort(); return ts[len(ts) // 2]
 
     shapes = [("gpt-oss   ", 3072, 2944), ("GLM-5.2   ", 5120, 1536), ("DeepSeek  ", 7168, 2048)]
-    print(f"# SOTA: our 2:4-SPARSE-FP4 GEMM vs FlashInfer DENSE-FP4 (mm_fp4 backend={backend}), M={M}, [M,N=2I,K=H]", flush=True)
+    # sweep mode (mrows=0): DeepSeek only, loop M IN-PROCESS (one .so build, one container -> same clocks)
+    # to separate wave-quantization from a per-iteration mainloop deficit -- if the floor-vs-FlashInfer
+    # ratio oscillates with M (peaks near integer waves, dips at fractional tails) it is wave quant.
+    if mrows == 0:
+        shapes = [("DeepSeek  ", 7168, 2048)]
+        Ms = [6016, 6784, 7520, 8192, 9024, 9408, 10528]
+    else:
+        Ms = [mrows]
+    print(f"# SOTA: our 2:4-SPARSE-FP4 GEMM vs FlashInfer DENSE-FP4 (mm_fp4 backend={backend}), M={Ms}, [M,N=2I,K=H]", flush=True)
     for label, H, I in shapes:
-        Kw = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256
+      Kw = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256
+      ac, meta, sA, ga = pack(torch.randn(N, Kw, device=dev) * 0.05)
+      for M in Ms:  # noqa: PLR1704
         x = torch.randn(M, Kw, device=dev, dtype=torch.bfloat16) * 0.1
-        ac, meta, sA, ga = pack(torch.randn(N, Kw, device=dev) * 0.05)
         bb = torch.empty((M, Kw // 2), dtype=torch.uint8, device=dev); sb = torch.empty((Kw // 128, M, 4), dtype=torch.uint8, device=dev); gbq = torch.empty((M,), dtype=torch.float32, device=dev)
         C = torch.empty((N, M), dtype=torch.bfloat16, device=dev)
 
@@ -145,8 +154,8 @@ def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto") -> 
             flop = 2.0 * M * N * Kw
             tfo = flop / 1e12 / (to / 1e3); tff = flop / 1e12 / (tf / 1e3)
             v = "quadbit-sparse WINS" if to < tf else "FlashInfer-dense wins"
-            print(f"# {label} N={N} K={Kw}: ours-sparse {to:.3f}ms ({tfo:.0f} TF/s) | FlashInfer-dense {tf:.3f}ms ({tff:.0f} TF/s) | {tf / to:.2f}x  ({v})", flush=True)
-            print(f"#   ^ mainloop-only floor (no epilogue) {td:.3f}ms | epilogue costs {to - td:.3f}ms ({100 * (to - td) / to:.0f}% of ours) | floor-vs-FlashInfer {tf / td:.2f}x", flush=True)
+            print(f"# {label} M={M} N={N} K={Kw}: ours-sparse {to:.3f}ms ({tfo:.0f} TF/s) | FlashInfer-dense {tf:.3f}ms ({tff:.0f} TF/s) | {tf / to:.2f}x  ({v})", flush=True)
+            print(f"#   ^ M={M} mainloop-only floor (no epilogue) {td:.3f}ms | epilogue costs {to - td:.3f}ms ({100 * (to - td) / to:.0f}% of ours) | floor-vs-FlashInfer {tf / td:.2f}x", flush=True)
         except Exception as ex:  # noqa: BLE001
             import traceback
             print(f"# {label} FlashInfer FAIL: {type(ex).__name__}: {ex}", flush=True)
