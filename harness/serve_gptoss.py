@@ -54,6 +54,151 @@ def _ensure_so() -> None:
     vol.commit()
 
 
+@app.function(gpu="RTX-PRO-6000", timeout=20 * MIN, volumes={"/cache": vol})
+def bench_vs_sota(iters: int = 30, mrows: int = 8192, backend: str = "auto") -> None:
+    """SOTA comparison (per always-benchmark-vs-sota): our 2:4-sparse-FP4 GEMM vs FlashInfer's DENSE FP4 GEMM
+    (flashinfer.mm_fp4, the real b12x/trtllm/cutlass SOTA -- same FP4 tensor cores, W4A4), same invocation, at
+    gpt-oss/GLM/DeepSeek gate_up [M,N=2I,K=H]. HONEST framing: ours is 2:4-SPARSE (half the mma work, lossy);
+    theirs is DENSE (full work, lossless). The ratio = the sparsity THROUGHPUT advantage vs SOTA dense. Also
+    times FlashInfer dense at half-K (their equivalent if THEY could skip half -- they can't, no sparse path)."""
+    import ctypes
+    import time
+
+    import torch
+    import flashinfer
+    _ensure_so()
+    M = mrows
+    dev = torch.device("cuda")
+    lib = ctypes.CDLL("/cache/sparse_fp4.so")
+    lib.quantize_act_nvfp4_2lvl.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2
+    lib.sparse_fp4_mm_2lvl.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_int] * 3 + [ctypes.c_void_p] * 2
+    FP4 = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6, 0, -.5, -1, -1.5, -2, -3, -4, -6], device=dev)
+    BND = torch.tensor([.25, .75, 1.25, 1.75, 2.5, 3.5, 5.], device=dev)
+    cc = torch.arange(128, device=dev); e_, m_ = (cc >> 3) & 0xf, cc & 7
+    UE4M3 = torch.where(e_ == 0, m_.float() * 0.001953125, (1.0 + m_.float() / 8.0) * torch.exp2((e_ - 7).float()))
+
+    def q_fp4(v):
+        return torch.bucketize(v.abs(), BND) | ((v < 0).long() << 3)
+
+    def enc(s):
+        mant_f, e = torch.frexp(s.clamp_min(1e-30)); mm = 2.0 * mant_f
+        biased = (e - 1) + 7; mant = torch.round((mm - 1.0) * 8.0).long(); carry = mant == 8
+        mant = torch.where(carry, torch.zeros_like(mant), mant); biased = torch.where(carry, biased + 1, biased)
+        code = (biased.long() << 3) | mant
+        code = torch.where(biased < 1, torch.ones_like(code), code); code = torch.where(biased > 15, torch.full_like(code, 0x7f), code)
+        code = torch.where(s >= 480.0, torch.full_like(code, 0x7f), code)
+        return torch.where(s > 0, code, torch.zeros_like(code))
+
+    def pack(w):
+        out_f, in_f = w.shape; ks = in_f // 128
+        wg = w.float().view(out_f, ks, 16, 4, 2)
+        i01, _ = wg.abs().sum(-1).topk(2, dim=-1).indices.sort(dim=-1)
+        kept = torch.gather(wg, 3, i01.unsqueeze(-1).expand(-1, -1, -1, -1, 2))
+        ga = (kept.abs().amax(dim=(1, 2, 3, 4), keepdim=True) / 2688.0).clamp_min(1e-30).reshape(out_f, 1, 1)
+        blk = kept.reshape(out_f, ks, 4, 8, 2); scode = enc((blk.abs().amax(dim=(3, 4)) / 6.0) / ga); sdeq = UE4M3[scode] * ga
+        kc = q_fp4(blk / sdeq.clamp_min(1e-30)[..., None, None])
+        ac = (kc[..., 0] | (kc[..., 1] << 4)).reshape(out_f, ks * 32).to(torch.uint8)
+        nib = (i01[..., 0] | (i01[..., 1] << 2)).view(out_f, ks, 2, 8)
+        sh = (torch.arange(8, device=dev) * 4).view(1, 1, 1, 8)
+        meta = (nib << sh).sum(-1).to(torch.int32).permute(1, 0, 2).contiguous()
+        return (ac.contiguous(), meta, scode.to(torch.uint8).permute(1, 0, 2).contiguous(), ga.reshape(out_f).float().contiguous())
+
+    def bench(fn):
+        for _ in range(5):
+            fn()
+        torch.cuda.synchronize()
+        s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True); ts = []
+        for _ in range(iters):
+            s.record(); fn(); e.record(); torch.cuda.synchronize(); ts.append(s.elapsed_time(e))
+        ts.sort(); return ts[len(ts) // 2]
+
+    shapes = [("gpt-oss   ", 3072, 2944), ("GLM-5.2   ", 5120, 1536), ("DeepSeek  ", 7168, 2048)]
+    print(f"# SOTA: our 2:4-SPARSE-FP4 GEMM vs FlashInfer DENSE-FP4 (mm_fp4 backend={backend}), M={M}, [M,N=2I,K=H]", flush=True)
+    for label, H, I in shapes:
+        Kw = ((H + 127) // 128) * 128; N = ((2 * I + 255) // 256) * 256
+        x = torch.randn(M, Kw, device=dev, dtype=torch.bfloat16) * 0.1
+        ac, meta, sA, ga = pack(torch.randn(N, Kw, device=dev) * 0.05)
+        bb = torch.empty((M, Kw // 2), dtype=torch.uint8, device=dev); sb = torch.empty((Kw // 128, M, 4), dtype=torch.uint8, device=dev); gbq = torch.empty((M,), dtype=torch.float32, device=dev)
+        C = torch.empty((N, M), dtype=torch.bfloat16, device=dev)
+
+        def ours():
+            lib.quantize_act_nvfp4_2lvl(x.data_ptr(), bb.data_ptr(), sb.data_ptr(), gbq.data_ptr(), M, Kw)
+            lib.sparse_fp4_mm_2lvl(ac.data_ptr(), bb.data_ptr(), sA.data_ptr(), sb.data_ptr(), meta.data_ptr(), C.data_ptr(), N, M, Kw, ga.data_ptr(), gbq.data_ptr())
+
+        try:
+            w = torch.randn(N, Kw, device=dev, dtype=torch.bfloat16) * 0.05
+            a_gsf = (x.abs().amax() / (6 * 448)).reshape(1).to(torch.float32)
+            b_gsf = (w.abs().amax() / (6 * 448)).reshape(1).to(torch.float32)
+            a_fp4, a_sf = flashinfer.nvfp4_quantize(x, a_gsf)          # a (M, K/2)
+            b_fp4, b_sf = flashinfer.nvfp4_quantize(w, b_gsf)          # b (N, K/2) -> mm_fp4 wants (K/2, N) col-major
+            bt = b_fp4.t().contiguous()
+            alpha = (a_gsf * b_gsf).to(torch.float32)
+
+            def flash():  # cutlass backend (b12x = their fastest needs a pre-strided layout -> this is conservative for FlashInfer)
+                flashinfer.mm_fp4(a_fp4, bt, a_sf, b_sf, alpha, out_dtype=torch.bfloat16, backend=backend, use_nvfp4=True)
+            to = bench(ours); tf = bench(flash)
+            flop = 2.0 * M * N * Kw
+            tfo = flop / 1e12 / (to / 1e3); tff = flop / 1e12 / (tf / 1e3)
+            v = "quadbit-sparse WINS" if to < tf else "FlashInfer-dense wins"
+            print(f"# {label} N={N} K={Kw}: ours-sparse {to:.3f}ms ({tfo:.0f} TF/s) | FlashInfer-dense {tf:.3f}ms ({tff:.0f} TF/s) | {tf / to:.2f}x  ({v})", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            import traceback
+            print(f"# {label} FlashInfer FAIL: {type(ex).__name__}: {ex}", flush=True)
+            print(traceback.format_exc()[-900:], flush=True)
+    print("# bench_vs_sota done", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=15 * MIN, volumes={"/cache": vol})
+def mmfp4_probe() -> None:
+    """Diagnose the exact mm_fp4 weight/scale layout: print nvfp4_quantize output shapes + docstring, then try
+    every (b orientation, backend) combo on a tiny GEMM and report which one actually runs."""
+    import torch
+    import flashinfer
+    dev = torch.device("cuda")
+    M, K, N = 256, 512, 384
+    x = torch.randn(M, K, device=dev, dtype=torch.bfloat16) * 0.1
+    w = torch.randn(N, K, device=dev, dtype=torch.bfloat16) * 0.05
+    a_gsf = (x.abs().amax() / (6 * 448)).reshape(1).float(); b_gsf = (w.abs().amax() / (6 * 448)).reshape(1).float()
+    a_fp4, a_sf = flashinfer.nvfp4_quantize(x, a_gsf)
+    b_fp4, b_sf = flashinfer.nvfp4_quantize(w, b_gsf)
+    print(f"# a_fp4 {tuple(a_fp4.shape)}/{a_fp4.dtype}  a_sf {tuple(a_sf.shape)}/{a_sf.dtype}", flush=True)
+    print(f"# b_fp4 {tuple(b_fp4.shape)}/{b_fp4.dtype}  b_sf {tuple(b_sf.shape)}/{b_sf.dtype}", flush=True)
+    print(f"# M={M} K={K} N={N} (K/2={K//2})", flush=True)
+    doc = (flashinfer.mm_fp4.__doc__ or "")[:1500]
+    print("# --- mm_fp4 docstring ---\n" + "\n".join("#   " + ln for ln in doc.splitlines()[:40]), flush=True)
+    alpha = (a_gsf * b_gsf).float()
+    for bname, bt, bst in [("b[N,K/2]", b_fp4, b_sf), ("b.T", b_fp4.t().contiguous(), b_sf), ("b.mT", b_fp4.mT.contiguous(), b_sf.mT.contiguous() if b_sf.dim() == 2 else b_sf)]:
+        for be in ("trtllm", "cutlass", "cudnn", "b12x", "auto"):
+            try:
+                o = flashinfer.mm_fp4(a_fp4, bt, a_sf, bst, alpha, out_dtype=torch.bfloat16, backend=be, use_nvfp4=True)
+                print(f"# OK  {bname} backend={be} -> out {tuple(o.shape)}", flush=True)
+            except Exception as ex:  # noqa: BLE001
+                print(f"# no  {bname} backend={be}: {str(ex)[:110]}", flush=True)
+    print("# mmfp4_probe done", flush=True)
+
+
+@app.function(gpu="RTX-PRO-6000", timeout=15 * MIN, volumes={"/cache": vol})
+def flashinfer_probe() -> None:
+    """Probe FlashInfer's FP4 GEMM/MoE API (the real SOTA competitor, b12x) so bench_vs_sota can call it."""
+    import importlib
+    import inspect
+    import flashinfer
+    print(f"# flashinfer {getattr(flashinfer, '__version__', '?')}", flush=True)
+    for path in ["flashinfer.gemm", "flashinfer.fused_moe", "flashinfer"]:
+        try:
+            m = importlib.import_module(path)
+            hits = [n for n in dir(m) if any(k in n.lower() for k in ("fp4", "moe", "mm_", "nvfp4", "block_scale")) and not n.startswith("_")]
+            print(f"# {path}: {hits}", flush=True)
+            for n in hits:
+                try:
+                    print(f"#   {path}.{n}: {inspect.signature(getattr(m, n))}", flush=True)
+                except (ValueError, TypeError):
+                    pass
+        except Exception as e:  # noqa: BLE001
+            print(f"# FAIL {path}: {type(e).__name__}: {e}", flush=True)
+    print("# flashinfer_probe done", flush=True)
+
+
 @app.function(gpu="RTX-PRO-6000", timeout=15 * MIN, volumes={"/cache": vol})
 def marlin_probe() -> None:
     """Probe vLLM's real Marlin MoE API (signatures + import paths) so bench_vs_marlin can call it correctly."""
