@@ -494,6 +494,16 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
   and cross-CTA pipeline deadlocked. FP4 multicast is not for consumer Blackwell.
 - **Bigger accumulator tile**: register spill (128 acc regs/thread already pins occupancy).
 - **STAGES-3 deployable / scatter scales**: smem-capped (1946k < 2116k staged STAGES-2).
+- **MoE sparse-FP4 GEMM to beat FlashInfer-cutlass on sm120 (2026-07, gpt-oss/GLM/DeepSeek gate_up+down)**:
+  NO-GO after two go/no-go probes. Reliable within-run: our mainloop-only floor plateaus ~1020 dense-equiv
+  TF/s and is FLAT across M (M=6k..49k, no wave-quant oscillation), while cutlass climbs 1066→1320 with M —
+  so we lose both projections, worse at large M. Root cause is arithmetic-intensity/reuse, not registers or
+  pipeline depth: WK=1/STAGES=4 (deeper, register-neutral) regressed 0.84→0.71x; narrow-BN diag freed regs
+  246→144 AND added STAGES=3 yet regressed 0.84→0.70x (halving BN doubles A-traffic). Higher intensity needs
+  *wider* tiles = more acc registers, forbidden by the 255-reg cap (no tmem on consumer sm_120a to offload
+  accumulators). Also: b12x/trtllm/cudnn don't run mm_fp4 at cap 120 (only cutlass does), so the earlier
+  "large-M ffn_down collapse vs b12x" win is not reproducible vs the runnable SOTA. Honest positioning: the
+  win is the quality/memory Pareto (only deployed 2:4-sparse-FP4), not raw FP4 GEMM speed vs cutlass on sm120.
 - **A-without-swizzle** (2577k), **asymmetric-A WK=4** (2463k): both < 2731k symmetric wide-swz.
 - **Dense wide-TMA** (1515k, neutral) and **dense all-ldmatrix-then-all-mma ILP reorder** (1523k,
   neutral): dense is compute-bound; ptxas already schedules the mma stream optimally.
