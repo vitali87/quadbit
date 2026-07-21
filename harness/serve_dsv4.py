@@ -424,6 +424,8 @@ def _graph_gate_body(
     dense_anchor_backend: str = "dequant",
     baseline: str = "",
     dp: int = 1,
+    spec: int = 0,
+    spec_method: str = "mtp",
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -454,7 +456,14 @@ def _graph_gate_body(
     # C1: dense-anchor projection backend. "dequant" = the frozen range(E) dequant-to-bf16 loop
     # (_dense_seg_gs); "native_nvfp4" = flashinfer group_gemm_nvfp4_nt_groupwise (fused NVFP4 grouped).
     os.environ["QB_DENSE_BACKEND"] = dense_anchor_backend
+    # C9: MTP speculative decoding. The NVFP4 checkpoint ships the `mtp.0.*` head (num_nextn_predict_layers=1),
+    # so vLLM auto-detects it from config; speculative_config activates it (no separate draft checkpoint).
+    # spec = num_speculative_tokens verified per target forward; the decode-floor amortization lever (verify
+    # k drafted tokens => pay the per-layer PCIe all-reduce once per ~k accepted tokens).
+    spec_cfg = {"method": spec_method, "num_speculative_tokens": spec} if spec > 0 else None
     cfg = "C-captured" if (gp and not eager) else ("B-graphpath-eager" if gp else "A-frozen-eager")
+    if spec_cfg:
+        print(f"# C9 MTP spec-decode: {spec_cfg}", flush=True)
     pol = (f"BASELINE-dense-nvfp4 (QB_MOE=off, native FlashInfer-CUTLASS fused MoE)"
            if baseline == "dense_nvfp4"
            else f"proj={proj} route_slot={route_slot} dense_layers=[{dense_layers}]")
@@ -468,6 +477,8 @@ def _graph_gate_body(
         kw = dict(model=GLM_MODEL, tensor_parallel_size=tp, enforce_eager=eager, trust_remote_code=True,
                   max_model_len=max_len, gpu_memory_utilization=gpu_mem, kv_cache_dtype="fp8",
                   max_num_batched_tokens=max(2048, max_len), max_num_seqs=max_seqs, enable_expert_parallel=True)
+        if spec_cfg:
+            kw["speculative_config"] = spec_cfg
         llm = LLM(**kw)
     else:
         rope = {"rope_type": "yarn", "factor": 16, "original_max_position_embeddings": 65536,
@@ -482,6 +493,8 @@ def _graph_gate_body(
             kw["data_parallel_size"] = dp
             print(f"  C5 DP-attention: tp={tp} data_parallel_size={dp} (removes the attention TP all-reduce)",
                   flush=True)
+        if spec_cfg:
+            kw["speculative_config"] = spec_cfg
         try:
             llm = LLM(tokenizer_mode="deepseek_v4", **kw)
         except Exception as ex:  # noqa: BLE001
@@ -582,6 +595,8 @@ def graph_gate4(
     nccl_proto: str = "",
     nccl_nchannels: int = 0,
     force_custom_ar: bool = False,
+    spec: int = 0,
+    spec_method: str = "mtp",
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
@@ -628,7 +643,7 @@ def graph_gate4(
         print("# C4: QB_FORCE_CUSTOM_AR=1 (enable vLLM one-shot custom all-reduce on 4 PCIe GPUs)", flush=True)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
-                     baseline=baseline)
+                     baseline=baseline, spec=spec, spec_method=spec_method)
 
 
 @app.function(
