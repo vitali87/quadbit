@@ -124,8 +124,9 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 
 ## 8. Training-free capability-preserving structural sparsity (DeepSeek + GLM transfer)
 
-The paper's large-model claim. Downstream = 400 items/task (ARC-C/HellaSwag/Winogrande/MMLU-5), dense
-ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-FP4 expert op.
+The paper's large-model claim. Downstream = 400 items/task (frozen 4-task ARC-C/HellaSwag/Winogrande/
+MMLU-5, dense ref AVG .7383; widened to an 8-task battery in WS-E, [docs/wse/verdict.md](wse/verdict.md)). All rows below
+run in-vLLM on SM120 with the quadbit 2:4 sparse-FP4 expert op.
 
 | Claim | Evidence | Status |
 |-------|----------|--------|
@@ -142,9 +143,10 @@ ref AVG .7383. All rows below run in-vLLM on SM120 with the quadbit 2:4 sparse-F
 | GLM-5.2 loads + generates coherently on SM120 under the quadbit plugin; DSA runs natively (`FLASHINFER_MLA_SPARSE_SM120` + `DEEPSEEK_V32_INDEXER`), 8-GPU EP | `harness/serve_dsv4.py --mode glm_baseline`; `docs/glm_results.md`; `docs/audit/logs/glm_runs.log` | backed |
 | GLM structural transfer: down-only (+0.209 PPL) costs ~half of gate/up (+0.432 PPL) at matched 49%-layer coverage; same mechanism as DeepSeek | `docs/glm_results.md` down49/gateup49; `docs/audit/logs/glm_runs.log` | backed |
 | GLM route-slot D2 (top-2 dense, tail-6 sparse) = highest sparse FLOP (~37%) at lowest cost (+0.065 PPL); dual residency fits 8 GPUs at 241k-vs-607k KV | `docs/glm_results.md` routeslot2; `docs/audit/logs/glm_runs.log` | backed |
-| GLM route-slot D2 downstream AVG holds within -0.95pt of dense (.7508 vs .7603, tokenizer-agnostic MC harness on 8-GPU EP) | `docs/glm_results.md` downstream table; `docs/audit/logs/glm_downstream.log` | backed |
-| GLM D2 quality is supported by PPL plus a 4-task downstream smoke suite; NOT a full downstream benchmark (down49/gateup49 rows PPL-only) | `docs/glm_results.md` caveats; `docs/audit/logs/glm_downstream.log` | backed (scope limit stated) |
-| No claim of exhaustive GLM downstream preservation | paper §10 / §12 limitations | limitation (explicit) |
+| GLM route-slot D2 downstream AVG holds within -0.95pt of dense (.7508 vs .7603, frozen 4-task limit=200 MC harness on 8-GPU EP) | `docs/glm_results.md` downstream table; `docs/audit/logs/glm_downstream.log` | backed |
+| WS-E 8-task breadth (arc_c/arc_e/hellaswag/piqa/obqa/boolq/winogrande/mmlu-5, limit=400): DeepSeek dense .7548 / down49 -0.57pt / D2 +0.03pt; GLM dense .7841 / down49 -0.15pt / D2 -0.79pt; no task collapse, PIQA restored at root cause | [docs/wse/verdict.md](wse/verdict.md); `/cache/qb_downstream_wse_*.csv` | backed |
+| GLM deployed policies (dense, down49, D2) all have 8-task downstream accuracy; down49 PPL-only caveat closed (-0.15pt); only gateup49 CONTROL stays PPL-only | [docs/wse/verdict.md](wse/verdict.md); [docs/glm_results.md](glm_results.md) downstream table | backed |
+| No claim of exhaustive GLM downstream preservation (WS-E is 8 MC tasks, not full-size benchmarks) | paper §10 / §12 limitations | limitation (explicit) |
 | GLM sparse path graph-capturable end-to-end | P4: route-slot D2 graph-captures on 8 GPUs (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU), A frozen 4.0040 == C captured 4.1565, DSA `sparse_mla_sm120_decode_dsv3_2` native, drop=0; [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md) | backed (see Section 9 P4) |
 | Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |
 
@@ -158,7 +160,7 @@ branch `p4-graph-capture` / PR #16; main frozen at `campaign-b-freeze-a91c5d9`.
 | A. Deployed sparse MoE policies graph-capture on SM120 | DeepSeek-D2 (FULL decode 2/2) + GLM route-slot D2 (PIECEWISE 3/3 + FULL 2/2), DSA native SM120, drop=0, no host sync / no in-capture alloc; `docs/p4/m4_d2_verdict.md`, `docs/p4/m4_glm_d2_verdict.md`, logs `p4_m4_d2_{A,C}.log` / `p4_m4_glm_d2_{A,C}.log` | backed |
 | B. Graph capture is quality-neutral for deployed policies | DeepSeek-D2 A 4.12 vs C 4.06; GLM-D2 A 4.0040 vs C 4.1565 (same short-passage harness), both coherent. Caveat: GLM dense baseline 3.171 uses a different 114-token policy-sweep passage, so only A-vs-C is the valid capture-neutrality comparison | backed (caveat) |
 | C. Graph-enabled sparse MoE decode bottleneck removed | C1: the dense anchored/grouped path is delegated to FlashInfer's native grouped NVFP4 GEMM; captured DeepSeek-D2 decodes 5.82 tok/s (Section 10 C1 table); superseded, see Section 10 rows below | backed (native delegate) |
-| D. GLM quality (PPL + 4-task downstream smoke suite, not exhaustive) | D2 smoke AVG .7508 vs dense .7603 (Section 8 rows 145-147); no full-benchmark claim | backed (scope limit stated) |
+| D. GLM quality (PPL + 8-task downstream battery on all deployed policies, not exhaustive) | WS-E dense .7841 / down49 -0.15pt / D2 -0.79pt (Section 8); no full-benchmark claim | backed (scope limit stated) |
 | E. CUTLASS / dense-baseline positioning | CUTLASS 80b is sparse-kernel prior art (Section 5 rows 29-30); FlashInfer/vLLM/SGLang are dense NVFP4 ecosystem baselines (Section 1 rows 18-22); quadbit does NOT claim dense FP4 speed leadership | guarded |
 
 ## 10. C1 native dense-anchor delegation (SM120)

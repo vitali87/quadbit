@@ -2823,9 +2823,11 @@ def _downstream_impl(
     glm: bool = False,
     force_custom_ar: bool = False,
 ) -> None:
-    """WS-A downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
+    """WS-A/WS-E downstream capability validation. Loglikelihood MC eval (lm-eval-compatible
     acc/acc_norm: per choice, sum teacher-forced logprob of the continuation tokens via vLLM
-    prompt_logprobs; pick argmax) over ARC-C / HellaSwag / PIQA / Winogrande / MMLU-subset. Same
+    prompt_logprobs; pick argmax) over the WS-E 8-task battery: ARC-C / ARC-E / HellaSwag / PIQA /
+    OpenBookQA / BoolQ / Winogrande / MMLU-subset (PIQA restored root-cause via the parquet-convert
+    branch, no gated script; ARC-E / OpenBookQA / BoolQ added for breadth past the old 4-task set). Same
     bespoke DeepSeek-V4-Flash init as _qmap_impl so the quadbit sparse plugin + fp8-KV + rope
     overrides are identical. GSM8K skipped (generative, ~2 tok/s sparse decode = not cheap).
     glm=True loads GLM-5.2-NVFP4 (8-GPU EP, no DeepSeek rope/tokenizer) instead; the MC eval is
@@ -2989,6 +2991,7 @@ def _downstream_impl(
 
     from datasets import load_dataset  # noqa: PLC0415
 
+    EXPECTED_TASKS = 8  # WS-E: arc_c/e, hellaswag, piqa, openbookqa, boolq, winogrande, mmlu
     results = []
 
     def try_load(cands):
@@ -3011,6 +3014,18 @@ def _downstream_impl(
             items.append((conts, gold, build(f"Question: {r['question']}\nAnswer:", conts)))
         results.append(run_task(f"arc_c[{src}]", items))
 
+    # ARC-Easy (acc_norm primary). WS-E breadth: same ai2_arc schema/template as ARC-C.
+    ds, src = try_load([("allenai/ai2_arc", {"name": "ARC-Easy", "split": "test"})])
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            ch = r["choices"]["text"]
+            labels = r["choices"]["label"]
+            gold = labels.index(r["answerKey"]) if r["answerKey"] in labels else 0
+            conts = [" " + t for t in ch]
+            items.append((conts, gold, build(f"Question: {r['question']}\nAnswer:", conts)))
+        results.append(run_task(f"arc_e[{src}]", items))
+
     # HellaSwag (acc_norm primary). lm-eval preprocess + ctx = activity + ctx_a/ctx_b
     ds, src = try_load([("Rowan/hellaswag", {"split": "validation"})])
     if ds is not None:
@@ -3029,10 +3044,43 @@ def _downstream_impl(
             items.append((conts, gold, build(ctx, conts)))
         results.append(run_task(f"hellaswag[{src}]", items))
 
-    # PIQA is intentionally excluded: ybisk/piqa needs gated trust_remote_code loading that is not
-    # available on the serve image, so it never loaded and never entered any recorded average. Every
-    # documented downstream number (DeepSeek deepseek_final.csv and GLM glm_results.md) is a 4-task
-    # average; dropping the block makes that deterministic and reproducible from the manifest command.
+    # PIQA (acc_norm primary). WS-E root-cause restore: ybisk/piqa's gated loading SCRIPT is skipped
+    # by loading the HF parquet-convert branch (revision=refs/convert/parquet) directly, so no
+    # trust_remote_code is needed on the serve image. lm-eval template: "Question: {goal}\nAnswer:",
+    # choices [sol1, sol2]. label is a string ("0"/"1") in the parquet, so int() it.
+    ds, src = try_load(
+        [("ybisk/piqa", {"revision": "refs/convert/parquet", "split": "validation"})]
+    )
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            conts = [" " + r["sol1"], " " + r["sol2"]]
+            items.append((conts, int(r["label"]), build(f"Question: {r['goal']}\nAnswer:", conts)))
+        results.append(run_task(f"piqa[{src}]", items))
+
+    # OpenBookQA main (acc_norm primary). WS-E breadth. lm-eval: ctx=question_stem, choices.text.
+    ds, src = try_load([("allenai/openbookqa", {"name": "main", "split": "test"})])
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            ch = r["choices"]["text"]
+            labels = r["choices"]["label"]
+            gold = labels.index(r["answerKey"]) if r["answerKey"] in labels else 0
+            conts = [" " + t for t in ch]
+            items.append((conts, gold, build(r["question_stem"], conts)))
+        results.append(run_task(f"openbookqa[{src}]", items))
+
+    # BoolQ (acc primary; yes/no lengths differ so acc_norm would bias). WS-E breadth. lm-eval:
+    # ctx="{passage}\nQuestion: {question}?\nAnswer:", choices ["no","yes"], gold=int(answer).
+    ds, src = try_load([("google/boolq", {"split": "validation"})])
+    if ds is not None:
+        items = []
+        for r in list(ds)[:limit]:
+            conts = [" no", " yes"]
+            gold = 1 if r["answer"] in (True, "True", "true", 1) else 0
+            ctx = f"{r['passage']}\nQuestion: {r['question']}?\nAnswer:"
+            items.append((conts, gold, build(ctx, conts)))
+        results.append(run_task(f"boolq[{src}]", items))
 
     # Winogrande (acc). partial scoring: ctx=prefix+option, cont=suffix after blank
     ds, src = try_load(
@@ -3095,12 +3143,22 @@ def _downstream_impl(
             {"task": "mmlu_subset", "n": len(mmlu_scores), "acc": mmlu_avg, "acc_norm": mmlu_avg}
         )
 
-    # primary metric per task (acc_norm for arc/hellaswag/piqa, acc for winogrande/mmlu)
+    # primary: acc_norm for arc/hellaswag/piqa/openbookqa, acc for winogrande/mmlu/boolq
     def primary(r):
-        return r["acc"] if r["task"].startswith(("winogrande", "mmlu")) else r["acc_norm"]
+        return r["acc"] if r["task"].startswith(("winogrande", "mmlu", "boolq")) else r["acc_norm"]
 
     prim = [primary(r) for r in results]
     avg = sum(prim) / len(prim) if prim else float("nan")
+    ntask = len(results)
+    # A dataset that fails to load is SKIPPED (try_load -> None), so a transient Hub failure would
+    # silently shrink the battery. Label the AVG with the actual task count and warn loudly if the
+    # full 8-task battery did not run, so a partial run can never masquerade as AVG-8.
+    if ntask != EXPECTED_TASKS:
+        print(
+            f"# WARNING: PARTIAL BATTERY -- {ntask}/{EXPECTED_TASKS} tasks ran; "
+            f"AVG is over {ntask} tasks, NOT comparable to the AVG-{EXPECTED_TASKS} of record.",
+            flush=True,
+        )
     print("# ================ DOWNSTREAM SUMMARY ================", flush=True)
     print(f"# tag={tag} PPL={ppl:.3f} per-GPU-MB={mem}", flush=True)
     for r in results:
@@ -3109,12 +3167,12 @@ def _downstream_impl(
             f"primary={primary(r):.4f} (n={r['n']})",
             flush=True,
         )
-    print(f"# AVG normalized primary = {avg:.4f}", flush=True)
+    print(f"# AVG-{ntask} normalized primary = {avg:.4f}", flush=True)
     with open(f"/cache/qb_downstream_{tag}.csv", "w") as f:
         f.write("task,n,acc,acc_norm,primary\n")
         for r in results:
             f.write(f"{r['task']},{r['n']},{r['acc']:.4f},{r['acc_norm']:.4f},{primary(r):.4f}\n")
-        f.write(f"AVG,,,,{avg:.4f}\n")
+        f.write(f"AVG-{ntask},,,,{avg:.4f}\n")
     print(f"# downstream CSV -> /cache/qb_downstream_{tag}.csv", flush=True)
 
 
