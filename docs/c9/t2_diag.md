@@ -136,4 +136,4 @@ Both captured runs let go to completion (patient this time; faulthandler armed a
 **Verdict: C9 = KILL.** The MTP draft head is a full MLA + 256-expert MoE + DSA block, so its per-step
 all-reduce + expert all-to-all cost, times k, plus imperfect acceptance, outweighs the (k+1)x
 amortization of the target forward's 43 all-reduces at batch 1-2. T4 not run (no captured win to
-amplify). Deployed decode SOTA stays C4 custom-AR 58.126 tok/s. Full write-up in `verdict.md`.
+amplify). Deployed decode SOTA stays C4 custom-AR 58.126 tok/s. Full write-up in [verdict.md](verdict.md).

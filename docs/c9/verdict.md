@@ -44,4 +44,4 @@ negative at k=2; k=1 never gets to a number because it deadlocks.
   The loss is a workload-economics result, not a bug: this specific draft head is too heavy on this
   specific interconnect.
 
-Branch `feat/mtp-spec-decode`. Diagnosis trail in `t2_diag.md`; T1 availability in `t1_recon.md`.
+Branch `feat/mtp-spec-decode`. Diagnosis trail in [t2_diag.md](t2_diag.md); T1 availability in [t1_recon.md](t1_recon.md).

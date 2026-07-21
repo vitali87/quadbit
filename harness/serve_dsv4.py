@@ -446,7 +446,7 @@ def _graph_gate_body(
     # so a hang prints all thread stacks to the log. Set before LLM() so worker subprocs inherit it.
     os.environ.pop("QB_FAULT_DUMP", None)
     os.environ.pop("QB_FAULT_DUMP_S", None)
-    if fault_dump:
+    if fault_dump > 0:  # negative would reach faulthandler.dump_traceback_later and crash the worker
         os.environ["QB_FAULT_DUMP"] = "1"
         os.environ["QB_FAULT_DUMP_S"] = str(fault_dump)
     gp = force_graph_path or (not eager)
