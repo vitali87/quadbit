@@ -45,12 +45,28 @@ Two eager runs, no capture (removes capture as a variable), no custom-AR (tests 
 - **CONTROL** `--eager` (no spec, no custom-AR): the clean eager-dense baseline to compare the
   eager-spec decode tok/s against (and confirms eager-nospec runs).
 
-Verdict logic:
-- SPEC eager clears the forward → **custom-AR is the culprit**; measure eager spec-vs-control decode
-  (the amortization signal), then fix/omit custom-AR for a captured comparison against the ring-AR
-  dense baseline (48.248) rather than the custom-AR SOTA (58.126).
-- SPEC eager stalls too → the **MTP draft forward itself** hangs on our SM120 DSA/MoE/MLA plugin
-  path; trace the specific op/collective (candidate: an EP all-to-all or DSA indexer call on the
-  draft forward not covered by the plugin's class-level patches).
+## Bisect result + RECALIBRATION (do not over-conclude)
 
-(To be finalized when the bisect returns.)
+- **SPEC (eager + spec, no custom-AR): accumulated heartbeats identically to Run 1** (hb 1→6),
+  never reached KV/gen. Killed at hb=6. So capture and custom-AR are NOT the differentiator.
+- **BUT CONTROL (eager + NO spec, no custom-AR) accumulates the SAME heartbeat pattern** (hb→6+),
+  **with `[qb_sm120] o_proj bf16 path ACTIVE` still printing on all workers** = the forward IS
+  executing, not frozen. A true collective deadlock would go silent. So the heartbeats are likely
+  the **slow eager DSA profiling forward** (bf16 indexer fallback + 2048-token profiling batch +
+  first-run TileLang JIT), NOT necessarily a hang.
+- **Consequence:** killing Run 1 / SPEC at 6 heartbeats may have been premature (same
+  conclude-before-measuring error as the earlier occupancy episode). Captured+nospec (C2/C4) works
+  fast because its profiling/capture path differs from the slow eager path.
+
+## Arbiter: QB_FAULT_DUMP run (running)
+
+`::graph_gate4 ... --eager --spec 1 --fault-dump 120` arms `faulthandler.dump_traceback_later(120s,
+repeat=True)` in every worker (confirmed `QB_FAULT_DUMP on` in pid=2). The periodic all-thread stack
+dump is definitive:
+- stacks show a **collective wait** (nccl all-reduce / all-to-all `dequeue`/`wait`) → real deadlock;
+  trace which op and why it diverges across ranks under spec-decode.
+- stacks show **compute** (a matmul / TileLang kernel / python forward) → merely slow; the fix is
+  patience + measuring captured (deployed) config, not eager, and re-timing spec-vs-nospec captured.
+
+Also letting CONTROL run uninterrupted: if eager-nospec breaks through to gen, that alone proves the
+heartbeats are slowness, not a hang. Verdict pending the stacks — NOT concluded.
