@@ -1229,6 +1229,18 @@ def _load_sparse_moe():
 
 
 def install() -> None:
+    # C9 diag: dump every thread's stack on a repeating timer so a HANG (no traceback, e.g. a collective
+    # deadlock in the MTP draft forward) prints where each worker is stuck to the modal log. Opt-in
+    # QB_FAULT_DUMP=1; interval QB_FAULT_DUMP_S (default 200s -> first dump lands during the profiling
+    # forward where spec-decode stalls). repeat=True keeps dumping so we catch the steady-state hang.
+    if os.environ.get("QB_FAULT_DUMP") == "1":
+        import faulthandler
+        import sys as _sys
+        _fd_to = int(os.environ.get("QB_FAULT_DUMP_S", "200"))
+        faulthandler.dump_traceback_later(_fd_to, repeat=True, file=_sys.stderr)
+        print(f"[qb_sm120] QB_FAULT_DUMP on: dump_traceback_later={_fd_to}s repeat pid={os.getpid()}",
+              flush=True)
+
     # C4: enable vLLM's one-shot custom all-reduce on 4 PCIe GPUs. Decode is 90.8% ncclDevKernel
     # AllReduce_RING_LL over PCIe (no NVLink); vLLM disables custom AR for >2 PCIe GPUs
     # (custom_all_reduce.py:150 + should_custom_ar:241, both gated on is_fully_connected). For the tiny
