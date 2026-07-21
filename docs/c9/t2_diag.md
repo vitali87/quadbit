@@ -97,3 +97,19 @@ CAPTURED config.
 - **CAPTURED-SPEC** `--force-custom-ar --spec 1 --fault-dump 180`: Run 1's real config, let it run to
   completion. This is the deployment measurement vs the 58.126 captured SOTA. If the faulthandler ever
   prints a collective-wait stack, it's a real hang; otherwise it's just slow capture and will finish.
+
+## Eager result: spec=1 is slightly SLOWER eager, as expected (numbers)
+
+| config (eager, no custom-AR) | decode tok/s | PPL |
+|---|---|---|
+| no-spec (CONTROL) | 7.165 | 4.1222 |
+| spec=1 (mtp) | 6.829 | 4.1222 |
+
+Spec-decode is **lossless** (identical PPL) but **net-negative in eager** (-4.7%). Correct and
+expected: in EAGER, compute dominates (no graph), so the extra MTP draft forward — a full MoE+DSA
+block — costs more than the collective-floor amortization saves at k=1. **The amortization thesis is
+about the CAPTURED collective floor** (C4/C5: 90.8% of captured decode is the per-layer TP all-reduce).
+Captured, the target forward verifies k+1 tokens in ONE pass → amortizes its 43 per-layer all-reduces
+by (k+1)×, while the 1-layer MTP draft adds ~1. So the win can only show CAPTURED, and DeepSeek trains
+MTP for k=2. Hence the two captured runs: `--spec 1` and `--spec 2`. The eager run also disproves the
+hang (it completed) — patience was the fix, exactly as CONTROL predicted.
