@@ -1,6 +1,6 @@
 # C10: does the sparse-FP4 MoE win serving throughput in the compute-bound (prefill/large-M) regime?
 
-**Branch:** `feat/mtp-spec-decode` (C10 work continues here). **Model:** DeepSeek-V4-Flash-NVFP4,
+**Branch:** `c10-sparse-prefill`. **Verdict:** [verdict.md](verdict.md) (KILL). **Model:** DeepSeek-V4-Flash-NVFP4,
 4-GPU EP. **Harness:** `serve_dsv4.py::graph_gate4` + the new `prefill_p` metric.
 
 ## Why this question
