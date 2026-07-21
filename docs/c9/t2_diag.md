@@ -70,3 +70,30 @@ dump is definitive:
 
 Also letting CONTROL run uninterrupted: if eager-nospec breaks through to gen, that alone proves the
 heartbeats are slowness, not a hang. Verdict pending the stacks — NOT concluded.
+
+## RESOLVED: it was slow eager warmup, NOT a hang. Runs were killed prematurely.
+
+**CONTROL (eager, no-spec) broke through and PASSED**: `Available KV cache memory 43.69 GiB` at hb=8,
+then coherent generation (Paris / fibonacci / cyan-magenta-yellow / H2O EN+ZH), **PPL 4.1222, decode
+7.165 tok/s**. So the 6-8 repeating `shm_broadcast` heartbeats are the **slow eager DSA profiling
+forward** (~8 min: bf16 indexer fallback + 2048-token profiling batch + first-run TileLang JIT), not a
+deadlock. The forward was progressing the whole time (`o_proj bf16 path ACTIVE` printing).
+
+**Correction:** Run 1 (captured+custom-AR+spec) and SPEC (eager+spec) were killed at hb=6 BEFORE they
+could finish — the spec path does MORE work (draft model ~doubles the forward), so it needs even
+longer than CONTROL's 8 heartbeats. This is the same conclude-before-measuring error as the earlier
+occupancy episode; the fix is patience (let spec runs go 15-20+ min). vLLM #40926 is a real but
+DIFFERENT failure (sustained-traffic runtime deadlock on v0.20.0), not our init-time slowness.
+
+Eager decode is ~7× slower than captured (7.165 vs the 48.248 captured dense baseline), as expected
+for the no-graph DSA path — so eager is only a diagnostic; the deployment number must come from the
+CAPTURED config.
+
+## Re-runs (patient this time)
+
+- **FAULTDUMP** `--eager --spec 1 --fault-dump 120`: the eager-spec point + hang tripwire; expected to
+  break through slower than CONTROL. Compare decode tok/s to the 7.165 eager-nospec baseline
+  (the eager amortization signal).
+- **CAPTURED-SPEC** `--force-custom-ar --spec 1 --fault-dump 180`: Run 1's real config, let it run to
+  completion. This is the deployment measurement vs the 58.126 captured SOTA. If the faulthandler ever
+  prints a collective-wait stack, it's a real hang; otherwise it's just slow capture and will finish.
