@@ -39,8 +39,10 @@ negative at k=2; k=1 never gets to a number because it deadlocks.
   crossover result, not by spec-decode at batch 1-2).
 - The deployed decode SOTA stays **C4 custom one-shot all-reduce = 58.126 tok/s**. The collective floor
   is attacked directly (custom AR), not amortized via speculation.
-- Spec-decode integration itself is sound and lossless (eager PPL identical; vLLM accepts the MTP
-  config, wires the shared embedding/lm_head/topk buffer, all SM120 unblocks + custom AR co-exist).
+- Spec-decode integration itself is sound: vLLM accepts the MTP config, wires the shared
+  embedding/lm_head/topk buffer, and all SM120 unblocks + custom AR co-exist. It is lossless only in
+  the eager spec=1 diagnostic (PPL 4.1222, identical to baseline); the completed captured spec=2 run
+  measured PPL 4.2514 (vs 4.1222), a small quality regression, and captured spec=1 never completed.
   The loss is a workload-economics result, not a bug: this specific draft head is too heavy on this
   specific interconnect.
 
