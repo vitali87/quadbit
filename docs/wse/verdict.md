@@ -69,7 +69,7 @@ wider battery. Cross-reference within a battery, not across.
    "down-projection is tolerant" rule on GLM with downstream accuracy, not just PPL. The PPL-only caveat
    on the GLM down policy is closed.
 
-## Honesty guards (design.md)
+## Honesty guards ([design.md](design.md))
 
 - **No task collapse anywhere.** The largest single-task move is DeepSeek down49 winogrande −3.0 pt and
   GLM D2 arc_c −2.0 pt; both sit inside the per-400 sampling band and neither drags any policy off the

@@ -125,7 +125,7 @@ Card: Modal RTX PRO 6000 (SM120) throughout. Recovered checkpoint:
 ## 8. Training-free capability-preserving structural sparsity (DeepSeek + GLM transfer)
 
 The paper's large-model claim. Downstream = 400 items/task (frozen 4-task ARC-C/HellaSwag/Winogrande/
-MMLU-5, dense ref AVG .7383; widened to an 8-task battery in WS-E, `docs/wse/verdict.md`). All rows below
+MMLU-5, dense ref AVG .7383; widened to an 8-task battery in WS-E, [docs/wse/verdict.md](wse/verdict.md)). All rows below
 run in-vLLM on SM120 with the quadbit 2:4 sparse-FP4 expert op.
 
 | Claim | Evidence | Status |
@@ -144,8 +144,8 @@ run in-vLLM on SM120 with the quadbit 2:4 sparse-FP4 expert op.
 | GLM structural transfer: down-only (+0.209 PPL) costs ~half of gate/up (+0.432 PPL) at matched 49%-layer coverage; same mechanism as DeepSeek | `docs/glm_results.md` down49/gateup49; `docs/audit/logs/glm_runs.log` | backed |
 | GLM route-slot D2 (top-2 dense, tail-6 sparse) = highest sparse FLOP (~37%) at lowest cost (+0.065 PPL); dual residency fits 8 GPUs at 241k-vs-607k KV | `docs/glm_results.md` routeslot2; `docs/audit/logs/glm_runs.log` | backed |
 | GLM route-slot D2 downstream AVG holds within -0.95pt of dense (.7508 vs .7603, frozen 4-task limit=200 MC harness on 8-GPU EP) | `docs/glm_results.md` downstream table; `docs/audit/logs/glm_downstream.log` | backed |
-| WS-E 8-task breadth (arc_c/arc_e/hellaswag/piqa/obqa/boolq/winogrande/mmlu-5, limit=400): DeepSeek dense .7548 / down49 -0.57pt / D2 +0.03pt; GLM dense .7841 / down49 -0.15pt / D2 -0.79pt; no task collapse, PIQA restored at root cause | `docs/wse/verdict.md`; `/cache/qb_downstream_wse_*.csv` | backed |
-| GLM deployed policies (dense, down49, D2) all have 8-task downstream accuracy; down49 PPL-only caveat closed (-0.15pt); only gateup49 CONTROL stays PPL-only | `docs/wse/verdict.md`; `docs/glm_results.md` downstream table | backed |
+| WS-E 8-task breadth (arc_c/arc_e/hellaswag/piqa/obqa/boolq/winogrande/mmlu-5, limit=400): DeepSeek dense .7548 / down49 -0.57pt / D2 +0.03pt; GLM dense .7841 / down49 -0.15pt / D2 -0.79pt; no task collapse, PIQA restored at root cause | [docs/wse/verdict.md](wse/verdict.md); `/cache/qb_downstream_wse_*.csv` | backed |
+| GLM deployed policies (dense, down49, D2) all have 8-task downstream accuracy; down49 PPL-only caveat closed (-0.15pt); only gateup49 CONTROL stays PPL-only | [docs/wse/verdict.md](wse/verdict.md); [docs/glm_results.md](glm_results.md) downstream table | backed |
 | No claim of exhaustive GLM downstream preservation (WS-E is 8 MC tasks, not full-size benchmarks) | paper §10 / §12 limitations | limitation (explicit) |
 | GLM sparse path graph-capturable end-to-end | P4: route-slot D2 graph-captures on 8 GPUs (PIECEWISE 3/3 + FULL 2/2, pool 1.01 GiB/GPU), A frozen 4.0040 == C captured 4.1565, DSA `sparse_mla_sm120_decode_dsv3_2` native, drop=0; [docs/p4/m4_glm_d2_verdict.md](p4/m4_glm_d2_verdict.md) | backed (see Section 9 P4) |
 | Full-coverage sparsity (>60% down-only, both-proj, top-1 slot) needs QAT/KD | c_down74/100, a2_49, D1 all miss .718 | backed (negative) |
