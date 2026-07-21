@@ -560,9 +560,16 @@ def _graph_gate_body(
     # call still compiles the TileLang/autotune kernels once.
     pf_tps = float("nan")
     if prefill_p > 0:
+        # C10 needs the whole prompt in ONE prefill chunk (max_len >= P dodges the chunked-prefill
+        # KeyError) and the eager compute-bound path (captured caps/drops M). Guard both so a bare
+        # `--prefill-p P` can't silently run the wrong path or crash on an over-length prompt.
+        assert max_len >= prefill_p, f"--prefill-p needs --max-len >= {prefill_p}, got {max_len}"
+        if not eager:
+            print("# WARN: --prefill-p measures the eager compute path; pass --eager", flush=True)
+        DISTINCT_TOKEN_ID_BASE = 101  # unique first token per call => no prefix-cache reuse
         body = llm.get_tokenizer().encode(passage * (prefill_p // max(1, len(pids)) + 2))
         def _pf_wall(salt: int) -> float:
-            ids = [101 + salt] + body[: prefill_p - 1]  # distinct first tok => no prefix reuse
+            ids = [DISTINCT_TOKEN_ID_BASE + salt] + body[: prefill_p - 1]
             torch.cuda.synchronize()
             t = time.time()
             llm.generate([{"prompt_token_ids": ids}], SamplingParams(temperature=0.0, max_tokens=1))
@@ -570,7 +577,7 @@ def _graph_gate_body(
             return time.time() - t
         _pf_wall(0)  # warm: compile TileLang / FlashInfer autotune (not timed)
         pf = min(_pf_wall(1), _pf_wall(2))
-        pf_tps = prefill_p / pf
+        pf_tps = prefill_p / pf if pf > 0 else float("nan")
         print(f"# C10 prefill tok/s: {pf_tps:.1f} (P={prefill_p} TTFT={pf:.3f}s "
               f"M/expert~{prefill_p * 6 // 256} baseline={baseline!r} eager={eager})", flush=True)
 
