@@ -30,3 +30,11 @@ teacher-forced. Source data: `docs/figures/data/deepseek_final.csv`.
 ## Quality metric caveat
 
 Downstream AVG is the quality metric of record, not PPL. Several rows (D1/D2/D3, c_gateup49) sit at or below dense PPL yet differ sharply in downstream AVG. Do not read D2's near-dense PPL (3.528) as near-dense capability; its AVG is −0.79pt and that is the honest number.
+
+## 8-task breadth check (WS-E)
+
+The 4-task battery above is the frozen paper reference. WS-E ([wse/verdict.md](wse/verdict.md)) widens it
+to 8 tasks (restored PIQA at root cause + ARC-Easy + OpenBookQA + BoolQ) at `limit=400` on the two
+deployed sparse policies, to confirm the capability claim is not an artifact of the narrow battery. It is
+not: **no task collapses**, and both policies stay near dense on the wider battery (dense .7548, down49
+−0.57 pt, D2 route-slot +0.03 pt). This is a fresh measurement, not a correction of the frozen rows.
