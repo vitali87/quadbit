@@ -2991,6 +2991,7 @@ def _downstream_impl(
 
     from datasets import load_dataset  # noqa: PLC0415
 
+    EXPECTED_TASKS = 8  # WS-E: arc_c/e, hellaswag, piqa, openbookqa, boolq, winogrande, mmlu
     results = []
 
     def try_load(cands):
@@ -3148,6 +3149,16 @@ def _downstream_impl(
 
     prim = [primary(r) for r in results]
     avg = sum(prim) / len(prim) if prim else float("nan")
+    ntask = len(results)
+    # A dataset that fails to load is SKIPPED (try_load -> None), so a transient Hub failure would
+    # silently shrink the battery. Label the AVG with the actual task count and warn loudly if the
+    # full 8-task battery did not run, so a partial run can never masquerade as AVG-8.
+    if ntask != EXPECTED_TASKS:
+        print(
+            f"# WARNING: PARTIAL BATTERY -- {ntask}/{EXPECTED_TASKS} tasks ran; "
+            f"AVG is over {ntask} tasks, NOT comparable to the AVG-{EXPECTED_TASKS} of record.",
+            flush=True,
+        )
     print("# ================ DOWNSTREAM SUMMARY ================", flush=True)
     print(f"# tag={tag} PPL={ppl:.3f} per-GPU-MB={mem}", flush=True)
     for r in results:
@@ -3156,12 +3167,12 @@ def _downstream_impl(
             f"primary={primary(r):.4f} (n={r['n']})",
             flush=True,
         )
-    print(f"# AVG normalized primary = {avg:.4f}", flush=True)
+    print(f"# AVG-{ntask} normalized primary = {avg:.4f}", flush=True)
     with open(f"/cache/qb_downstream_{tag}.csv", "w") as f:
         f.write("task,n,acc,acc_norm,primary\n")
         for r in results:
             f.write(f"{r['task']},{r['n']},{r['acc']:.4f},{r['acc_norm']:.4f},{primary(r):.4f}\n")
-        f.write(f"AVG,,,,{avg:.4f}\n")
+        f.write(f"AVG-{ntask},,,,{avg:.4f}\n")
     print(f"# downstream CSV -> /cache/qb_downstream_{tag}.csv", flush=True)
 
 
