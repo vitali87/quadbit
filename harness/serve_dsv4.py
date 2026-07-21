@@ -427,6 +427,7 @@ def _graph_gate_body(
     spec: int = 0,
     spec_method: str = "mtp",
     fault_dump: int = 0,
+    prefill_p: int = 0,
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -549,8 +550,39 @@ def _graph_gate_body(
     w1, w64 = _wall(1), _wall(64)
     dtps = 63.0 / (w64 - w1) if w64 > w1 else float("nan")
     print(f"# decode tok/s: {dtps:.3f} (wall1={w1:.3f}s wall64={w64:.3f}s)", flush=True)
+
+    # C10 prefill throughput: the compute-bound regime where 2:4 sparsity halves expert FLOPs. Build
+    # a prefill_p-token prompt, time TTFT (generate max_tokens=1); prefill_tps = prefill_p / TTFT.
+    # Run EAGER + large max_len (max_num_batched_tokens grows in step) so per-local-expert M ~
+    # prefill_p*top_k(6)/256 lands in the sparse kernel large-M regime (the captured path would CAP
+    # M at `cap` and drop overflow -- see docs/c10). Prefix caching is on, so each timed call gets a
+    # UNIQUE first token to force a cold prefill (else call 2 hits call 1's KV, reads ~0s). The warm
+    # call still compiles the TileLang/autotune kernels once.
+    pf_tps = float("nan")
+    if prefill_p > 0:
+        # C10 needs the whole prompt in ONE prefill chunk (max_len >= P dodges the chunked-prefill
+        # KeyError) and the eager compute-bound path (captured caps/drops M). Guard both so a bare
+        # `--prefill-p P` can't silently run the wrong path or crash on an over-length prompt.
+        assert max_len >= prefill_p, f"--prefill-p needs --max-len >= {prefill_p}, got {max_len}"
+        if not eager:
+            print("# WARN: --prefill-p measures the eager compute path; pass --eager", flush=True)
+        DISTINCT_TOKEN_ID_BASE = 101  # unique first token per call => no prefix-cache reuse
+        body = llm.get_tokenizer().encode(passage * (prefill_p // max(1, len(pids)) + 2))
+        def _pf_wall(salt: int) -> float:
+            ids = [DISTINCT_TOKEN_ID_BASE + salt] + body[: prefill_p - 1]
+            torch.cuda.synchronize()
+            t = time.time()
+            llm.generate([{"prompt_token_ids": ids}], SamplingParams(temperature=0.0, max_tokens=1))
+            torch.cuda.synchronize()
+            return time.time() - t
+        _pf_wall(0)  # warm: compile TileLang / FlashInfer autotune (not timed)
+        pf = min(_pf_wall(1), _pf_wall(2))
+        pf_tps = prefill_p / pf if pf > 0 else float("nan")
+        print(f"# C10 prefill tok/s: {pf_tps:.1f} (P={prefill_p} TTFT={pf:.3f}s "
+              f"M/expert~{prefill_p * 6 // 256} baseline={baseline!r} eager={eager})", flush=True)
+
     print(f"# graph_gate {cfg} {'PASS' if ntok > 0 else 'FAIL'} (ntok={ntok}, ppl={ppl:.4f}, "
-          f"decode_tps={dtps:.3f})", flush=True)
+          f"decode_tps={dtps:.3f}, prefill_tps={pf_tps:.1f})", flush=True)
 
 
 @app.function(
@@ -606,6 +638,7 @@ def graph_gate4(
     spec: int = 0,
     spec_method: str = "mtp",
     fault_dump: int = 0,
+    prefill_p: int = 0,
 ) -> None:
     """4-GPU P4 M4 graph-capture gate for route-slot D2 (dual residency: raw NVFP4 dense slots +
     packed sparse codes need 4-way EP). Defaults tp=4, route_slot=2. See _graph_gate_body for A/B/C.
@@ -652,7 +685,8 @@ def graph_gate4(
         print("# C4: QB_FORCE_CUSTOM_AR=1 (enable vLLM one-shot custom all-reduce on 4 PCIe GPUs)", flush=True)
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, dense_anchor_backend=dense_anchor_backend,
-                     baseline=baseline, spec=spec, spec_method=spec_method, fault_dump=fault_dump)
+                     baseline=baseline, spec=spec, spec_method=spec_method, fault_dump=fault_dump,
+                     prefill_p=prefill_p)
 
 
 @app.function(
