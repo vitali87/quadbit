@@ -113,3 +113,27 @@ Captured, the target forward verifies k+1 tokens in ONE pass → amortizes its 4
 by (k+1)×, while the 1-layer MTP draft adds ~1. So the win can only show CAPTURED, and DeepSeek trains
 MTP for k=2. Hence the two captured runs: `--spec 1` and `--spec 2`. The eager run also disproves the
 hang (it completed) — patience was the fix, exactly as CONTROL predicted.
+
+## CAPTURED result (the deployment measurement): spec-decode LOSES — see verdict.md
+
+Both captured runs let go to completion (patient this time; faulthandler armed at 180s as tripwire).
+
+| config | mode | decode tok/s | vs 58.126 SOTA |
+|---|---|---|---|
+| no-spec | captured | 58.126 | SOTA (C4 custom-AR) |
+| spec=1 (mtp) | captured | **hang** (66 min @ 0.00 tok/s) | — |
+| spec=2 (mtp) | captured | **47.792** (PPL 4.2514) | **-17.8%** |
+
+- **spec=2 PASSED capture cleanly** and measured 47.792 tok/s = 17.8% *slower* than no-spec. The
+  earlier `Timeout (0:03:00)!` dumps in its log were the 180s faulthandler firing on schedule during
+  the slow profiling forward (stacks show TileLang compile + `shm_broadcast` wait = compute-slow), NOT
+  a deadlock — the run finished normally with full graph capture.
+- **spec=1 genuinely deadlocked:** graph capture succeeded, generation entered (`Processed prompts 0/4,
+  output: 0.00 toks/s`), then wedged in `llm.generate -> step -> get_output` for 22 faulthandler
+  cycles (~66 min) at zero progress. Killed via `modal app stop`. This is the real vLLM #40926 family
+  runtime deadlock (MTP+DSA+MoE+MLA captured decode), distinct from the T2 init-time slow-warmup.
+
+**Verdict: C9 = KILL.** The MTP draft head is a full MLA + 256-expert MoE + DSA block, so its per-step
+all-reduce + expert all-to-all cost, times k, plus imperfect acceptance, outweighs the (k+1)x
+amortization of the target forward's 43 all-reduces at batch 1-2. T4 not run (no captured win to
+amplify). Deployed decode SOTA stays C4 custom-AR 58.126 tok/s. Full write-up in `verdict.md`.
