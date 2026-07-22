@@ -494,6 +494,36 @@ end-to-end; the batch-prefill corner stays NVFP4's.**
   and cross-CTA pipeline deadlocked. FP4 multicast is not for consumer Blackwell.
 - **Bigger accumulator tile**: register spill (128 acc regs/thread already pins occupancy).
 - **STAGES-3 deployable / scatter scales**: smem-capped (1946k < 2116k staged STAGES-2).
+- **MoE sparse-FP4 vs FlashInfer-cutlass on sm120 (2026-07)** — the ~1020 TF/s plateau is MEMORY/latency-bound,
+  NOT compute-feed-bound (an earlier "mma-feed starvation" reading here was FALSIFIED). Roofline (`mma_peak.cu`):
+  register-only sparse mma.sp m16n8k128 = **3653 TF/s**, dense mma.sync m16n8k64 = 1826 (ratio 2.001x, full sparse
+  speedup on consumer Blackwell). Our kernel = 1020 = **28% of the sparse-mma ceiling**. The decisive probe is
+  `peak_fed` (same file): the EXACT register-only sparse mma stream (128 acc/thread, 196 regs) but paying the REAL
+  per-iteration feed — 4 af + 8 bf ldmatrix from swizzled smem + full mma.sp metadata/block-scale operands, single
+  warp role, smem tile reused (no DRAM/TMA/barrier) — runs at **3571 TF/s = 97.7% of the register-only peak**. So
+  the ldmatrix + address-swizzle ALU + metadata feed costs only **2.3%**: the tensor core is NOT starved by inner-
+  loop overhead. The real 3.5x gap is entirely upstream of compute — DRAM→smem TMA traffic + mbarrier try_wait
+  latency + LOW OCCUPANCY (STAGES-2 × the 78KB A+B+scale+meta footprint pins 1 CTA/SM = 8 warps; a shallow 2-deep
+  pipeline can't cover TMA latency at that occupancy). This also re-explains the 128x128-tile regression: not worse
+  mma-feed but MORE L2/DRAM tile re-reads (throughput scaled ~with reuse: 256x128 4x-reuse=1020, 128x128
+  2x-reuse=790). LEVER AXIS is memory, not compute: pipeline depth (STAGES) for latency hiding on a smaller tile
+  that fits it, occupancy tuning, L2-aware CTA swizzle. Consistent with the decode ceilings above (fp4's small byte
+  footprint tips these ops latency/L2-bound). RESOLVED — the dense-throughput win is **physically unavailable on
+  sm120**, not a tuning gap. Levers measured: warp-spec is impossible (sm120 has **no TMEM/tcgen05** — register-acc
+  `mma.sp` only, confirmed vs NVIDIA/Colfax/ptxas-reverse-eng; cutlass sm120 is unified-role too); L2 grouped CTA
+  swizzle = neutral (default order already L2-optimal, working set < 128MB L2); 128×128 tile = worse (halved reuse);
+  STAGES=3 on the small tile = +5.5% but still below the high-reuse floor; coalesced epilogue = neutral; **2 CTA/SM
+  occupancy** (WK=1 kernel, 28KB smem, 126 regs, `matmul_sp_diag_wk1`) = **confirmed reached but only +5%** (869→910,
+  same as the deep-pipe gain), still ~25% below the 256×128 floor. Root wall (sm120 smem = 100KB/SM): 128 register
+  accumulators pin the high-reuse tile to 1 CTA/SM (246 regs, register-bound — WK=1 can't help it), and the only way
+  to 2 CTA/SM is the 128×128 tile which loses half the reuse; the +5% occupancy/latency gain is worth far less than
+  the −25% reuse loss, so they trade off and neither combination wins. The 2:4 metadata + block-scale smem/bandwidth
+  tax (which dense does NOT pay) is the extra footprint that keeps the high-reuse sparse tile at 1 CTA/SM where
+  cutlass-dense spends the same smem on the depth/occupancy that reaches 71%. So the 2×
+  sparse FLOP saving is structurally eaten by occupancy + the metadata tax; sparse GEMM lands near cutlass-dense
+  wall-clock and cannot beat it on this silicon. **quadbit's throughput win is the sparse Pareto (training-free
+  quality recovery + ~24% memory) and the large-M collapse, not dense-shape raw GEMM speed.** (Caveat still true:
+  b12x/trtllm/cudnn don't run mm_fp4 at cap 120, only cutlass — so cutlass is the SOTA to beat.)
 - **A-without-swizzle** (2577k), **asymmetric-A WK=4** (2463k): both < 2731k symmetric wide-swz.
 - **Dense wide-TMA** (1515k, neutral) and **dense all-ldmatrix-then-all-mma ILP reorder** (1523k,
   neutral): dense is compute-bound; ptxas already schedules the mma stream optimally.

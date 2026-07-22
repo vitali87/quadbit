@@ -30,8 +30,8 @@
 __global__ void __launch_bounds__(256)
 matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
           const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
-          __nv_bfloat16 *C, int M, int N, int Klog,
-          const float *gA, const float *gB,     // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
+          __nv_bfloat16 *__restrict__ C, int M, int N, int Klog,
+          const float *__restrict__ gA, const float *__restrict__ gB,   // per-row(M)/per-col(N) fp32 global (two-level NVFP4);
                                                  // nullptr -> single-level (mma-applied local scales only)
           int outT) {                            // outT: 0 -> C is [M,N]; 1 -> C is [N,M] (token-major, contiguous for vLLM)
     extern __shared__ __align__(128) uint8_t smem[];
@@ -46,6 +46,9 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
     uint64_t *full = (uint64_t *)(met_sm + STAGES * WK * MET);
     uint64_t *empty = full + STAGES;
 
+    // NOTE: L2-aware grouped CTA rasterization was tried here (cutlass-style, group=8) and measured NEUTRAL --
+    // the default order (x=col fastest) already reuses the A/weight tile across consecutive CTAs and the working
+    // set fits the 128MB L2, so memory scheduling is not the lever. Reverted. See quadbit-gptoss-campaign memory.
     int block_row = blockIdx.y * (2 * BM) + wg * BM;
     int a_load_row = blockIdx.y * (2 * BM), block_col = blockIdx.x * BN;
     int chunks = Klog / (128 * WK);
@@ -145,16 +148,14 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
                 for (int n = 0; n < 8; n++) {
-                    int idx = mt * 8 + n; float d0, d1, d2, d3;
+                    int idx = mt * 8 + n;   // in-place accumulate: D and C both = %0-%3 (drops the acc<-d copies -> fewer MOVs/regs)
                     asm volatile(
                         "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
-                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%12,%13,%14,%15}, %16, 0x0, {%17},{%18,%19}, {%20},{%21,%22};"
-                        : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
                         : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
                           "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
-                          "f"(acc[idx][0]), "f"(acc[idx][1]), "f"(acc[idx][2]), "f"(acc[idx][3]),
                           "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
-                    acc[idx][0] = d0; acc[idx][1] = d1; acc[idx][2] = d2; acc[idx][3] = d3;
                 }
         }
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
@@ -165,14 +166,27 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
         }
     }
     if (!outT) {
+        // Two-level global rescale (mma applied locals; globals here). gA[gr] depends only on mt, gB[gc]
+        // only on n -> hoist both out of the mt*n loop (was 128 redundant loads/thread -> 24). The epilogue
+        // was 10-25% of wall-clock, almost all its R2UR address-math + redundant LDG (see quadbit campaign).
+        float gav0[4], gav1[4], gbv0[8], gbv1[8];
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++) {
+            int gr = block_row + a_rowt[mt] + (lane >> 2);
+            gav0[mt] = gA ? gA[gr] : 1.f; gav1[mt] = gA ? gA[gr + 8] : 1.f;
+        }
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int gc = block_col + b_col[n] + (lane & 3) * 2;
+            gbv0[n] = gB ? gB[gc] : 1.f; gbv1[n] = gB ? gB[gc + 1] : 1.f;
+        }
 #pragma unroll
         for (int mt = 0; mt < 4; mt++)
 #pragma unroll
             for (int n = 0; n < 8; n++) {
                 int idx = mt * 8 + n;
                 int gr = block_row + a_rowt[mt] + (lane >> 2), gc = block_col + b_col[n] + (lane & 3) * 2;
-                float ga0 = gA ? gA[gr] : 1.f, ga1 = gA ? gA[gr + 8] : 1.f;   // two-level global rescale:
-                float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;   // mma applied locals, globals here
+                float ga0 = gav0[mt], ga1 = gav1[mt], gb0 = gbv0[n], gb1 = gbv1[n];
                 *reinterpret_cast<__nv_bfloat162 *>(&C[gr * N + gc]) = __floats2bfloat162_rn(acc[idx][0] * ga0 * gb0, acc[idx][1] * ga0 * gb1);
                 *reinterpret_cast<__nv_bfloat162 *>(&C[(gr + 8) * N + gc]) = __floats2bfloat162_rn(acc[idx][2] * ga1 * gb0, acc[idx][3] * ga1 * gb1);
             }
@@ -204,6 +218,454 @@ matmul_sp(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUte
         for (int col = 0; col < BN; col++)
             C[(size_t)(base_n + col) * M + base_m + tid] = Cs[col * (2 * BM) + tid];
     }
+}
+
+// ---- DIAGNOSTIC (throwaway, not committed): byte-identical mainloop to matmul_sp, epilogue stripped to a
+// bare reduction store (no gA/gB loads, no per-element FMUL, no F2FP/coalesced STG). Purpose: isolate whether
+// the 255-reg / R2UR-shuffle pressure is mainloop-driven (PTX rewrite is the only lever) or epilogue-driven
+// (a cheap epilogue split wins). Compare ptxas -v regs + R2UR count vs matmul_sp.
+__global__ void __launch_bounds__(256)
+matmul_sp_diag(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+          const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+          __nv_bfloat16 *C, int M, int N, int Klog) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STAGES * ASZ;
+    uint8_t *b_s = smem + 2 * STAGES * ASZ;
+    uint8_t *scA_sm = b_s + STAGES * BSZ;
+    uint8_t *scB_sm = scA_sm + STAGES * WK * SCA;
+    uint8_t *met_sm = scB_sm + STAGES * WK * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STAGES * WK * MET);
+    uint64_t *empty = full + STAGES;
+
+    int a_load_row = blockIdx.y * (2 * BM), block_col = blockIdx.x * BN;
+    int chunks = Klog / (128 * WK);
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[4], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_rowt[mt] = wm * 64 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[4], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_sidx[mt] = wg * 128 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[4];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) m_sidx[mt] = (wg * 128 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[32][4];
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STAGES; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ + BSZ + WK * SCA + WK * SCB + WK * MET)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STAGES * ASZ + s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row + BM), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ])), "l"(&mapB), "r"(chunk * BW_), "r"(block_col), "r"(bar));
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            int step = chunk * WK + sub;
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[(s * WK + sub) * SCA])), "l"(scaleA + (size_t)(step * M + a_load_row) * 4), "r"((uint32_t)SCA), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[(s * WK + sub) * SCB])), "l"(scaleB + (size_t)(step * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&met_sm[(s * WK + sub) * MET])), "l"((const uint8_t *)meta + (size_t)(step * M + a_load_row) * 8), "r"((uint32_t)MET), "r"(bar));
+        }
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STAGES; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STAGES; uint32_t par = (chunk / STAGES) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWA:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WA;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ, boff = s * BSZ;
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            const uint32_t *scA = (const uint32_t *)(scA_sm + (s * WK + sub) * SCA);
+            const uint32_t *scB = (const uint32_t *)(scB_sm + (s * WK + sub) * SCB);
+            const uint32_t *mtA = (const uint32_t *)(met_sm + (s * WK + sub) * MET);
+            uint32_t sav[4], sbv[8], ev[4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+            for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+            uint32_t af[4][4], bf[8][4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) {
+                int ao = (a_rowt[mt] + arow) * AW + sub * AROWB + acblk * 16; ao ^= ((ao >> 7) & 3) << 4;
+                uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+            }
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int bo = (b_col[n] + nrow) * BW_ + sub * BROWB + bsub * 16; bo ^= ((bo >> 7) & 7) << 4;
+                uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+            }
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    int idx = mt * 8 + n;
+                    asm volatile(
+                        "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
+                        : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                          "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                          "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+                }
+        }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STAGES;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWE:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WE;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    // STRIPPED epilogue: bare reduction store, no gA/gB, no per-element rescale. Keeps all 128 accs live
+    // through the loop (real mainloop pressure) but drops all epilogue arithmetic.
+    float r = 0.f;
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) r += acc[i][j];
+    C[(size_t)(blockIdx.y * 256 + blockIdx.x) * 256 + tid] = __float2bfloat16_rn(r);
+}
+
+// ===== 128x128-TILE sparse mainloop (task #12) ====================================================
+// Roofline proved sparse mma peak = 3738 TF/s; our 256x128 tile = 128 acc/thread pins 255 regs @ 27% util.
+// cutlass sm120 nvfp4 uses a 128x128 tile = 64 acc/thread and is feed-solved (Colfax). This kernel matches that:
+// BM 128->64 (each of 2 warpgroups does 64 out_f rows => 128 total), 2 mt-tiles/warp => acc[16] (64 regs, HALF),
+// A-tile + A-scale + metadata smem all halve. B (128 tokens) + mma.sp m16n8k128 unchanged. Frees ~64 regs so
+// ptxas can pipeline the operand feed. Measure floor vs 1020 baseline; then add register fragment double-buffer.
+#define BM2 64
+#define NMT 2
+#define ASZ2 (BM2 * AW)
+#define SCA2 512
+#define MET2 1024
+// per-stage opt footprint = 28KB (2*ASZ2 A + BSZ B + WK*(SCA2+SCB+MET2) scale/meta). STAGES_OPT-deep pipeline
+// to hide TMA/DRAM latency at low occupancy (the real bottleneck, per peak_fed). S3=84KB fits the 99KB opt-in.
+#define SMEM_OPTN(ST) (2 * (ST) * ASZ2 + (ST) * BSZ + (ST) * WK * SCA2 + (ST) * WK * SCB + (ST) * WK * MET2 + 2 * (ST) * 8 + 128)
+// MINBLK = requested min CTAs/SM. STAGES_OPT=2 (56KB) x 2 CTAs = 112KB < 128KB/SM smem, so 2 CTA/SM is
+// smem-legal; __launch_bounds__(256,2) forces ptxas to cap regs at 128 (opt is ~140, needs a ~12-reg trim /
+// minor spill) so 2 CTAs actually co-reside => 16 warps/SM to hide TMA latency (the real 1-CTA/SM wall).
+#ifndef MINBLK
+#define MINBLK 2
+#endif
+template <int STAGESO>
+__global__ void __launch_bounds__(256, MINBLK)
+matmul_sp_diag_opt(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+          const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+          __nv_bfloat16 *C, int M, int N, int Klog) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STAGESO * ASZ2;
+    uint8_t *b_s = smem + 2 * STAGESO * ASZ2;
+    uint8_t *scA_sm = b_s + STAGESO * BSZ;
+    uint8_t *scB_sm = scA_sm + STAGESO * WK * SCA2;
+    uint8_t *met_sm = scB_sm + STAGESO * WK * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STAGESO * WK * MET2);
+    uint64_t *empty = full + STAGESO;
+
+    int a_load_row = blockIdx.y * (2 * BM2), block_col = blockIdx.x * BN;
+    int chunks = Klog / (128 * WK);
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[NMT], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) a_rowt[mt] = wm * 32 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[NMT], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) a_sidx[mt] = wg * 64 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[NMT];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) m_sidx[mt] = (wg * 64 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[NMT * 8][4];
+#pragma unroll
+    for (int i = 0; i < NMT * 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STAGESO; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ2 + BSZ + WK * SCA2 + WK * SCB + WK * MET2)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ2])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STAGESO * ASZ2 + s * ASZ2])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row + BM2), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ])), "l"(&mapB), "r"(chunk * BW_), "r"(block_col), "r"(bar));
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            int step = chunk * WK + sub;
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[(s * WK + sub) * SCA2])), "l"(scaleA + (size_t)(step * M + a_load_row) * 4), "r"((uint32_t)SCA2), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[(s * WK + sub) * SCB])), "l"(scaleB + (size_t)(step * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&met_sm[(s * WK + sub) * MET2])), "l"((const uint8_t *)meta + (size_t)(step * M + a_load_row) * 8), "r"((uint32_t)MET2), "r"(bar));
+        }
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STAGESO; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STAGESO; uint32_t par = (chunk / STAGESO) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWA:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WA;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ2, boff = s * BSZ;
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            const uint32_t *scA = (const uint32_t *)(scA_sm + (s * WK + sub) * SCA2);
+            const uint32_t *scB = (const uint32_t *)(scB_sm + (s * WK + sub) * SCB);
+            const uint32_t *mtA = (const uint32_t *)(met_sm + (s * WK + sub) * MET2);
+            uint32_t sav[NMT], sbv[8], ev[NMT];
+#pragma unroll
+            for (int mt = 0; mt < NMT; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+            for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+            uint32_t af[NMT][4], bf[8][4];
+#pragma unroll
+            for (int mt = 0; mt < NMT; mt++) {
+                int ao = (a_rowt[mt] + arow) * AW + sub * AROWB + acblk * 16; ao ^= ((ao >> 7) & 3) << 4;
+                uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+            }
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int bo = (b_col[n] + nrow) * BW_ + sub * BROWB + bsub * 16; bo ^= ((bo >> 7) & 7) << 4;
+                uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+            }
+#pragma unroll
+            for (int mt = 0; mt < NMT; mt++)
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    int idx = mt * 8 + n;
+                    asm volatile(
+                        "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
+                        : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                          "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                          "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+                }
+        }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STAGESO;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWE:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WE;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    float r = 0.f;
+#pragma unroll
+    for (int i = 0; i < NMT * 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) r += acc[i][j];
+    C[(size_t)(blockIdx.y * gridDim.x + blockIdx.x) * 256 + tid] = __float2bfloat16_rn(r);
+}
+
+// ===== WK=1 128x128 kernel: 14KB/stage => STAGES=2 = 28KB => 2 CTA/SM (smem 56KB<100KB AND regs<=128).
+// The ONLY config that reaches 2 CTA/SM while keeping BN=128 token-reuse. Tests whether doubling occupancy
+// (16 warps/SM) hides the TMA latency that 1-CTA/SM leaves exposed. SWIZZLE_NONE + linear ldmatrix (no XOR):
+// addressing is provably in-bounds; bank-conflict cost is part of the (cheap, per peak_fed) feed, common to
+// both 1- and 2-CTA cases, so it does not mask the occupancy delta. One k128-slice/chunk (no sub loop).
+#define AW1 AROWB          // 32
+#define BW1 BROWB          // 64
+#define ASZ1 (BM2 * AW1)   // 2048
+#define BSZ1 (BN * BW1)    // 8192
+#define SMEM_WK1(ST) (2 * (ST) * ASZ1 + (ST) * BSZ1 + (ST) * SCA2 + (ST) * SCB + (ST) * MET2 + 2 * (ST) * 8 + 128)
+template <int STG>
+__global__ void __launch_bounds__(256, 2)
+matmul_sp_diag_wk1(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+          const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+          __nv_bfloat16 *C, int M, int N, int Klog) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STG * ASZ1;
+    uint8_t *b_s = smem + 2 * STG * ASZ1;
+    uint8_t *scA_sm = b_s + STG * BSZ1;
+    uint8_t *scB_sm = scA_sm + STG * SCA2;
+    uint8_t *met_sm = scB_sm + STG * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STG * MET2);
+    uint64_t *empty = full + STG;
+
+    int a_load_row = blockIdx.y * (2 * BM2), block_col = blockIdx.x * BN;
+    int chunks = Klog / 128;                              // WK=1: one k128-slice per chunk
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[NMT], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) a_rowt[mt] = wm * 32 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[NMT], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) a_sidx[mt] = wg * 64 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[NMT];
+#pragma unroll
+    for (int mt = 0; mt < NMT; mt++) m_sidx[mt] = (wg * 64 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[NMT * 8][4];
+#pragma unroll
+    for (int i = 0; i < NMT * 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STG; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ1 + BSZ1 + SCA2 + SCB + MET2)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ1])), "l"(&mapA), "r"(chunk * AW1), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STG * ASZ1 + s * ASZ1])), "l"(&mapA), "r"(chunk * AW1), "r"(a_load_row + BM2), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ1])), "l"(&mapB), "r"(chunk * BW1), "r"(block_col), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[s * SCA2])), "l"(scaleA + (size_t)(chunk * M + a_load_row) * 4), "r"((uint32_t)SCA2), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[s * SCB])), "l"(scaleB + (size_t)(chunk * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+        asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&met_sm[s * MET2])), "l"((const uint8_t *)meta + (size_t)(chunk * M + a_load_row) * 8), "r"((uint32_t)MET2), "r"(bar));
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STG; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STG; uint32_t par = (chunk / STG) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWW:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WW;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ1, boff = s * BSZ1;
+        const uint32_t *scA = (const uint32_t *)(scA_sm + s * SCA2);
+        const uint32_t *scB = (const uint32_t *)(scB_sm + s * SCB);
+        const uint32_t *mtA = (const uint32_t *)(met_sm + s * MET2);
+        uint32_t sav[NMT], sbv[8], ev[NMT];
+#pragma unroll
+        for (int mt = 0; mt < NMT; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+        for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+        uint32_t af[NMT][4], bf[8][4];
+#pragma unroll
+        for (int mt = 0; mt < NMT; mt++) {
+            int ao = (a_rowt[mt] + arow) * AW1 + acblk * 16;
+            uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+            asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                         : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+        }
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int bo = (b_col[n] + nrow) * BW1 + bsub * 16;
+            uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+            asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                         : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+        }
+#pragma unroll
+        for (int mt = 0; mt < NMT; mt++)
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int idx = mt * 8 + n;
+                asm volatile(
+                    "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                    "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                    : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
+                    : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                      "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                      "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+            }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STG;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWX:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WX;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    float r = 0.f;
+#pragma unroll
+    for (int i = 0; i < NMT * 8; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) r += acc[i][j];
+    C[(size_t)(blockIdx.y * gridDim.x + blockIdx.x) * 256 + tid] = __float2bfloat16_rn(r);
 }
 
 static void mk(CUtensorMap *m, uint8_t *p, int inner, int outer, int bi, int bo, CUtensorMapSwizzle sw) {
@@ -582,6 +1044,67 @@ extern "C" int sparse_fp4_mm(const void *A, const void *B, const void *scaleA,
     run_sp_mm(A, B, scaleA, scaleB, meta, C, M, N, Klog, nullptr, nullptr, 0, 0);
     return (int)cudaDeviceSynchronize();
 }
+// DIAGNOSTIC timing entry (throwaway): mainloop-only, stripped epilogue. Same TMA/launch as run_sp_mm,
+// no gA/gB, output is garbage -- used ONLY to time the bare mainloop floor vs FlashInfer.
+static std::once_flag g_diag_attr_once;
+extern "C" int sparse_fp4_mm_diag(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                  const void *meta, void *C, int M, int N, int Klog) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    std::call_once(g_diag_attr_once, [] { cudaFuncSetAttribute(matmul_sp_diag, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); });
+    dim3 grid(N / BN, M / (2 * BM)), block(256);
+    matmul_sp_diag<<<grid, block, SMEM, 0>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                             (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
+    return (int)cudaDeviceSynchronize();
+}
+// 128x128-TILE probe entry (task #12): mapA box = BM2=64, grid = (N/BN, M/(2*BM2)) = M/128 row-blocks.
+// STAGES_OPT-deep pipeline: 28KB/stage => S2=56KB, S3=84KB (both <99KB opt-in). Tests whether deeper
+// pipelining hides the TMA/DRAM latency that peak_fed proved is the real bottleneck (not compute feed).
+#ifndef STAGES_OPT
+#define STAGES_OPT 2
+#endif
+static std::once_flag g_diago_attr_once;
+extern "C" int sparse_fp4_mm_diag_opt(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                      const void *meta, void *C, int M, int N, int Klog) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW, BM2, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    std::call_once(g_diago_attr_once, [] {
+        cudaFuncSetAttribute(matmul_sp_diag_opt<STAGES_OPT>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_OPTN(STAGES_OPT));
+        int nb = 0; cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, matmul_sp_diag_opt<STAGES_OPT>, 256, SMEM_OPTN(STAGES_OPT));
+        cudaFuncAttributes fa; cudaFuncGetAttributes(&fa, matmul_sp_diag_opt<STAGES_OPT>);
+        printf("# [occupancy] diag_opt S%d MINBLK%d: %d regs, %d B smem, %d CTA/SM\n", STAGES_OPT, MINBLK, fa.numRegs, (int)SMEM_OPTN(STAGES_OPT), nb);
+    });
+    dim3 grid(N / BN, M / (2 * BM2)), block(256);
+    matmul_sp_diag_opt<STAGES_OPT><<<grid, block, SMEM_OPTN(STAGES_OPT), 0>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
+    return (int)cudaDeviceSynchronize();
+}
+// WK=1 2-CTA/SM probe entry: A box = AW1=32B, B box = BW1=64B, SWIZZLE_NONE.
+#ifndef STAGES_WK1
+#define STAGES_WK1 2
+#endif
+static std::once_flag g_wk1_attr_once;
+extern "C" int sparse_fp4_mm_diag_wk1(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                      const void *meta, void *C, int M, int N, int Klog) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, M, AW1, BM2, CU_TENSOR_MAP_SWIZZLE_NONE);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW1, BN, CU_TENSOR_MAP_SWIZZLE_NONE);
+    std::call_once(g_wk1_attr_once, [] {
+        cudaFuncSetAttribute(matmul_sp_diag_wk1<STAGES_WK1>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_WK1(STAGES_WK1));
+        int nb = 0; cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, matmul_sp_diag_wk1<STAGES_WK1>, 256, SMEM_WK1(STAGES_WK1));
+        cudaFuncAttributes fa; cudaFuncGetAttributes(&fa, matmul_sp_diag_wk1<STAGES_WK1>);
+        printf("# [occupancy] diag_wk1 S%d: %d regs, %d B smem, %d CTA/SM\n", STAGES_WK1, fa.numRegs, (int)SMEM_WK1(STAGES_WK1), nb);
+    });
+    dim3 grid(N / BN, M / (2 * BM2)), block(256);
+    matmul_sp_diag_wk1<STAGES_WK1><<<grid, block, SMEM_WK1(STAGES_WK1), 0>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
+                                                     (const uint32_t *)meta, (__nv_bfloat16 *)C, M, N, Klog);
+    return (int)cudaDeviceSynchronize();
+}
 // TWO-LEVEL entry: same kernel, plus per-row(M=weight-row) gA and per-col(N=token) gB fp32 globals.
 // scaleA/scaleB now hold ue4m3 codes LOCAL to the globals; the epilogue applies gA[m]*gB[n].
 extern "C" int sparse_fp4_mm_2lvl(const void *A, const void *B, const void *scaleA, const void *scaleB,
@@ -840,7 +1363,8 @@ __global__ void __launch_bounds__(256)
 matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
               const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
               __nv_bfloat16 *C, int M, int Mpe, int N, int Klog,
-              const float *gA, const float *gB, const int *eblk, int outT) {
+              const float *gA, const float *gB, const int *eblk, int outT,
+              const int *sc_tok, const float *sc_w, const __nv_bfloat16 *bias, float *Out, int Hout) {
     extern __shared__ __align__(128) uint8_t smem[];
     int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
     int warp = wtid >> 5, lane = wtid & 31;
@@ -954,16 +1478,14 @@ matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ 
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
                 for (int n = 0; n < 8; n++) {
-                    int idx = mt * 8 + n; float d0, d1, d2, d3;
+                    int idx = mt * 8 + n;   // in-place accumulate: D and C both = %0-%3 (drops the acc<-d copies -> fewer MOVs/regs)
                     asm volatile(
                         "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
-                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%12,%13,%14,%15}, %16, 0x0, {%17},{%18,%19}, {%20},{%21,%22};"
-                        : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
                         : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
                           "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
-                          "f"(acc[idx][0]), "f"(acc[idx][1]), "f"(acc[idx][2]), "f"(acc[idx][3]),
                           "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
-                    acc[idx][0] = d0; acc[idx][1] = d1; acc[idx][2] = d2; acc[idx][3] = d3;
                 }
         }
         asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
@@ -1007,21 +1529,103 @@ matmul_sp_moe(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ 
             }
         __syncthreads();
         int base_m = blockIdx.y * (2 * BM), base_n = blockIdx.x * BN;       // C is [N, Mpe] (local out)
+        if (outT == 2) {
+            // FUSED down epilogue: add per-expert bias, weight by routing coeff, scatter-add to token rows.
+            // Collapses the seg-down + (d*w) + index_add plumbing into the GEMM tail. Out[tok, Hout] is f32
+            // (pre-zeroed by caller); sc_tok[rr]<0 marks padding rows; f>=Hout are padded features (skip).
+            int e = eblk[blockIdx.x], f = base_m + tid;
+            if (f < Hout) {
+                float bb = bias ? __bfloat162float(bias[(size_t)e * Hout + f]) : 0.f;
 #pragma unroll
-        for (int col = 0; col < BN; col++)
-            C[(size_t)(base_n + col) * Mpe + base_m + tid] = Cs[col * (2 * BM) + tid];
+                for (int col = 0; col < BN; col++) {
+                    int rr = base_n + col, tok = sc_tok[rr];
+                    if (tok < 0) continue;
+                    atomicAdd(&Out[(size_t)tok * Hout + f], (__bfloat162float(Cs[col * (2 * BM) + tid]) + bb) * sc_w[rr]);
+                }
+            }
+        } else if (outT == 3) {
+            // FUSED bias+weight, COALESCED (no atomics): C[row,f] = (down_out + bias[e,f]) * sc_w[row], bf16.
+            // Removes the torch bias-gather (E,H -> r_pad,H materialization) + weight-mul + fp32 convert that
+            // dominate the down side (~40% of MoE); the caller then does ONE index_add of this bf16 output.
+            // Write stays coalesced across f (tid), so it keeps outT=1's memory pattern -- unlike the outT=2
+            // atomic scatter which was uncoalesced and slower than torch index_add.
+            int e = eblk[blockIdx.x], f = base_m + tid;
+            float bval = (bias && f < Hout) ? __bfloat162float(bias[(size_t)e * Hout + f]) : 0.f;
+#pragma unroll
+            for (int col = 0; col < BN; col++) {
+                int row = base_n + col;
+                C[(size_t)row * Mpe + f] =
+                    __float2bfloat16((__bfloat162float(Cs[col * (2 * BM) + tid]) + bval) * sc_w[row]);
+            }
+        } else {
+#pragma unroll
+            for (int col = 0; col < BN; col++)
+                C[(size_t)(base_n + col) * Mpe + base_m + tid] = Cs[col * (2 * BM) + tid];
+        }
     }
 }
 
 static std::once_flag g_moe_attr_once;
 static void set_moe_attr() { cudaFuncSetAttribute(matmul_sp_moe, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); }
 extern "C" void qb_init_moe_attrs() { std::call_once(g_moe_attr_once, set_moe_attr); }
+
+// Inverse-index top-k COMBINE: y[token,f] = sum_k dbuf[inverse[token,k], f] (skip -1). Replaces the torch
+// index_add scatter (top-4 combine of the bias+weight-fused down output). index_add moves ~1.6GB (800MB read
+// + 800MB SCATTERED atomic-add); this moves ~1GB (gathered read + COALESCED write, no atomics). One block per
+// token loads its <=topk row indices to smem, threads stride over features (coalesced). dbuf is [r_pad, Mpe].
+__global__ void moe_combine(const __nv_bfloat16 *dbuf, const int *inverse, __nv_bfloat16 *y,
+                            int H, int topk, int Mpe) {
+    int token = blockIdx.x;
+    extern __shared__ int rows[];
+    if (threadIdx.x < topk) rows[threadIdx.x] = inverse[token * topk + threadIdx.x];
+    __syncthreads();
+    for (int f = threadIdx.x; f < H; f += blockDim.x) {
+        float acc = 0.f;
+#pragma unroll 4
+        for (int k = 0; k < topk; k++) {
+            int r = rows[k];
+            if (r >= 0) acc += __bfloat162float(dbuf[(size_t)r * Mpe + f]);
+        }
+        y[(size_t)token * H + f] = __float2bfloat16(acc);
+    }
+}
+// Fused routing (counting sort): group routed slots by expert in ONE kernel, replacing torch argsort +
+// bincount + cumsum + within + dest-scatter (~10 small ops). Few experts (32) -> a counting sort (per-expert
+// atomic slot counter) beats a comparison/radix sort. src[poff[e]+slot] = original slot i; intra-expert order
+// is arbitrary (irrelevant to the seg GEMM + inverse combine). poff = exclusive-cumsum of the 128-padded
+// per-expert counts (host/torch precompute, cheap). counter[E] zeroed here; src pre-filled with -1 by caller
+// (padding slots stay -1). assign[i] = expert of slot i (-1 = masked/off-rank, skipped).
+__global__ void moe_route_scatter(const int *assign, const long *poff, int *counter, int *src, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+    int e = assign[i];
+    if (e < 0) return;
+    int slot = atomicAdd(&counter[e], 1);
+    src[poff[e] + slot] = i;
+}
+extern "C" int moe_route(const void *assign, const void *poff, void *counter, void *src, int N, int E,
+                         void *stream) {
+    cudaStream_t s = (cudaStream_t)stream;
+    cudaMemsetAsync(counter, 0, (size_t)E * sizeof(int), s);
+    int tpb = 256;
+    moe_route_scatter<<<(N + tpb - 1) / tpb, tpb, 0, s>>>(
+        (const int *)assign, (const long *)poff, (int *)counter, (int *)src, N);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+extern "C" int moe_combine_topk(const void *dbuf, const void *inverse, void *y, int t, int H, int topk,
+                                int Mpe, void *stream) {
+    moe_combine<<<t, 256, (size_t)topk * sizeof(int), (cudaStream_t)stream>>>(
+        (const __nv_bfloat16 *)dbuf, (const int *)inverse, (__nv_bfloat16 *)y, H, topk, Mpe);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
 // Segmented routed-row sparse MoE GEMM. A: stacked [Mtot=E*Mpe, Klog/4] packed; scaleA/meta step-major
 // over Mtot; gA over Mtot. B/scaleB/gB: routed rows (N, must be %BN). eblk[N/BN]=expert per col-block.
 // outT=1 -> C is [N, Mpe] token-major (feeds swiglu / combine).
 static inline void run_moe_mm(const void *A, const void *B, const void *scaleA, const void *scaleB,
                               const void *meta, void *C, int Mtot, int Mpe, int N, int Klog,
-                              const void *gA, const void *gB, const int *eblk, int outT, cudaStream_t stream) {
+                              const void *gA, const void *gB, const int *eblk, int outT, cudaStream_t stream,
+                              const int *sc_tok = nullptr, const float *sc_w = nullptr,
+                              const void *bias = nullptr, void *Out = nullptr, int Hout = 0) {
     int KAb = Klog / 4, KBb = Klog / 2;
     alignas(64) CUtensorMap mapA, mapB;
     mk(&mapA, (uint8_t *)A, KAb, Mtot, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
@@ -1030,12 +1634,258 @@ static inline void run_moe_mm(const void *A, const void *B, const void *scaleA, 
     dim3 grid(N / BN, Mpe / (2 * BM)), block(256);
     matmul_sp_moe<<<grid, block, SMEM, stream>>>(mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB,
                                                  (const uint32_t *)meta, (__nv_bfloat16 *)C, Mtot, Mpe, N, Klog,
-                                                 (const float *)gA, (const float *)gB, eblk, outT);
+                                                 (const float *)gA, (const float *)gB, eblk, outT,
+                                                 sc_tok, sc_w, (const __nv_bfloat16 *)bias, (float *)Out, Hout);
 }
 extern "C" int sparse_moe_mm_2lvl(const void *A, const void *B, const void *scaleA, const void *scaleB,
                                   const void *meta, void *C, int Mtot, int Mpe, int N, int Klog,
                                   const void *gA, const void *gB, const void *eblk, int outT, void *stream) {
     run_moe_mm(A, B, scaleA, scaleB, meta, C, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, outT, (cudaStream_t)stream);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+// FUSED down: seg-GEMM whose epilogue adds per-expert bias, applies routing weight, and scatter-adds
+// (atomic, f32) into Out[N_tok, Hout]. Caller pre-zeroes Out. Collapses down-seg + (d*w) + index_add.
+// sc_tok[rr] = destination token of routed row rr (-1 for padding); sc_w[rr] = routing weight.
+extern "C" int sparse_moe_mm_2lvl_scatter(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                          const void *meta, int Mtot, int Mpe, int N, int Klog,
+                                          const void *gA, const void *gB, const void *eblk,
+                                          const void *sc_tok, const void *sc_w, const void *bias, void *Out,
+                                          int Hout, void *stream) {
+    run_moe_mm(A, B, scaleA, scaleB, meta, nullptr, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, 2,
+               (cudaStream_t)stream, (const int *)sc_tok, (const float *)sc_w, bias, Out, Hout);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+// FUSED bias+weight down (outT=3, COALESCED): C[N,Mpe] bf16 = (down-GEMM + bias[expert,feature]) * sc_w[row].
+// Fuses the per-expert bias add + routing-weight multiply into the down GEMM's coalesced epilogue, killing the
+// torch bias-gather (E,H -> N,H) + fp32 convert + multiply. Caller then does ONE index_add(y, idx, C[:, :H]).
+extern "C" int sparse_moe_mm_2lvl_bw(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                     const void *meta, void *C, int Mtot, int Mpe, int N, int Klog,
+                                     const void *gA, const void *gB, const void *eblk, const void *sc_w,
+                                     const void *bias, int Hout, void *stream) {
+    run_moe_mm(A, B, scaleA, scaleB, meta, C, Mtot, Mpe, N, Klog, gA, gB, (const int *)eblk, 3,
+               (cudaStream_t)stream, nullptr, (const float *)sc_w, bias, nullptr, Hout);
+    return stream ? 0 : (int)cudaDeviceSynchronize();
+}
+
+// ================= FUSED GEMM1: gate_up -> clamped-SwiGLU -> MXFP4-quant, one kernel =================
+// Computes the gpt-oss expert gate_up seg-GEMM AND applies bias + clamped-SwiGLU + single-level MXFP4
+// quant of the intermediate h in the epilogue, writing FP4 h (Hwords) + per-32 e8m0 scaleH directly in
+// the down-GEMM's B-side layout. Kills the 771MB bf16 gate_up materialization + the swiglu 3-pass +
+// the separate quant. KEY: gpt-oss's native fused gate_up is pairwise-interleaved [g0,u0,g1,u1,...], so
+// each CTA's 2*BM=256 out-rows are 128 (gate,up) pairs -> 128 consecutive h-dims = 4 e8m0 blocks the CTA
+// quantizes LOCALLY (no cross-CTA reduction; hence single-level, gB=1 for the down GEMM). Mainloop is a
+// verbatim clone of matmul_sp_moe (battle-tested); only the epilogue is new. guBias is [E, Mpe] bf16
+// (padded rows 0). Ih = Mpe/2 = h-dim count = down in_f. scaleH step-major [Ih/128][N][4].
+__global__ void __launch_bounds__(256)
+matmul_sp_moe_gu_swiglu(const __grid_constant__ CUtensorMap mapA, const __grid_constant__ CUtensorMap mapB,
+                        const uint8_t *scaleA, const uint8_t *scaleB, const uint32_t *meta,
+                        int M, int Mpe, int N, int Klog, const float *gA, const float *gB, const int *eblk,
+                        const __nv_bfloat16 *guBias, uint32_t *Hwords, uint8_t *scaleH, int Ih, int act) {
+    extern __shared__ __align__(128) uint8_t smem[];
+    int tid = threadIdx.x, wg = tid >> 7, wtid = tid & 127;
+    int warp = wtid >> 5, lane = wtid & 31;
+    int wm = warp >> 1, wn = warp & 1;
+    uint8_t *a_s = smem + wg * STAGES * ASZ;
+    uint8_t *b_s = smem + 2 * STAGES * ASZ;
+    uint8_t *scA_sm = b_s + STAGES * BSZ;
+    uint8_t *scB_sm = scA_sm + STAGES * WK * SCA;
+    uint8_t *met_sm = scB_sm + STAGES * WK * SCB;
+    uint64_t *full = (uint64_t *)(met_sm + STAGES * WK * MET);
+    uint64_t *empty = full + STAGES;
+
+    int erow = eblk[blockIdx.x] * Mpe;
+    int block_row = blockIdx.y * (2 * BM) + wg * BM;
+    int a_load_row = blockIdx.y * (2 * BM) + erow;
+    int block_col = blockIdx.x * BN;
+    int chunks = Klog / (128 * WK);
+
+    int arow = ((lane >> 3) & 1) * 8 + (lane & 7), acblk = (lane >> 3) >> 1;
+    int nrow = lane & 7, bsub = (lane >> 3) & 3;
+    int a_rowt[4], b_col[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_rowt[mt] = wm * 64 + mt * 16;
+#pragma unroll
+    for (int j = 0; j < 8; j++) b_col[j] = wn * 64 + j * 8;
+    int ra_local = (lane & 3) * 8 + (lane >> 2), cb_local = lane >> 2;
+    bool a_valid = ra_local < 16, b_valid = (lane & 3) == 0;
+    int a_sidx[4], b_sidx[8];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) a_sidx[mt] = wg * 128 + a_rowt[mt] + ra_local;
+#pragma unroll
+    for (int n = 0; n < 8; n++) b_sidx[n] = b_col[n] + cb_local;
+    int mma_row = (lane & 1) * 8 + (lane >> 2), Hh = (lane >> 1) & 1;
+    int m_sidx[4];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++) m_sidx[mt] = (wg * 128 + a_rowt[mt] + mma_row) * 2 + Hh;
+
+    float acc[32][4];
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.f;
+    uint16_t z = 0;
+
+    if (tid == 0) {
+#pragma unroll
+        for (int s = 0; s < STAGES; s++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])));
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 256;" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        }
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    auto issue = [&](int s, int chunk) {
+        uint32_t bar = (uint32_t)__cvta_generic_to_shared(&full[s]);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(bar),
+                     "r"((uint32_t)(2 * ASZ + BSZ + WK * SCA + WK * SCB + WK * MET)));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&smem[STAGES * ASZ + s * ASZ])), "l"(&mapA), "r"(chunk * AW), "r"(a_load_row + BM), "r"(bar));
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0],[%1,{%2,%3}],[%4];" ::
+                     "r"((uint32_t)__cvta_generic_to_shared(&b_s[s * BSZ])), "l"(&mapB), "r"(chunk * BW_), "r"(block_col), "r"(bar));
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            int step = chunk * WK + sub;
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scA_sm[(s * WK + sub) * SCA])), "l"(scaleA + (size_t)(step * M + a_load_row) * 4), "r"((uint32_t)SCA), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&scB_sm[(s * WK + sub) * SCB])), "l"(scaleB + (size_t)(step * N + block_col) * 4), "r"((uint32_t)SCB), "r"(bar));
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0],[%1],%2,[%3];" ::
+                         "r"((uint32_t)__cvta_generic_to_shared(&met_sm[(s * WK + sub) * MET])), "l"((const uint8_t *)meta + (size_t)(step * M + a_load_row) * 8), "r"((uint32_t)MET), "r"(bar));
+        }
+    };
+    if (tid == 0)
+#pragma unroll
+        for (int s = 0; s < STAGES; s++)
+            if (s < chunks) issue(s, s);
+
+    for (int chunk = 0; chunk < chunks; chunk++) {
+        int s = chunk % STAGES; uint32_t par = (chunk / STAGES) & 1;
+        asm volatile("{\n\t.reg .pred p;\nWG:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WG;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&full[s])), "r"(par));
+        int aoff = s * ASZ, boff = s * BSZ;
+#pragma unroll
+        for (int sub = 0; sub < WK; sub++) {
+            const uint32_t *scA = (const uint32_t *)(scA_sm + (s * WK + sub) * SCA);
+            const uint32_t *scB = (const uint32_t *)(scB_sm + (s * WK + sub) * SCB);
+            const uint32_t *mtA = (const uint32_t *)(met_sm + (s * WK + sub) * MET);
+            uint32_t sav[4], sbv[8], ev[4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) { sav[mt] = a_valid ? scA[a_sidx[mt]] : 0x38383838u; ev[mt] = mtA[m_sidx[mt]]; }
+#pragma unroll
+            for (int n = 0; n < 8; n++) sbv[n] = b_valid ? scB[b_sidx[n]] : 0x38383838u;
+            uint32_t af[4][4], bf[8][4];
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) {
+                int ao = (a_rowt[mt] + arow) * AW + sub * AROWB + acblk * 16; ao ^= ((ao >> 7) & 3) << 4;
+                uint32_t ad = __cvta_generic_to_shared(&a_s[aoff + ao]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(af[mt][0]), "=r"(af[mt][1]), "=r"(af[mt][2]), "=r"(af[mt][3]) : "r"(ad));
+            }
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                int bo = (b_col[n] + nrow) * BW_ + sub * BROWB + bsub * 16; bo ^= ((bo >> 7) & 7) << 4;
+                uint32_t bd = __cvta_generic_to_shared(&b_s[boff + bo]);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(bf[n][0]), "=r"(bf[n][1]), "=r"(bf[n][2]), "=r"(bf[n][3]) : "r"(bd));
+            }
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    int idx = mt * 8 + n;   // in-place accumulate: D and C both = %0-%3 (drops the acc<-d copies -> fewer MOVs/regs)
+                    asm volatile(
+                        "mma.sp::ordered_metadata.sync.aligned.m16n8k128.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9,%10,%11}, {%0,%1,%2,%3}, %12, 0x0, {%13},{%14,%15}, {%16},{%17,%18};"
+                        : "+f"(acc[idx][0]), "+f"(acc[idx][1]), "+f"(acc[idx][2]), "+f"(acc[idx][3])
+                        : "r"(af[mt][0]), "r"(af[mt][1]), "r"(af[mt][2]), "r"(af[mt][3]),
+                          "r"(bf[n][0]), "r"(bf[n][1]), "r"(bf[n][2]), "r"(bf[n][3]),
+                          "r"(ev[mt]), "r"(sav[mt]), "h"(z), "h"(z), "r"(sbv[n]), "h"(z), "h"(z));
+                }
+        }
+        asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])));
+        int next = chunk + STAGES;
+        if (tid == 0 && next < chunks) {
+            asm volatile("{\n\t.reg .pred p;\nWEG:\n\tmbarrier.try_wait.parity.shared::cta.b64 p,[%0],%1;\n\t@!p bra WEG;\n\t}\n" ::"r"((uint32_t)__cvta_generic_to_shared(&empty[s])), "r"(par));
+            issue(s, next);
+        }
+    }
+    // --- epilogue: gate_up out -> smem (token-major, +bias) -> pairwise clamped-SwiGLU -> MXFP4 quant ---
+    __nv_bfloat16 *Cs = (__nv_bfloat16 *)smem;   // Cs[lc*(2*BM)+lr], lr=out-row(0..255), lc=token(0..127)
+    __syncthreads();
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int idx = mt * 8 + n;
+            int lr = wg * BM + a_rowt[mt] + (lane >> 2);
+            int lc = b_col[n] + (lane & 3) * 2;
+            int wrow = block_row + a_rowt[mt] + (lane >> 2) + erow;   // gA + guBias index (stacked)
+            int gc = block_col + lc;
+            float ga0 = gA ? gA[wrow] : 1.f, ga1 = gA ? gA[wrow + 8] : 1.f;
+            float gb0 = gB ? gB[gc] : 1.f, gb1 = gB ? gB[gc + 1] : 1.f;
+            float bg0 = guBias ? __bfloat162float(guBias[wrow]) : 0.f;
+            float bg1 = guBias ? __bfloat162float(guBias[wrow + 8]) : 0.f;
+            Cs[lc * (2 * BM) + lr] = __float2bfloat16_rn(acc[idx][0] * ga0 * gb0 + bg0);
+            Cs[(lc + 1) * (2 * BM) + lr] = __float2bfloat16_rn(acc[idx][1] * ga0 * gb1 + bg0);
+            Cs[lc * (2 * BM) + lr + 8] = __float2bfloat16_rn(acc[idx][2] * ga1 * gb0 + bg1);
+            Cs[(lc + 1) * (2 * BM) + lr + 8] = __float2bfloat16_rn(acc[idx][3] * ga1 * gb1 + bg1);
+        }
+    __syncthreads();
+    // 128 tokens x 4 blocks of 32 h-dims = 512 units; each unit does one (token, 32-block) MXFP4 quant.
+    int base_n = blockIdx.x * BN;
+    for (int unit = tid; unit < BN * 4; unit += 256) {
+        int lc = unit & (BN - 1), db = unit >> 7;   // token 0..127, block 0..3
+        int tokg = base_n + lc;
+        float val[32], amax = 0.f;
+#pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int d = db * 32 + i;                     // local h-dim; out-rows 2d (gate), 2d+1 (up)
+            float gate = __bfloat162float(Cs[lc * (2 * BM) + 2 * d]);
+            float up = __bfloat162float(Cs[lc * (2 * BM) + 2 * d + 1]);
+            float h;
+            if (act == 0) {   // gpt-oss clamped SwiGLU (alpha=1.702, limit=7, beta=1)
+                gate = fminf(gate, 7.f); up = fmaxf(fminf(up, 7.f), -7.f);
+                h = (gate / (1.f + __expf(-1.702f * gate))) * (up + 1.f);
+            } else {          // plain SwiGLU: silu(gate)*up  (GLM-5.2 / DeepSeek-V4)
+                h = (gate / (1.f + __expf(-gate))) * up;
+            }
+            val[i] = h; amax = fmaxf(amax, fabsf(h));
+        }
+        uint8_t sc = enc_ue4m3(amax * (1.f / 6.f));
+        int hblk = blockIdx.y * 4 + db;              // global 32-block; step=blockIdx.y, kb=db
+        scaleH[((long)blockIdx.y * N + tokg) * 4 + db] = sc;
+        float inv = 1.f / dec_ue4m3(sc);
+        uint32_t w[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i = 0; i < 16; i++) {
+            uint32_t byte = q_fp4(val[2 * i] * inv) | (q_fp4(val[2 * i + 1] * inv) << 4);
+            w[i >> 2] |= byte << ((i & 3) * 8);
+        }
+        *reinterpret_cast<uint4 *>(Hwords + (long)tokg * (Ih / 8) + hblk * 4) = make_uint4(w[0], w[1], w[2], w[3]);
+    }
+}
+static std::once_flag g_gusw_attr_once;
+static void set_gusw_attr() { cudaFuncSetAttribute(matmul_sp_moe_gu_swiglu, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM); }
+extern "C" void qb_init_gusw_attrs() { std::call_once(g_gusw_attr_once, set_gusw_attr); }
+// Fused gate_up+swiglu+quant. A: stacked pairwise-interleaved gate_up weights [E*Mpe, Klog/4]; B: routed
+// x (2-level nvfp4, from quant_act_2lvl); writes Hwords[N, Ih/2] FP4 + scaleH[Ih/128, N, 4] e8m0 (the
+// down GEMM reads these with gB=1). Klog = padded hidden (Hp). Mpe = padded 2*I (mpe_gu). Ih = Mpe/2.
+extern "C" int sparse_moe_gu_swiglu(const void *A, const void *B, const void *scaleA, const void *scaleB,
+                                    const void *meta, int Mtot, int Mpe, int N, int Klog, const void *gA,
+                                    const void *gB, const void *eblk, const void *guBias, void *Hwords,
+                                    void *scaleH, int Ih, int act, void *stream) {
+    int KAb = Klog / 4, KBb = Klog / 2;
+    alignas(64) CUtensorMap mapA, mapB;
+    mk(&mapA, (uint8_t *)A, KAb, Mtot, AW, BM, CU_TENSOR_MAP_SWIZZLE_64B);
+    mk(&mapB, (uint8_t *)B, KBb, N, BW_, BN, CU_TENSOR_MAP_SWIZZLE_128B);
+    std::call_once(g_gusw_attr_once, set_gusw_attr);
+    dim3 grid(N / BN, Mpe / (2 * BM)), block(256);
+    matmul_sp_moe_gu_swiglu<<<grid, block, SMEM, (cudaStream_t)stream>>>(
+        mapA, mapB, (const uint8_t *)scaleA, (const uint8_t *)scaleB, (const uint32_t *)meta, Mtot, Mpe, N,
+        Klog, (const float *)gA, (const float *)gB, (const int *)eblk, (const __nv_bfloat16 *)guBias,
+        (uint32_t *)Hwords, (uint8_t *)scaleH, Ih, act);
     return stream ? 0 : (int)cudaDeviceSynchronize();
 }
 

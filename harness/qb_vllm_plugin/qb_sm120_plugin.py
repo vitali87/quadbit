@@ -1140,7 +1140,17 @@ def _load_sparse_moe():
     lib.quantize_act_nvfp4_2lvl_s.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.sparse_moe_mm_2lvl.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
                                        + [ctypes.c_void_p] * 3 + [ctypes.c_int] + [ctypes.c_void_p])
+    # FUSED MoE kernels (gpt-oss throughput): GEMM1 gate_up+swiglu+quant, and down+scatter+combine.
+    lib.sparse_moe_gu_swiglu.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
+                                         + [ctypes.c_void_p] * 6 + [ctypes.c_int] * 2 + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl_scatter.argtypes = ([ctypes.c_void_p] * 5 + [ctypes.c_int] * 4
+                                               + [ctypes.c_void_p] * 7 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.sparse_moe_mm_2lvl_bw.argtypes = ([ctypes.c_void_p] * 6 + [ctypes.c_int] * 4
+                                          + [ctypes.c_void_p] * 5 + [ctypes.c_int] + [ctypes.c_void_p])
+    lib.moe_combine_topk.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
+    lib.moe_route.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_int] * 2 + [ctypes.c_void_p]
     lib.qb_init_moe_attrs()
+    lib.qb_init_gusw_attrs()
     dev = torch.device("cuda")
 
     fp4 = torch.tensor(_FP4_VALS, device=dev)
@@ -1304,9 +1314,58 @@ def _load_sparse_moe():
         dropped = real - keep.sum()
         return src, eblk, dropped
 
+    def gu_swiglu(w, bb, sb, gb, hw, sh, mpe, r, in_f, eblk, gu_bias, ih, act=0):
+        # FUSED GEMM1: gate_up seg-GEMM + swiglu + single-level MXFP4 quant of h in one launch. act=0 =
+        # gpt-oss clamped SwiGLU; act=1 = plain silu(gate)*up (GLM-5.2 / DeepSeek-V4). w = pack of the NATIVE
+        # pairwise-interleaved gate_up. bb/sb/gb = 2-level x. Writes hw[r,ih/2] FP4 + sh[ih/128,r,4] e8m0.
+        ac, meta, sa, ga = w
+        lib.sparse_moe_gu_swiglu(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(), meta.data_ptr(),
+                                 ac.shape[0], mpe, r, in_f, ga.data_ptr(), gb.data_ptr(), eblk.data_ptr(),
+                                 gu_bias.data_ptr(), hw.data_ptr(), sh.data_ptr(), ih, act, _st())
+
+    def down_scatter(w, bb, sb, out, mpe, r, in_f, eblk, sc_tok, sc_w, bias, hout):
+        # FUSED down: seg-GEMM whose epilogue adds bias, weights by routing coeff, scatter-adds into
+        # out[t, hout] (f32, pre-zeroed). bb/sb = pre-quantized h (gB=1 single-level -> nullptr gB).
+        ac, meta, sa, ga = w
+        lib.sparse_moe_mm_2lvl_scatter(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(),
+                                       meta.data_ptr(), ac.shape[0], mpe, r, in_f, ga.data_ptr(), 0,
+                                       eblk.data_ptr(), sc_tok.data_ptr(), sc_w.data_ptr(),
+                                       bias.data_ptr() if bias is not None else 0, out.data_ptr(), hout, _st())
+
+    def route(assign, e, rmax):
+        # counting-sort routing kernel (single-rank / emap-None): groups routed slots by expert in one launch,
+        # replacing torch argsort + within + dest-scatter. Over-allocated to rmax (sync-free). Grouping exact
+        # (validated 130048/130048); intra-expert order is arbitrary (irrelevant to seg-GEMM + inverse combine).
+        ai = assign.to(torch.int32)
+        counts = torch.bincount(assign, minlength=e)
+        padc = ((counts + _BN - 1) // _BN) * _BN
+        poff = (torch.cumsum(padc, 0) - padc).to(torch.int64)
+        src = torch.full((rmax,), -1, dtype=torch.int32, device=ai.device)
+        counter = torch.empty(e, dtype=torch.int32, device=ai.device)
+        lib.moe_route(ai.data_ptr(), poff.data_ptr(), counter.data_ptr(), src.data_ptr(), ai.numel(), e, _st())
+        ends = torch.cumsum(padc, 0)
+        eblk = torch.bucketize(torch.arange(rmax // _BN, device=ai.device) * _BN, ends, right=True).clamp_max_(e - 1).to(torch.int32)
+        return src.long(), eblk, rmax
+
+    def combine(dbuf, inverse, y, t, hout, topk, mpe):
+        # inverse-index top-k combine (replaces torch index_add): y[tok,f] = sum_k dbuf[inverse[tok,k],f].
+        # Coalesced write, no atomics -> ~1.6GB->1GB traffic vs index_add.
+        lib.moe_combine_topk(dbuf.data_ptr(), inverse.data_ptr(), y.data_ptr(), t, hout, topk, mpe, _st())
+
+    def seg_bw(w, bb, sb, c, mpe, r, in_f, eblk, sc_w, bias, hout):
+        # FUSED bias+weight down (COALESCED, outT=3): c[r,mpe] bf16 = (down-GEMM + bias[e,f]) * sc_w[row].
+        # Kills the torch bias-gather (E,H->r,H) + fp32 convert + weight-mul (the ~40% down-side plumbing);
+        # caller does ONE index_add of c. gB=1 (single-level h -> nullptr).
+        ac, meta, sa, ga = w
+        lib.sparse_moe_mm_2lvl_bw(ac.data_ptr(), bb.data_ptr(), sa.data_ptr(), sb.data_ptr(), meta.data_ptr(),
+                                  c.data_ptr(), ac.shape[0], mpe, r, in_f, ga.data_ptr(), 0, eblk.data_ptr(),
+                                  sc_w.data_ptr(), bias.data_ptr() if bias is not None else 0, hout, _st())
+
     _SPARSE = SimpleNamespace(lib=lib, pack=pack, stack=stack, quant_act=quant_act,
                               seg_gemm=seg_gemm, build_routing=build_routing,
-                              quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap)
+                              quant_into=quant_into, seg_into=seg_into, route_fixed_cap=route_fixed_cap,
+                              gu_swiglu=gu_swiglu, down_scatter=down_scatter, seg_bw=seg_bw, combine=combine,
+                              route=route)
     return _SPARSE
 
 
@@ -1625,6 +1684,7 @@ def install() -> None:
         print(f"[qb_sm120] topk override skipped: {type(ex).__name__}: {ex}", flush=True)
 
     _install_moe()
+    _install_gptoss_moe()
 
     if _INSTR or _TAX:
         import atexit
@@ -1999,3 +2059,441 @@ def _install_moe() -> None:
     ModelOptNvFp4FusedMoE.maybe_make_prepare_finalize = (
         lambda self, routing_tables=None: None)
     print(f"[qb_sm120] patched ModelOptNvFp4FusedMoE (QB_MOE={qb_moe}) pid={os.getpid()}", flush=True)
+
+
+def _install_gptoss_moe() -> None:
+    # gpt-oss-20b experts are natively MXFP4, so vLLM loads them under GptOssMxfp4MoEMethod (NOT
+    # ModelOptNvFp4FusedMoE) -- a different quant-method class the _install_moe patch never touches.
+    # This installs the quadbit 2:4-sparse-FP4 expert path for gpt-oss: decode MXFP4 -> de-interleave
+    # the fused gate/up (gpt-oss stores gate=out[0::2], up=out[1::2]) -> pad each expert to the sparse
+    # kernel's alignment (out%256, in%128; gpt-oss 2880 dims are unaligned) -> pack 2:4 two-level-NVFP4
+    # -> serve through the segmented sm_120 kernel with gpt-oss's CLAMPED SwiGLU (alpha=1.702, limit=7)
+    # and expert biases. Forward verified offline in harness/gptoss_prep.py (M0/M2/M1/M1.5). QB_MOE=sparse.
+    qb_moe = os.environ.get("QB_MOE", "off").lower()
+    if qb_moe != "sparse":
+        return
+    try:
+        from vllm.model_executor.layers.quantization.mxfp4 import GptOssMxfp4MoEMethod
+    except Exception as ex:  # noqa: BLE001
+        print(f"[qb_sm120] gpt-oss MoE patch skipped (import): {type(ex).__name__}: {ex}", flush=True)
+        return
+
+    import torch
+    import torch.nn.functional as F
+
+    dev = torch.device("cuda")
+    fp4 = torch.tensor(_FP4_VALS, device=dev)
+    orig_pw = GptOssMxfp4MoEMethod.process_weights_after_loading
+    orig_apply = GptOssMxfp4MoEMethod.apply
+
+    def _mxfp4_dequant(w_u8, s_u8):
+        # vLLM gpt-oss layout: w [out, in//2] uint8 (E2M1 2/byte, low nibble->even col), s [out, in//32]
+        # uint8 e8m0 (multiplier 2^(raw-127)). Matches harness M0 (100% value-exact round-trip).
+        b = w_u8.to(dev).to(torch.int32) & 0xFF
+        out_f, inb = b.shape
+        in_f = inb * 2
+        codes = torch.empty(out_f, in_f, dtype=torch.long, device=dev)
+        codes[:, 0::2] = b & 0xF
+        codes[:, 1::2] = (b >> 4) & 0xF
+        nb = s_u8.shape[-1]
+        mult = torch.exp2(s_u8.to(dev).float() - 127.0)
+        return (fp4[codes].view(out_f, nb, 32) * mult[:, :, None]).reshape(out_f, in_f).to(torch.bfloat16)
+
+    def _pad(W):  # [out,in] -> zero-padded (out%256, in%128); exact (zero rows/cols contribute nothing)
+        o, i = W.shape
+        Wp = W.new_zeros(((o + 255) // 256) * 256, ((i + 127) // 128) * 128)
+        Wp[:o, :i] = W
+        return Wp
+
+    def _swiglu(gate, up):  # gpt-oss clamped SwiGLU (alpha=1.702, limit=7.0, beta=1.0)
+        gate = gate.clamp(max=7.0)
+        up = up.clamp(-7.0, 7.0)
+        return (gate * torch.sigmoid(1.702 * gate)) * (up + 1.0)
+
+    _ab_mode = os.environ.get("QB_AB") == "1"   # same-invocation A/B: driver toggles /dev/shm/qb_fused,
+
+    def _fused_flag():  # worker reads it per-apply (driver's os.environ doesn't reach the EngineCore worker)
+        if _ab_mode:
+            try:
+                with open("/dev/shm/qb_fused") as f:
+                    return f.read(1) != "0"
+            except OSError:
+                pass
+        return os.environ.get("QB_GPTOSS_FUSED", "1") != "0"
+
+    def _padrows(xr, r, wide, real, dev):  # widen [r, real] -> [r, wide] with zeros (fallback if in-dim
+        o = torch.zeros(r, wide, device=dev, dtype=torch.bfloat16)   # not 128-aligned; no-op for gpt-oss)
+        o[:, :real] = xr
+        return o
+
+    def _fast_route(assign, e, rpad_max=None):
+        # Vectorized exact routing. rpad_max=None -> exact size via ONE host sync (padc.sum().item());
+        # this sync sits EARLY in the layer and serializes the CPU with the GPU (can't queue the next
+        # layer's kernels), and it was ~43% of the measured MoE time. rpad_max set (from token count, no
+        # .item()) -> SYNC-FREE: over-allocate to the bound (actual padded rows <= rpad_max; tail slots
+        # stay -1 = invalid -> 0), ~3% waste at prefill, but lets the CPU run ahead and overlap.
+        _BN = 128
+        order = torch.argsort(assign)                       # non-stable: intra-expert order is irrelevant
+        counts = torch.bincount(assign, minlength=e)
+        padc = ((counts + _BN - 1) // _BN) * _BN
+        r_pad = int(padc.sum().item()) if rpad_max is None else rpad_max
+        poff = torch.cumsum(padc, 0) - padc                 # padded start per expert
+        coff = torch.cumsum(counts, 0) - counts             # sorted-order start per expert
+        sorted_exp = assign[order]
+        within = torch.arange(order.numel(), device=assign.device) - coff[sorted_exp]
+        dest = poff[sorted_exp] + within
+        src = torch.full((r_pad,), -1, dtype=torch.long, device=assign.device)
+        src[dest] = order
+        ends = torch.cumsum(padc, 0)
+        block_starts = torch.arange(r_pad // _BN, device=assign.device) * _BN
+        eblk = torch.bucketize(block_starts, ends, right=True).clamp_max_(e - 1).to(torch.int32)
+        return src, eblk, r_pad
+
+    def _dense_route(xrows, wd, out_dim, row_exp, present, eblk):
+        # dense bf16 GROUPED matmul for an anchored (kept-dense) projection. wd [E,out,in]; xrows
+        # [R, in_pad>=in] -> [R, out] float. Rows are expert-CONTIGUOUS (build_routing sorts + 128-pads),
+        # so torch._grouped_mm with per-expert row offsets does it in ONE launch (no python loop). Falls
+        # back to the masked per-expert loop if _grouped_mm is unavailable. Invalid/padded rows carry
+        # x=0 (xsp zeroed) -> out 0, masked downstream.
+        in_w = wd.shape[2]
+        xg = xrows[:, :in_w].contiguous().to(torch.bfloat16)
+        try:
+            uniq, counts = torch.unique_consecutive(eblk, return_counts=True)  # experts in row order
+            offs = (torch.cumsum(counts, 0) * 128).to(torch.int32)             # cumulative row ends
+            b = wd[uniq].transpose(1, 2).contiguous().to(torch.bfloat16)       # [G, in, out]
+            return torch._grouped_mm(xg, b, offs=offs).float()
+        except Exception:  # noqa: BLE001 - grouped_mm unavailable/unsupported -> correct-but-slow loop
+            out = torch.zeros(xrows.shape[0], out_dim, device=xrows.device, dtype=torch.float32)
+            for ex in present:
+                m = row_exp == ex
+                if bool(m.any()):
+                    out[m] = (xg[m] @ wd[int(ex)].t()).float()
+            return out
+
+    def patched_pw(self, layer):
+        global _PW_IDX
+        li = _PW_IDX
+        _PW_IDX += 1
+        layer._qbg_idx = li
+        sparse_from = int(os.environ.get("QB_SPARSE_FROM", "0"))   # prefix-optimal: sparsify li>=this
+        proj = os.environ.get("QB_SPARSE_PROJ", "both").lower()     # both|down|gateup (tax lives in gate_up)
+        # dense-anchor EARLY layers to the native gpt-oss MXFP4 path (stock quality, no packing).
+        if li < sparse_from:
+            orig_pw(self, layer)
+            layer._qbg_native = True
+            if li == 0:
+                print(f"[qb_sm120] gpt-oss anchor layers <{sparse_from} = native MXFP4 (dense)", flush=True)
+            return None
+        sp = _load_sparse_moe()
+        pack_gu = proj in ("both", "gateup")
+        pack_dn = proj in ("both", "down")
+        w13, w13s = layer.w13_weight, layer.w13_weight_scale
+        w2, w2s = layer.w2_weight, layer.w2_weight_scale
+        b13 = getattr(layer, "w13_bias", None)
+        b2 = getattr(layer, "w2_bias", None)
+        e = w13.shape[0]
+        gp, up_, dp, gb, ub, db = [], [], [], [], [], []
+        gd, ud, dd = [], [], []   # kept-dense bf16 weights (for the anchored projection)
+        gfu, gfu_bias = [], []    # native pairwise-interleaved gate_up pack + padded bias (fused GEMM1)
+        i_dim = h_dim = 0
+        for le in range(e):
+            gu = _mxfp4_dequant(w13[le], w13s[le]).float()
+            dn = _mxfp4_dequant(w2[le], w2s[le]).float()
+            gw, uw = gu[0::2, :], gu[1::2, :]
+            i_dim, h_dim = gw.shape[0], gw.shape[1]
+            if pack_gu:
+                gp.append(sp.pack(_pad(gw)))
+                up_.append(sp.pack(_pad(uw)))
+                gfu.append(sp.pack(_pad(gu)))   # gu is native [2I,H] interleaved -> fused GEMM1 weight
+                if b13 is not None:
+                    gfu_bias.append(F.pad(b13[le], (0, _pad(gu).shape[0] - gu.shape[0])))
+            else:
+                gd.append(gw.to(torch.bfloat16))
+                ud.append(uw.to(torch.bfloat16))
+            if pack_dn:
+                dp.append(sp.pack(_pad(dn)))
+            else:
+                dd.append(dn.to(torch.bfloat16))
+            if b13 is not None:
+                gb.append(b13[le][0::2])
+                ub.append(b13[le][1::2])
+            if b2 is not None:
+                db.append(b2[le])
+        layer._qbg_gate = sp.stack(gp) if pack_gu else None
+        layer._qbg_up = sp.stack(up_) if pack_gu else None
+        layer._qbg_gu_fused = sp.stack(gfu) if gfu else None
+        layer._qbg_gu_bias_fused = torch.stack(gfu_bias).to(torch.bfloat16) if gfu_bias else None
+        layer._qbg_mpe_gu = (((2 * i_dim) + 255) // 256) * 256
+        layer._qbg_ih = layer._qbg_mpe_gu // 2
+        layer._qbg_down = sp.stack(dp) if pack_dn else None
+        layer._qbg_gate_d = torch.stack(gd) if gd else None
+        layer._qbg_up_d = torch.stack(ud) if ud else None
+        layer._qbg_down_d = torch.stack(dd) if dd else None
+        layer._qbg_pack_gu, layer._qbg_pack_dn = pack_gu, pack_dn
+        layer._qbg_e, layer._qbg_i, layer._qbg_h = e, i_dim, h_dim
+        layer._qbg_mpeI, layer._qbg_hp = ((i_dim + 255) // 256) * 256, ((h_dim + 127) // 128) * 128
+        layer._qbg_mpeH, layer._qbg_ip = ((h_dim + 255) // 256) * 256, ((i_dim + 127) // 128) * 128
+        layer._qbg_gb = torch.stack(gb).to(torch.bfloat16) if gb else None
+        layer._qbg_ub = torch.stack(ub).to(torch.bfloat16) if ub else None
+        layer._qbg_db = torch.stack(db).to(torch.bfloat16) if db else None
+        for attr in ("w13_weight", "w13_weight_scale", "w2_weight", "w2_weight_scale"):
+            p = getattr(layer, attr, None)
+            if p is not None:
+                p.data = torch.empty(0, dtype=p.dtype, device=p.device)
+        torch.cuda.empty_cache()
+        if li == sparse_from:
+            print(f"[qb_sm120] gpt-oss sparse MoE from layer {sparse_from} proj={proj}: e={e} "
+                  f"I={i_dim} H={h_dim} pack_gu={pack_gu} pack_dn={pack_dn} "
+                  f"(anchored projection kept dense bf16)", flush=True)
+        return None
+
+    def patched_apply(self, layer, x, topk_weights, topk_ids, shared_experts=None,
+                      shared_experts_input=None):
+        if getattr(layer, "_qbg_native", False):
+            return orig_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
+                              shared_experts_input)
+        if getattr(layer, "_qbg_e", None) is None:
+            return orig_apply(self, layer, x, topk_weights, topk_ids, shared_experts,
+                              shared_experts_input)
+        STATS["moe_calls"] += 1
+        sp = _load_sparse_moe()
+        t, h = x.shape
+        topk = topk_ids.shape[1]
+        ii, hh_dim, ee = layer._qbg_i, layer._qbg_h, layer._qbg_e
+        if STATS["moe_calls"] == 1:
+            print(f"[qb_sm120] gpt-oss SPARSE apply LIVE: x={tuple(x.shape)} topk={topk} experts={ee} "
+                  f"I={ii} H={hh_dim} pack_gu={layer._qbg_pack_gu} pack_dn={layer._qbg_pack_dn} "
+                  f"on_input={bool(getattr(layer, 'apply_router_weight_on_input', False))} "
+                  f"apply_rw_attr={getattr(layer, 'apply_router_weight_on_input', 'MISSING')} "
+                  f"pid={os.getpid()}", flush=True)
+        hp, ip = layer._qbg_hp, layer._qbg_ip
+        mpeI, mpeH = layer._qbg_mpeI, layer._qbg_mpeH
+        on_input = bool(getattr(layer, "apply_router_weight_on_input", False))
+
+        # ---- GRAPH-SAFE path (QB_GRAPH + QB_GRAPH_CAP): capture-legal, no host sync, fixed E*cap
+        # shapes, current-stream launches -> vLLM CUDA-graphs the whole MoE forward, killing the ~150
+        # per-step kernel launches our eager path adds. both-proj sparse only (dense anchor route isn't
+        # capture-friendly). route_fixed_cap drops per-expert overflow beyond cap (sized to avoid drops
+        # for the captured batch); row_exp is a CONSTANT arange//cap so bias gather is capture-legal. ----
+        if _GRAPH and _GRAPH_CAP > 0 and layer._qbg_pack_gu and layer._qbg_pack_dn:
+            cap = _GRAPH_CAP
+            y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+            assign_g = topk_ids.reshape(-1).to(torch.long)
+            tok_g = torch.arange(t, device=x.device).repeat_interleave(topk)
+            w_g = topk_weights.reshape(-1).to(torch.float32)
+            emap = getattr(layer, "expert_map", None)
+            if emap is not None:
+                local = emap[assign_g]
+                valid_e = local >= 0
+                local = local.clamp_min(0)
+            else:
+                local = assign_g
+                valid_e = torch.ones_like(local, dtype=torch.bool)
+            src, eblk, _drop = sp.route_fixed_cap(local, ee, cap, valid_e)
+            rp = ee * cap
+            valid = src >= 0
+            srcc = src.clamp_min(0)
+            row_exp = torch.arange(rp, device=x.device) // cap          # constant expert-per-slot
+            xs = x[tok_g[srcc]].to(torch.bfloat16) * valid[:, None]
+            if on_input:
+                xs = xs * w_g[srcc][:, None].to(torch.bfloat16)
+            xsp = torch.zeros(rp, hp, device=x.device, dtype=torch.bfloat16)
+            xsp[:, :hh_dim] = xs
+            ksh, ksi = hp // 128, ip // 128
+            bb = torch.empty((rp, hp // 2), dtype=torch.uint8, device=x.device)
+            sb = torch.empty((ksh, rp, 4), dtype=torch.uint8, device=x.device)
+            gq = torch.empty((rp,), dtype=torch.float32, device=x.device)
+            sp.quant_into(xsp, bb, sb, gq)
+            gbuf = torch.empty((rp, mpeI), dtype=torch.bfloat16, device=x.device)
+            ubuf = torch.empty((rp, mpeI), dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_gate, bb, sb, gq, gbuf, mpeI, hp, eblk)
+            sp.seg_into(layer._qbg_up, bb, sb, gq, ubuf, mpeI, hp, eblk)
+            g = gbuf[:, :ii].float()
+            u = ubuf[:, :ii].float()
+            if layer._qbg_gb is not None:
+                g = g + layer._qbg_gb[row_exp]
+                u = u + layer._qbg_ub[row_exp]
+            hact = _swiglu(g, u)
+            hpad = torch.zeros(rp, ip, device=x.device, dtype=torch.bfloat16)
+            hpad[:, :ii] = hact.to(torch.bfloat16)
+            bb2 = torch.empty((rp, ip // 2), dtype=torch.uint8, device=x.device)
+            sb2 = torch.empty((ksi, rp, 4), dtype=torch.uint8, device=x.device)
+            gq2 = torch.empty((rp,), dtype=torch.float32, device=x.device)
+            sp.quant_into(hpad, bb2, sb2, gq2)
+            dbuf = torch.empty((rp, mpeH), dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_down, bb2, sb2, gq2, dbuf, mpeH, ip, eblk)
+            d = dbuf[:, :hh_dim].float()
+            if layer._qbg_db is not None:
+                d = d + layer._qbg_db[row_exp]
+            rw = valid.float() if on_input else (w_g[srcc] * valid.float())
+            y.index_add_(0, tok_g[srcc], (d * rw[:, None]).to(x.dtype))
+            if STATS["moe_calls"] == 1:
+                print(f"[qb_sm120] gpt-oss GRAPH-SAFE apply (cap={cap} rp={rp}) pid={os.getpid()}", flush=True)
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input)
+            return y
+
+        assign = topk_ids.reshape(-1).to(torch.long)
+        tok_of = torch.arange(t, device=x.device).repeat_interleave(topk)
+        w_of = topk_weights.reshape(-1).to(torch.float32)
+        emap = getattr(layer, "expert_map", None)
+        if emap is not None:
+            assign = emap[assign]
+            keep = assign >= 0
+            assign, tok_of, w_of = assign[keep], tok_of[keep], w_of[keep]
+        y = torch.zeros(t, h, dtype=x.dtype, device=x.device)
+        if assign.numel() == 0:
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input)
+            return y
+        if os.environ.get("QB_GPTOSS_ABLATE", "") == "skipall":  # base-model timing: MoE contributes zero
+            return y                                             # (full-skipseg=quant+matmul; skipseg-skipall=gather+swiglu+scatter)
+        _prof = os.environ.get("QB_GPTOSS_PROF") == "1"          # WORKER-side timing (driver profiler sees nothing)
+        if _prof:
+            import time as _tm
+            torch.cuda.synchronize(); _tt = [_tm.perf_counter()]
+
+            def _lap(k):
+                torch.cuda.synchronize(); n = _tm.perf_counter()
+                STATS[k] = STATS.get(k, 0.0) + (n - _tt[0]); _tt[0] = n
+        # PREFILL (many tokens): use sync-free over-allocated routing so the r_pad .item() host sync
+        # (which serializes CPU<->GPU and was ~43% of MoE time) is gone; ~3% row waste. DECODE (few
+        # tokens): the over-alloc bound e*128 dwarfs the real rows, so keep the exact 1-sync path.
+        _rmax = (((t * topk + ee * 128) + 127) // 128) * 128
+        if emap is None and t >= 512:   # single-rank prefill: counting-sort routing kernel (1.57x vs torch)
+            src, eblk, r_pad = sp.route(assign, ee, _rmax)
+        else:
+            src, eblk, r_pad = _fast_route(assign, ee, _rmax if t >= 512 else None)
+        valid = src >= 0
+        srcc = src.clamp_min(0)
+        row_exp = assign[srcc]
+        # present (unique routed experts) is ONLY needed by the dense-anchor route; computing it always
+        # (.unique() + .any()) was 2 host-syncs/layer for nothing in the both-proj-sparse path.
+        need_present = (not layer._qbg_pack_gu) or (not layer._qbg_pack_dn)
+        present = row_exp[valid].unique() if need_present else None
+        if _prof:
+            _lap("t_route")
+        _abl = os.environ.get("QB_GPTOSS_ABLATE", "")
+        # FULLY-FUSED path (both-proj sparse, no router-on-input): the whole expert MLP is 3 launches --
+        # quant x once, GEMM1 (gate_up+clamped-swiglu+MXFP4-quant of h in one kernel), down+scatter+combine
+        # in one kernel. Kills the 771MB bf16 gate_up materialization + the swiglu 3-pass + the gather/
+        # combine/index_add plumbing (~40ms/6.5x offline @ T=4096). h is single-level MXFP4 (per-token
+        # global spans CTAs); end-to-end cos vs the 2-level path 0.996. Opt out with QB_GPTOSS_FUSED=0.
+        fast_fused = (_fused_flag() and layer._qbg_pack_gu
+                      and layer._qbg_pack_dn and not on_input and _abl == ""
+                      and getattr(layer, "_qbg_gu_fused", None) is not None)
+        if fast_fused:
+            bbx, sbx, gbx = sp.quant_act(x.to(torch.bfloat16))     # per-token 2-level FP4, once
+            idx = tok_of[srcc]
+            bb_g = bbx[idx].contiguous()
+            sb_g = sbx[:, idx, :].contiguous()
+            gb_g = (gbx[idx] * valid.to(torch.float32)).contiguous()
+            if _prof:
+                _lap("t_gather")
+            ih = layer._qbg_ih
+            hw = torch.empty((r_pad, ih // 2), dtype=torch.uint8, device=x.device)
+            sh = torch.empty((ih // 128, r_pad, 4), dtype=torch.uint8, device=x.device)
+            sp.gu_swiglu(layer._qbg_gu_fused, bb_g, sb_g, gb_g, hw, sh, layer._qbg_mpe_gu, r_pad, hp,
+                         eblk, layer._qbg_gu_bias_fused, ih)
+            if _prof:
+                _lap("t_gu_f")
+            # DOWN: fused bias+routing-weight in the down GEMM's COALESCED epilogue (seg_bw), then ONE
+            # index_add. The true per-phase split (CUDA events) showed the down-side bias-gather (db[row_exp]
+            # = r_pad x H materialization) + fp32-convert + weight-mul is ~40% of the MoE; seg_bw folds all of
+            # it into the GEMM tail (coalesced, NOT the outT=2 atomic scatter which was uncoalesced + lost).
+            sc_w = (w_of[srcc] * valid.to(torch.float32))
+            dbuf = torch.empty((r_pad, mpeH), dtype=torch.bfloat16, device=x.device)
+            sp.seg_bw(layer._qbg_down, hw, sh, dbuf, mpeH, r_pad, ip, eblk, sc_w, layer._qbg_db, hh_dim)
+            if emap is None:
+                # inverse-index coalesced combine (no atomics). src[rr]=flat token*topk+k (single rank);
+                # inverse[flat]=rr -> combine sums the <=topk routed rows per token. ~1.6x less traffic.
+                # SYNC-FREE build: scatter rr to inverse[src], padding rows (src=-1) -> a sink slot (sliced
+                # off). NO boolean indexing (src[valid] would call nonzero() = data-dependent host sync).
+                rr = torch.arange(r_pad, dtype=torch.int32, device=x.device)
+                src_idx = torch.where(valid, src, torch.full_like(src, t * topk))
+                inverse = torch.full((t * topk + 1,), -1, dtype=torch.int32, device=x.device)
+                inverse.scatter_(0, src_idx, rr)
+                y = torch.empty(t, hh_dim, dtype=torch.bfloat16, device=x.device)
+                sp.combine(dbuf, inverse[:t * topk], y, t, hh_dim, topk, mpeH)
+            else:  # EP shard: src indexes the filtered assign, not token*topk+k -> keep index_add
+                y = torch.zeros(t, hh_dim, dtype=torch.bfloat16, device=x.device)
+                y.index_add_(0, idx, dbuf[:, :hh_dim])
+            if _prof:
+                _lap("t_down_f")
+                if STATS["moe_calls"] % 48 == 0:
+                    print("[qb_prof-fused] " + " ".join(f"{k}={STATS[k] * 1000:.0f}ms"
+                          for k in ("t_route", "t_gather", "t_gu_f", "t_down_f") if k in STATS)
+                          + f" (over {STATS['moe_calls']} calls)", flush=True)
+            if shared_experts is not None and shared_experts_input is not None:
+                shared_experts(shared_experts_input)
+            return y
+        # FAST gate/up path (both-proj sparse, no router-on-input): the bf16 permutation gather
+        # x[tok_of[srcc]] (~400MB/layer, random-access) was ~65% of the MoE time. Quant is PER-TOKEN, so
+        # quantize x ONCE (t rows), then gather the FP4 rep (1/4 the bytes) and SHARE it across gate+up.
+        # Bit-identical to gather-then-quant (per-row quant is position-independent). Invalid slots zeroed
+        # via the per-row global scale.
+        fast_gu = layer._qbg_pack_gu and layer._qbg_pack_dn and not on_input and _abl == ""
+        if fast_gu:
+            bbx, sbx, gbx = sp.quant_act(x.to(torch.bfloat16))    # per-token FP4, once
+            idx = tok_of[srcc]
+            bb_g = bbx[idx].contiguous()
+            sb_g = sbx[:, idx, :].contiguous()
+            gb_g = (gbx[idx] * valid.to(torch.float32)).contiguous()
+            g = torch.empty(r_pad, mpeI, dtype=torch.bfloat16, device=x.device)
+            u = torch.empty(r_pad, mpeI, dtype=torch.bfloat16, device=x.device)
+            sp.seg_into(layer._qbg_gate, bb_g, sb_g, gb_g, g, mpeI, hp, eblk)
+            sp.seg_into(layer._qbg_up, bb_g, sb_g, gb_g, u, mpeI, hp, eblk)
+            g = g[:, :ii]
+            u = u[:, :ii]
+        else:
+            xs = x[tok_of[srcc]].to(torch.bfloat16) * valid[:, None]
+            if on_input:
+                xs = xs * w_of[srcc][:, None].to(torch.bfloat16)
+            xsp = xs.contiguous() if hp == hh_dim else _padrows(xs, r_pad, hp, hh_dim, x.device)
+            if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
+                g = torch.zeros(r_pad, ii, device=x.device, dtype=torch.bfloat16)
+                u = torch.zeros(r_pad, ii, device=x.device, dtype=torch.bfloat16)
+            elif layer._qbg_pack_gu:
+                g = sp.seg_gemm(xsp, layer._qbg_gate, mpeI, hp, eblk)[:, :ii]
+                u = sp.seg_gemm(xsp, layer._qbg_up, mpeI, hp, eblk)[:, :ii]
+            else:  # gate_up anchored dense (the tax-carrying projection)
+                g = _dense_route(xsp, layer._qbg_gate_d, ii, row_exp, present, eblk).to(torch.bfloat16)
+                u = _dense_route(xsp, layer._qbg_up_d, ii, row_exp, present, eblk).to(torch.bfloat16)
+        if _prof:
+            _lap("t_gu")
+        if layer._qbg_gb is not None:
+            g = g + layer._qbg_gb[row_exp]
+            u = u + layer._qbg_ub[row_exp]
+        hact = g if _abl == "skipswiglu" else _swiglu(g, u).to(torch.bfloat16)
+        if _prof:
+            _lap("t_act")
+        hpad = hact if ip == ii else _padrows(hact, r_pad, ip, ii, x.device)
+        if _abl == "skipseg" and layer._qbg_pack_gu and layer._qbg_pack_dn:
+            d = torch.zeros(r_pad, hh_dim, device=x.device, dtype=torch.bfloat16)
+        elif layer._qbg_pack_dn:
+            d = sp.seg_gemm(hpad, layer._qbg_down, mpeH, ip, eblk)[:, :hh_dim]   # bf16
+        else:  # down anchored dense
+            d = _dense_route(hpad, layer._qbg_down_d, hh_dim, row_exp, present, eblk).to(torch.bfloat16)
+        if layer._qbg_db is not None:
+            d = d + layer._qbg_db[row_exp]
+        if _prof:
+            _lap("t_down")
+        rw = valid.to(x.dtype) if on_input else (w_of[srcc].to(x.dtype) * valid.to(x.dtype))
+        if _abl == "skipscatter":   # everything but the final index_add (isolates scatter cost)
+            return y
+        y.index_add_(0, tok_of[srcc], (d * rw[:, None]).to(x.dtype))
+        if _prof:
+            _lap("t_scatter")
+            if STATS["moe_calls"] % 48 == 0:
+                print("[qb_prof] " + " ".join(f"{k}={STATS[k] * 1000:.0f}ms"
+                      for k in ("t_route", "t_gu", "t_act", "t_down", "t_scatter") if k in STATS)
+                      + f" (over {STATS['moe_calls']} calls)", flush=True)
+        # NOTE: the old `STATS["sparse_expert_calls"] += int(valid.sum().item())` was a host sync on
+        # EVERY layer/forward -- pure overhead that defeated _fast_route. Dropped from the hot path.
+        if shared_experts is not None and shared_experts_input is not None:
+            shared_experts(shared_experts_input)
+        return y
+
+    GptOssMxfp4MoEMethod.process_weights_after_loading = patched_pw
+    GptOssMxfp4MoEMethod.apply = patched_apply
+    print(f"[qb_sm120] patched GptOssMxfp4MoEMethod (QB_MOE={qb_moe}) pid={os.getpid()}", flush=True)
