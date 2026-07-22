@@ -3245,9 +3245,11 @@ def glm_downstream(
 
 @app.function(
     gpu="RTX-PRO-6000:2",
-    # train (300 steps x 21 layers ~5.8h) + in-process eval must fit ONE job: the 6h window timed
-    # out during eval warmup and the SIGKILL corrupted the mid-write reconw dump.
-    timeout=720 * MIN,
+    # train + in-process eval must fit ONE job (the 6h window timed out during eval warmup and the
+    # SIGKILL corrupted the mid-write reconw dump). Per-expert 300steps x 21 layers ~5.8h; global
+    # mode (rounds x steps ~2x + per-round combine) ~12h, so 18h leaves eval margin. Dumps are atomic
+    # now, so a mid-run kill leaves a clean reconw for a load-only re-eval anyway.
+    timeout=1080 * MIN,
     volumes={"/cache": vol},
     secrets=[modal.Secret.from_name("huggingface")],
 )
@@ -3264,6 +3266,8 @@ def recon(
     sparse_proj: str = "both",
     lr: float = 1e-4,
     recon_file: str = "",
+    mode: str = "perexpert",
+    rounds: int = 3,
 ) -> None:
     """Layerwise repair: QB_RECON trains the listed sparse MoE layers vs the dumped teacher I/O
     during load, packs the repaired weights, then runs downstream eval on the repaired model in the
@@ -3272,6 +3276,13 @@ def recon(
     sparse_proj="gateup" isolates the gate_up tax (down stays dense-exact, only gate_up trained) =
     the untried config: A3 ran both-proj per-expert at lr=1e-3 (which the synthetic probe showed
     DIVERGES under the FP4 STE). Default lr=1e-4 is the probe-validated stable rate.
+
+    mode="global" (train_layer_global, `rounds` coordinate-descent sweeps) fits the ROUTER-WEIGHTED
+    top-k combine to the dense routed aggregate, not each expert to its own dense output (the
+    per-expert KILL's objective). The dense teacher is rebuilt from the dumped x/tid/tw, so it works
+    on the reio2 sparse-trajectory dump (whose stored y is the sparse out). This is the untested
+    lever the per-expert verdict flagged: local per-expert rel did not predict downstream, so fit
+    the aggregate the next layer actually sees.
 
     recon_file=<tag> switches to load-only eval: reload the already-trained repaired weights from
     /cache/qb_reconw_{recon_file}_dev*.pt (no training), then run downstream. Use to finish the eval
@@ -3295,8 +3306,12 @@ def recon(
     os.environ["QB_RECON_LAYERS"] = recon_layers
     os.environ["QB_RECON_STEPS"] = str(steps)
     os.environ["QB_RECON_LR"] = str(lr)
-    if scale_only:
-        os.environ["QB_RECON_SCALE_ONLY"] = "1"
+    os.environ["QB_RECON_MODE"] = mode  # "global" = fit the routed combine to the dense aggregate
+    os.environ["QB_RECON_ROUNDS"] = str(rounds)
+    # Set scale-only unconditionally (not just when true): a warm container from a prior scale-only
+    # run would otherwise leave QB_RECON_SCALE_ONLY="1" and leak it into this non-scale run, exactly
+    # like the QB_RECON_FILE leak cleared above.
+    os.environ["QB_RECON_SCALE_ONLY"] = "1" if scale_only else "0"
     _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len, sparse_proj)
 
 
@@ -3364,6 +3379,8 @@ def main(
     route_slot: int = 0,
     lr: float = 1e-4,
     recon_file: str = "",
+    recon_mode: str = "perexpert",
+    rounds: int = 3,
 ) -> None:
     if mode == "test_so":
         test_so.remote()
@@ -3472,6 +3489,8 @@ def main(
             sparse_proj=sparse_proj,
             lr=lr,
             recon_file=recon_file,
+            mode=recon_mode,
+            rounds=rounds,
         )
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)

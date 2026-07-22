@@ -737,28 +737,35 @@ def dump_recon_io():
 # expert weights to the dumped dense teacher output (moe_recon.train_layer), pack the repaired
 # and stash them so the same process can eval the repaired model. Persisted per-rank to
 # /cache/qb_reconw_{tag}_dev{rank}.pt. QB_RECON_FILE=<tag> (in a later run) reloads them in pack().
-_RECON = os.environ.get("QB_RECON") == "1"
-_RECON_IO = os.environ.get("QB_RECON_IO", "")     # dump tag to load teacher I/O from
-# QB_RECON_FILE (serving: reload repaired weights) is read LIVE in _recon_w(), not cached here, so a
-# warm worker that clears it between a load-only run and a training run does not serve a stale tag.
-_RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(",") if x.strip()}
-_RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
-_RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
-_RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
+# ALL recon config (QB_RECON, QB_RECON_IO, QB_RECON_LAYERS, QB_RECON_STEPS, QB_RECON_LR,
+# QB_RECON_SCALE_ONLY, QB_RECON_MODE, QB_RECON_ROUNDS) is read LIVE at dispatch in _recon_weights /
+# _recon_io, never cached at import: a warm Modal worker reused across recon runs would otherwise
+# train the wrong layers / steps / teacher I/O while saving under the new run's tag (cross-run mix).
+# QB_RECON_FILE (serving: reload repaired weights) is likewise read LIVE in _recon_w().
 _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
 _RECON_IO_LOADED = None
+_RECON_IO_TAG = None   # QB_RECON_IO tag cached in _RECON_IO_LOADED; reload when it changes
 _RECON_W_LOADED = None
 _RECON_W_TAG = None    # tag currently cached in _RECON_W_LOADED; reload when QB_RECON_FILE changes
+_RECON_RESUMED_TAG = None  # QB_RUNTAG the resume last ran for; re-resume (and drop stale _RECON_W)
+                           # when the live tag changes, so a warm worker never mixes two runs
 
 
 def _recon_io():
-    global _RECON_IO_LOADED
-    if _RECON_IO_LOADED is None and _RECON_IO:
+    # Read QB_RECON_IO LIVE and key the cache on the tag (mirrors _recon_w): a warm worker reused
+    # a new run with a different teacher-I/O dump must reload, not serve the prior run's teacher.
+    global _RECON_IO_LOADED, _RECON_IO_TAG
+    tag = os.environ.get("QB_RECON_IO", "")
+    if not tag:
+        _RECON_IO_LOADED, _RECON_IO_TAG = None, None
+        return None
+    if _RECON_IO_LOADED is None or tag != _RECON_IO_TAG:
         import torch
 
-        p = f"/cache/qb_reconio_{_RECON_IO}_dev{torch.cuda.current_device()}.pt"
+        p = f"/cache/qb_reconio_{tag}_dev{torch.cuda.current_device()}.pt"
         # Keep teacher I/O on CPU (~3.8 GiB/rank); train_layer_lazy moves one layer's slice to GPU.
         _RECON_IO_LOADED = torch.load(p, map_location="cpu", weights_only=True)
+        _RECON_IO_TAG = tag
     return _RECON_IO_LOADED
 
 
@@ -794,7 +801,10 @@ def dump_recon_w():
     # directory" on reload. Do NOT swallow write errors: a full/unavailable /cache means the
     # checkpoint is missing or stale, and returning success anyway is the silent-durability failure
     # that cost 5.8h here. Fail loud so the run aborts visibly instead of finishing as if persisted.
-    p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
+    # Live QB_RUNTAG (not import-time _RUNTAG) so a warm worker persists under the current tag,
+    # matching the resume read in _recon_weights (read==write, no cross-run mixing).
+    tag = os.environ.get("QB_RUNTAG", "run")
+    p = f"/cache/qb_reconw_{tag}_dev{torch.cuda.current_device()}.pt"
     torch.save(_RECON_W, p + ".tmp")
     os.replace(p + ".tmp", p)
     return len(_RECON_W)
@@ -805,10 +815,38 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
     # None to pack every expert from the raw dequant. Repairing per-expert (dequant one at a time)
     # keeps peak GPU scratch to a single expert; stacking all E was ~13 GiB and OOM'd the full GPU.
     rw = _recon_w()
-    if rw is not None and layer_idx in rw:
-        return rw[layer_idx]
-    if not (_RECON and layer_idx in _RECON_LAYERS):
+    if rw is not None:
+        # QB_RECON_FILE set = strictly load-only: return this layer's repaired weights, or None
+        # (pack from raw dequant) if the checkpoint lacks it. Never fall through to training -- a
+        # warm worker with a stale QB_RECON=1 would otherwise TRAIN during a load-only eval.
+        return rw.get(layer_idx)
+    # Read the recon gate LIVE (warm-worker safe): a reused worker must honor THIS run's QB_RECON /
+    # QB_RECON_LAYERS, not the import-time snapshot, else it trains the wrong layers under a tag.
+    recon_on = os.environ.get("QB_RECON") == "1"
+    recon_layers = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(",") if x.strip()}
+    if not (recon_on and layer_idx in recon_layers):
         return None
+    # Preemption resume: a Modal SIGINT/SIGKILL restarts the container and re-runs recon from the
+    # first layer. Reload this tag's atomic per-layer reconw once so already-trained layers are
+    # served (and skipped below) instead of retrained from scratch -- global mode is ~12h and WILL
+    # cross a preemption. At most one in-progress layer is lost per restart. Key on the LIVE
+    # QB_RUNTAG (not the import-time _RUNTAG): a warm worker starting a different run must drop the
+    # prior run's carried-over _RECON_W and resume from THIS tag's dumps only, else it mixes runs
+    # with different mode/rounds/scale. dump_recon_w writes under the same live tag, so read==write.
+    global _RECON_RESUMED_TAG
+    live_tag = os.environ.get("QB_RUNTAG", "run")
+    if live_tag != _RECON_RESUMED_TAG:
+        import torch
+
+        _RECON_RESUMED_TAG = live_tag
+        _RECON_W.clear()
+        p = f"/cache/qb_reconw_{live_tag}_dev{torch.cuda.current_device()}.pt"
+        if os.path.exists(p):
+            _RECON_W.update(torch.load(p, map_location="cpu", weights_only=True))
+            print(f"[qb_sm120] recon RESUME: preloaded {len(_RECON_W)} layers for tag {live_tag}",
+                  flush=True)
+    if layer_idx in _RECON_W:
+        return _RECON_W[layer_idx]
     io = _recon_io()
     if io is None or layer_idx not in io or cn_gu is None:
         print(f"[qb_sm120] recon skip layer {layer_idx}: io/calib missing", flush=True)
@@ -823,13 +861,38 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
         return wg, wu, wd
 
-    res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
-                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
-                                     proj=_SPARSE_PROJ)
+    # Read mode/rounds/scale LIVE (not the import-time globals): a warm worker reused across a
+    # per-expert run then a global run must pick up the new QB_RECON_MODE/ROUNDS/SCALE_ONLY, exactly
+    # as _recon_w() reads QB_RECON_FILE live. Reading scale live too keeps the guard consistent with
+    # mode -- else it could gate on stale scale state and either allow global+scale or reject a
+    # non-scale run.
+    mode = os.environ.get("QB_RECON_MODE", "perexpert")
+    if mode not in ("perexpert", "global"):
+        # Reject an unknown mode loudly: a typo (e.g. "globl") must not silently run per-expert.
+        raise ValueError(f"unknown QB_RECON_MODE={mode!r} (expected 'perexpert' or 'global')")
+    scale_only = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
+    steps = int(os.environ.get("QB_RECON_STEPS", "200"))
+    lr = float(os.environ.get("QB_RECON_LR", "0.001"))
+    if mode == "global":
+        if scale_only:
+            # global mode has no scale-only path (it optimizes the surviving weight values). Reject
+            # the combination loudly rather than silently writing a full-weight repair.
+            raise ValueError("QB_RECON_MODE=global does not support QB_RECON_SCALE_ONLY")
+        rounds = int(os.environ.get("QB_RECON_ROUNDS", "3"))
+        if rounds < 1:
+            raise ValueError(f"QB_RECON_ROUNDS must be >= 1 for global mode, got {rounds}")
+        res = moe_recon.train_layer_global(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
+                                           steps=steps, lr=lr, rounds=rounds, proj=_SPARSE_PROJ)
+        extra = f"mode=global rounds={rounds} agg_rel={res.get('agg_rel')}"
+    else:
+        res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
+                                         steps=steps, lr=lr, scale_only=scale_only,
+                                         proj=_SPARSE_PROJ)
+        extra = f"scale={int(scale_only)}"
     _RECON_W[layer_idx] = res["repaired"]
     dump_recon_w()
     print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
-          f"steps={_RECON_STEPS} scale={int(_RECON_SCALE)}", flush=True)
+          f"steps={steps} {extra}", flush=True)
     return res["repaired"]
 
 
