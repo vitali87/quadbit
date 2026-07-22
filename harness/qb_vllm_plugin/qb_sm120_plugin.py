@@ -751,7 +751,8 @@ _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persist
 _RECON_IO_LOADED = None
 _RECON_W_LOADED = None
 _RECON_W_TAG = None    # tag currently cached in _RECON_W_LOADED; reload when QB_RECON_FILE changes
-_RECON_RESUMED = False  # once-per-process: reload this tag's persisted partial reconw for resume
+_RECON_RESUMED_TAG = None  # QB_RUNTAG the resume last ran for; re-resume (and drop stale _RECON_W)
+                           # when the live tag changes, so a warm worker never mixes two runs
 
 
 def _recon_io():
@@ -797,7 +798,10 @@ def dump_recon_w():
     # directory" on reload. Do NOT swallow write errors: a full/unavailable /cache means the
     # checkpoint is missing or stale, and returning success anyway is the silent-durability failure
     # that cost 5.8h here. Fail loud so the run aborts visibly instead of finishing as if persisted.
-    p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
+    # Live QB_RUNTAG (not import-time _RUNTAG) so a warm worker persists under the current run's tag,
+    # matching the resume read in _recon_weights (read==write, no cross-run mixing).
+    tag = os.environ.get("QB_RUNTAG", "run")
+    p = f"/cache/qb_reconw_{tag}_dev{torch.cuda.current_device()}.pt"
     torch.save(_RECON_W, p + ".tmp")
     os.replace(p + ".tmp", p)
     return len(_RECON_W)
@@ -815,16 +819,22 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
     # Preemption resume: a Modal SIGINT/SIGKILL restarts the container and re-runs recon from the
     # first layer. Reload this tag's atomic per-layer reconw once so already-trained layers are
     # served (and skipped below) instead of retrained from scratch -- global mode is ~12h and WILL
-    # cross a preemption. At most one in-progress layer is lost per restart.
-    global _RECON_RESUMED
-    if not _RECON_RESUMED:
+    # cross a preemption. At most one in-progress layer is lost per restart. Key on the LIVE
+    # QB_RUNTAG (not the import-time _RUNTAG): a warm worker starting a different run must drop the
+    # prior run's carried-over _RECON_W and resume from THIS tag's dumps only, else it would mix runs
+    # with different mode/rounds/scale. dump_recon_w writes under the same live tag, so read==write.
+    global _RECON_RESUMED_TAG
+    live_tag = os.environ.get("QB_RUNTAG", "run")
+    if _RECON_RESUMED_TAG != live_tag:
         import torch
 
-        _RECON_RESUMED = True
-        p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
+        _RECON_RESUMED_TAG = live_tag
+        _RECON_W.clear()
+        p = f"/cache/qb_reconw_{live_tag}_dev{torch.cuda.current_device()}.pt"
         if os.path.exists(p):
             _RECON_W.update(torch.load(p, map_location="cpu", weights_only=True))
-            print(f"[qb_sm120] recon RESUME: preloaded {len(_RECON_W)} layers from {p}", flush=True)
+            print(f"[qb_sm120] recon RESUME: preloaded {len(_RECON_W)} layers for tag {live_tag}",
+                  flush=True)
     if layer_idx in _RECON_W:
         return _RECON_W[layer_idx]
     io = _recon_io()
