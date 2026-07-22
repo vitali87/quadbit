@@ -63,7 +63,8 @@ infra-gated lever below.
 
 The result *reinforces* the deployed strategy: you do not repair the gate_up tax, you **avoid** it
 by anchoring gate_up dense. **down49 (training-free, 2 GPU, -0.57pt on 8-task) remains the cleanest
-capability-preserving policy**, and D2 route-slot the high-sparse-FLOP extension. The open
+2-GPU capability-preserving policy** (DeepSeek D2 edges it on 8-task quality, +0.03pt, but needs
+4 GPUs; preferred sparse policy varies by model), and D2 route-slot the high-sparse-FLOP extension. The open
 "can QAT recover gate_up?" question (`paper_notes.md:708`, `glm_results.md:104` — gateup49 was
 PPL-only) is now closed with a downstream measurement: **no**, at least via layerwise STE-QAT.
 
