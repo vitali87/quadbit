@@ -815,8 +815,11 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
     # None to pack every expert from the raw dequant. Repairing per-expert (dequant one at a time)
     # keeps peak GPU scratch to a single expert; stacking all E was ~13 GiB and OOM'd the full GPU.
     rw = _recon_w()
-    if rw is not None and layer_idx in rw:
-        return rw[layer_idx]
+    if rw is not None:
+        # QB_RECON_FILE set = strictly load-only: return this layer's repaired weights, or None
+        # (pack from raw dequant) if the checkpoint lacks it. Never fall through to training -- a
+        # warm worker with a stale QB_RECON=1 would otherwise TRAIN during a load-only eval.
+        return rw.get(layer_idx)
     # Read the recon gate LIVE (warm-worker safe): a reused worker must honor THIS run's QB_RECON /
     # QB_RECON_LAYERS, not the import-time snapshot, else it trains the wrong layers under a tag.
     recon_on = os.environ.get("QB_RECON") == "1"
@@ -864,7 +867,9 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
     # mode -- else it could gate on stale scale state and either allow global+scale or reject a
     # non-scale run.
     mode = os.environ.get("QB_RECON_MODE", "perexpert")
-    rounds = int(os.environ.get("QB_RECON_ROUNDS", "3"))
+    if mode not in ("perexpert", "global"):
+        # Reject an unknown mode loudly: a typo (e.g. "globl") must not silently run per-expert.
+        raise ValueError(f"unknown QB_RECON_MODE={mode!r} (expected 'perexpert' or 'global')")
     scale_only = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
     steps = int(os.environ.get("QB_RECON_STEPS", "200"))
     lr = float(os.environ.get("QB_RECON_LR", "0.001"))
@@ -873,6 +878,9 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
             # global mode has no scale-only path (it optimizes the surviving weight values). Reject
             # the combination loudly rather than silently writing a full-weight repair.
             raise ValueError("QB_RECON_MODE=global does not support QB_RECON_SCALE_ONLY")
+        rounds = int(os.environ.get("QB_RECON_ROUNDS", "3"))
+        if rounds < 1:
+            raise ValueError(f"QB_RECON_ROUNDS must be >= 1 for global mode, got {rounds}")
         res = moe_recon.train_layer_global(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
                                            steps=steps, lr=lr, rounds=rounds, proj=_SPARSE_PROJ)
         extra = f"mode=global rounds={rounds} agg_rel={res.get('agg_rel')}"
