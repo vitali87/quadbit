@@ -748,6 +748,7 @@ _RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
 _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
 _RECON_IO_LOADED = None
 _RECON_W_LOADED = None
+_RECON_W_TAG = None    # tag currently cached in _RECON_W_LOADED; reload when QB_RECON_FILE changes
 
 
 def _recon_io():
@@ -762,20 +763,21 @@ def _recon_io():
 
 
 def _recon_w():
-    # Read QB_RECON_FILE LIVE, not the import-time _RECON_FILE global: on a warm worker that first
-    # imported under a load-only run, the caller clearing the env var must actually stop the reload,
-    # else a later training run loads the stale checkpoint and skips the requested repair. An empty
-    # env also drops any cached dict so the same process can switch load-tag -> train cleanly.
-    global _RECON_W_LOADED
+    # Read QB_RECON_FILE LIVE, not the import-time global: on a warm worker that imported under a
+    # load-only run, clearing the env var must actually stop the reload (else a later training run
+    # loads the stale checkpoint and skips the repair), AND a switch tag A -> B must reload (else
+    # the cache serves A against B's eval). Keying on tag covers empty->drop, A->B->reload, reuse.
+    global _RECON_W_LOADED, _RECON_W_TAG
     tag = os.environ.get("QB_RECON_FILE", "")
     if not tag:
-        _RECON_W_LOADED = None
+        _RECON_W_LOADED, _RECON_W_TAG = None, None
         return None
-    if _RECON_W_LOADED is None:
+    if _RECON_W_LOADED is None or tag != _RECON_W_TAG:
         import torch
 
         p = f"/cache/qb_reconw_{tag}_dev{torch.cuda.current_device()}.pt"
         _RECON_W_LOADED = torch.load(p, map_location="cpu", weights_only=True)
+        _RECON_W_TAG = tag
     return _RECON_W_LOADED
 
 
