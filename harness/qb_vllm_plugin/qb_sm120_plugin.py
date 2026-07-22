@@ -780,13 +780,12 @@ def dump_recon_w():
     # Atomic: write a temp then os.replace, so a mid-write interruption (e.g. a Modal timeout
     # SIGKILL between the every-layer re-dumps) can never leave a truncated zip. A truncated
     # torch.save loses the zip central directory (written last) -> "failed finding central
-    # directory" on reload.
+    # directory" on reload. Do NOT swallow write errors: a full/unavailable /cache means the
+    # checkpoint is missing or stale, and returning success anyway is the silent-durability failure
+    # that cost 5.8h here. Fail loud so the run aborts visibly instead of finishing as if persisted.
     p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
-    try:
-        torch.save(_RECON_W, p + ".tmp")
-        os.replace(p + ".tmp", p)
-    except Exception:  # noqa: BLE001
-        pass
+    torch.save(_RECON_W, p + ".tmp")
+    os.replace(p + ".tmp", p)
     return len(_RECON_W)
 
 

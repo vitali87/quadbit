@@ -3285,6 +3285,10 @@ def recon(
         os.environ["QB_RECON_FILE"] = recon_file  # load-only: reload trained weights, skip training
         _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len, sparse_proj)
         return
+    # A warm Modal container that previously ran a load-only row leaves QB_RECON_FILE set; clear it
+    # so this training run does NOT reload the old checkpoint (which _recon_weights prefers over
+    # training) and silently skip the newly requested training.
+    os.environ.pop("QB_RECON_FILE", None)
     moe_recon._selfcheck()  # fail fast on a trainer logic bug before the 8-min model load
     os.environ["QB_RECON"] = "1"
     os.environ["QB_RECON_IO"] = recon_io
@@ -3358,6 +3362,8 @@ def main(
     scale_only: bool = False,
     sparse_proj: str = "both",
     route_slot: int = 0,
+    lr: float = 1e-4,
+    recon_file: str = "",
 ) -> None:
     if mode == "test_so":
         test_so.remote()
@@ -3463,6 +3469,9 @@ def main(
             scale_only=scale_only,
             limit=limit,
             max_len=max_len,
+            sparse_proj=sparse_proj,
+            lr=lr,
+            recon_file=recon_file,
         )
     else:
         baseline.remote(tp=tp, eager=eager, max_len=max_len)

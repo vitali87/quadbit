@@ -7,14 +7,18 @@
 WS-C proved the sparse-FP4 downstream tax lives in the **gate_up** projection: anchoring
 `down` dense and sparsifying only `gate_up` at 49% of MoE layers (`c_gateup49`) missed the
 `.718` capability bar (4-task `.7056`, `-3.27pt` from dense), while the mirror `c_down49`
-recovered training-free (`.7354`, `-0.29pt`). A3's per-expert layerwise repair failed because
-it fit each expert to its OWN dense output independently, breaking the global consistency that
-lives in the top-k weighted combine.
+recovered training-free (`.7354`, `-0.29pt`). A3's per-expert layerwise repair failed at
+`lr=1e-3` (diverges under the FP4 STE) on the **dense-trajectory** teacher (`reio1`).
 
-**This experiment:** does a *global-consistent* gate_up-only STE-QAT layerwise repair — fit the
-surviving 2:4-FP4 gate_up weights of layers 22-42 to the dumped sparse-trajectory teacher I/O
-(`reio2`), `down` held dense-exact — recover the gate_up tax that the training-free anchor and the
-per-expert repair could not?
+**This experiment** attacks two of A3's weaknesses while holding its granularity: fit the surviving
+2:4-FP4 gate_up weights of layers 22-42 (`down` held dense-exact) to the **sparse-trajectory,
+serve-consistent** teacher I/O (`reio2`, so each layer trains on inputs that reflect upstream
+sparsity) at the FP4-STE-stable `lr=1e-4` with best-true-rel checkpoint keep. **Scope note (per
+reviewer):** the objective is still **per-expert** — `train_expert` fits each expert to *its own*
+dense output (`_dense_expert`, `moe_recon.py:164`); it does NOT backprop through the router-weighted
+top-k combine. So this tests whether a *stabilized, serve-consistent per-expert* STE-QAT recovers
+the tax; true global MoE QAT (loss on the routed aggregate) is a separate, harder, still-untested
+lever.
 
 ## Setup
 
@@ -45,13 +49,15 @@ gain; the only move outside noise is arc_c, where QAT is *worse*.
 
 ## Verdict — KILL
 
-**gate_up STE-QAT layerwise repair does not recover downstream capability.** A tight per-layer
-reconstruction rel (0.02-0.07) buys no downstream gain over one-shot gate_up sparse. This is the
-same lesson as the Gap C full-stack QAT KILL (`docs/qat/design.md`) and A3 per-expert: **local
-reconstruction rel does not predict downstream capability; the 2:4-FP4 gate_up capability floor is
-real, not a repair artifact.** Fitting each layer's gate_up to a fixed teacher I/O — even a
-serve-consistent sparse-trajectory one — is still a per-layer objective that misses the cross-layer
-interactions that set downstream MC accuracy.
+**Per-expert gate_up STE-QAT layerwise repair does not recover downstream capability.** A tight
+per-expert reconstruction rel (0.02-0.07) buys no downstream gain over one-shot gate_up sparse. This
+is the same lesson as the Gap C full-stack QAT KILL (`docs/qat/design.md`) and A3: **local
+per-expert reconstruction rel does not predict downstream capability; the 2:4-FP4 gate_up capability
+floor is real, not a repair artifact.** Fitting each expert to its own fixed dense output — even with
+serve-consistent sparse-trajectory inputs and stable optimization — misses both the router-weighted
+combine and the cross-layer interactions that set downstream MC accuracy. Whether true global MoE
+QAT (loss on the routed top-k aggregate) would clear the floor is untested and remains the harder,
+infra-gated lever below.
 
 ## What this validates (win-forward)
 
