@@ -121,11 +121,16 @@ def _sparse_expert(
     wd: torch.Tensor,
     cgu: torch.Tensor,
     cdn: torch.Tensor,
+    proj: str = "both",
 ) -> torch.Tensor:
     # student: fakequant activations + served (2:4-FP4) weights, mirroring the seg-kernel operator.
     # Matmuls run in float32 (served_weight is float32 via STE); fq_act quantizes bf16 then casts.
     xq = fq_act(x.to(torch.bfloat16)).float()
     gu = F.silu(xq @ served_weight(wg, cgu).t()) * (xq @ served_weight(wu, cgu).t())
+    if proj == "gateup":
+        # gateup49 policy: down is anchored dense NVFP4 (cos~1, near-exact) -> keep it exact here so
+        # training isolates the gate_up tax we are actually attacking (down carries ~none of it).
+        return gu @ wd.t()
     return fq_act(gu.to(torch.bfloat16)).float() @ served_weight(wd, cdn).t()
 
 
@@ -139,49 +144,69 @@ def train_expert(
     steps: int,
     lr: float,
     scale_only: bool,
+    proj: str = "both",
 ) -> dict:
     """Fit ONE expert surviving 2:4-FP4 weights (dropped held 0) to its dense output over its routed
-    tokens x. Teacher = dense operator; student = fakequant-sparse. Memory-trivial (one expert)."""
+    tokens x. Teacher = dense operator; student = fakequant-sparse. Memory-trivial (one expert).
+
+    proj="gateup": only gate_up (wg/wu) is sparse+trained; down (wd) stays dense-exact and frozen,
+    matching the deployed gateup49 policy (down anchored NVFP4). Isolates the gate_up tax and stops
+    the optimizer chasing the down projection (which A3's both-proj repair conflated). lr default
+    1e-4 is deliberate: the synthetic probe showed lr=1e-3 DIVERGES under the FP4 STE (the smooth
+    surrogate gradient walks the discrete quantized forward the wrong way). Keep the best true-rel
+    weights, since the STE noise floor reverses after ~100 steps."""
     dev = wg.device
+    gu_only = proj == "gateup"
     mg = (served_weight(wg, cgu) != 0).float()  # keep-mask (dropped positions -> 0)
     mu = (served_weight(wu, cgu) != 0).float()
-    md = (served_weight(wd, cdn) != 0).float()
+    md = torch.ones_like(wd) if gu_only else (served_weight(wd, cdn) != 0).float()
     with torch.no_grad():
         teacher = _dense_expert(x.float(), wg.float(), wu.float(), wd.float())
     tn = teacher.norm().clamp_min(1e-6)
+    wd_frozen = wd.float()  # gateup mode: down stays exact-dense, never trained
 
     if scale_only:
-        s = [torch.ones(1, device=dev, requires_grad=True) for _ in range(3)]
-        params, base = s, (wg.float() * mg, wu.float() * mu, wd.float() * md)
+        s = [torch.ones(1, device=dev, requires_grad=True) for _ in range(2 if gu_only else 3)]
+        params = s
+        base = (wg.float() * mg, wu.float() * mu, wd_frozen if gu_only else wd.float() * md)
     else:
         pg = (wg.float() * mg).requires_grad_(True)
         pu = (wu.float() * mu).requires_grad_(True)
-        pd = (wd.float() * md).requires_grad_(True)
-        params = [pg, pu, pd]
+        params = [pg, pu]
+        if not gu_only:
+            pd = (wd.float() * md).requires_grad_(True)
+            params.append(pd)
+
+    def _weights():
+        if scale_only:
+            return base[0] * s[0], base[1] * s[1], wd_frozen if gu_only else base[2] * s[2]
+        return pg * mg, pu * mu, wd_frozen if gu_only else pd * md
+
     opt = torch.optim.Adam(params, lr=lr)
     trace = []
+    best_rel, best_w = float("inf"), None
     for step in range(1, steps + 1):
-        if scale_only:
-            wg_, wu_, wd_ = base[0] * s[0], base[1] * s[1], base[2] * s[2]
-        else:
-            wg_, wu_, wd_ = pg * mg, pu * mu, pd * md
-        pred = _sparse_expert(x, wg_, wu_, wd_, cgu, cdn)
+        wg_, wu_, wd_ = _weights()
+        pred = _sparse_expert(x, wg_, wu_, wd_, cgu, cdn, proj)
         loss = (pred - teacher).pow(2).mean() + 0.1 * (
             1 - F.cosine_similarity(pred, teacher, dim=1).mean()
         )
         opt.zero_grad()
         loss.backward()
         opt.step()
-        if step == 1 or step % max(1, steps // 5) == 0 or step == steps:
+        if step == 1 or step % max(1, steps // 10) == 0 or step == steps:
             with torch.no_grad():
-                rel = ((_sparse_expert(x, wg_, wu_, wd_, cgu, cdn) - teacher).norm() / tn).item()
+                wg_, wu_, wd_ = _weights()
+                p2 = _sparse_expert(x, wg_, wu_, wd_, cgu, cdn, proj)
+                rel = ((p2 - teacher).norm() / tn).item()
             trace.append((step, round(rel, 4), round(loss.item(), 6)))
-    with torch.no_grad():
-        if scale_only:
-            wg_, wu_, wd_ = base[0] * s[0], base[1] * s[1], base[2] * s[2]
-        else:
-            wg_, wu_, wd_ = pg * mg, pu * mu, pd * md
-    return {"wg": wg_.detach(), "wu": wu_.detach(), "wd": wd_.detach(), "trace": trace}
+            if rel < best_rel:  # keep best true-rel (STE noise floor reverses late)
+                best_rel = rel
+                best_w = tuple(w.detach().clone() for w in (wg_, wu_, wd_))
+    if best_w is None:
+        with torch.no_grad():
+            best_w = tuple(w.detach() for w in _weights())
+    return {"wg": best_w[0], "wu": best_w[1], "wd": best_w[2], "trace": trace}
 
 
 def train_layer(
@@ -241,6 +266,7 @@ def train_layer_lazy(
     steps: int = 400,
     lr: float = 1e-3,
     scale_only: bool = False,
+    proj: str = "both",
 ) -> dict:
     """Memory-lean train_layer: dequant ONE expert at a time via get_expert(le)->(wg,wu,wd) on
     `dev`, so peak GPU scratch is a single expert (not the whole [E,...] bf16 stack, which is
@@ -257,7 +283,7 @@ def train_layer_lazy(
         if rows.numel() < 8:
             continue
         wg, wu, wd = get_expert(le)
-        r = train_expert(x_all[rows], wg, wu, wd, cgu[le], cdn[le], steps, lr, scale_only)
+        r = train_expert(x_all[rows], wg, wu, wd, cgu[le], cdn[le], steps, lr, scale_only, proj)
         repaired[le] = (
             torch.cat([r["wg"], r["wu"]], 0).to(torch.bfloat16).cpu(),
             r["wd"].to(torch.bfloat16).cpu(),
@@ -308,6 +334,13 @@ def _selfcheck() -> None:
     )["trace"]
     l0, l1 = tr[0][2], tr[-1][2]
     assert l1 < l0, f"training loss did not decrease: {l0} -> {l1}"
+
+    # gateup-only mode: down is frozen exact (2 trainable weights, not 3), loss still falls, and the
+    # returned wd equals the input dense wd (down untouched). This is the deployed gateup49 config.
+    rg = train_expert(x, w13[0, :inter], w13[0, inter:], w2[0], cgu[0], cdn[0],
+                      steps=200, lr=1e-4, scale_only=False, proj="gateup")
+    assert rg["trace"][-1][2] < rg["trace"][0][2], "gateup loss did not decrease"
+    assert torch.allclose(rg["wd"], w2[0].float()), "gateup mode must leave down (wd) exact"
 
     # Lazy layer path (the memory-lean plumbing used in-model): get_expert dequants one expert at a
     # time; every routed expert (>=8 rows) comes back as (w13form[2I,H], w2form[H,I]) on CPU.

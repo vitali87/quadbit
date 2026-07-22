@@ -739,7 +739,8 @@ def dump_recon_io():
 # /cache/qb_reconw_{tag}_dev{rank}.pt. QB_RECON_FILE=<tag> (in a later run) reloads them in pack().
 _RECON = os.environ.get("QB_RECON") == "1"
 _RECON_IO = os.environ.get("QB_RECON_IO", "")     # dump tag to load teacher I/O from
-_RECON_FILE = os.environ.get("QB_RECON_FILE", "")  # serving: reload repaired weights from this tag
+# QB_RECON_FILE (serving: reload repaired weights) is read LIVE in _recon_w(), not cached here, so a
+# warm worker that clears it between a load-only run and a training run does not serve a stale tag.
 _RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(",") if x.strip()}
 _RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
 _RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
@@ -747,6 +748,7 @@ _RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
 _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
 _RECON_IO_LOADED = None
 _RECON_W_LOADED = None
+_RECON_W_TAG = None    # tag currently cached in _RECON_W_LOADED; reload when QB_RECON_FILE changes
 
 
 def _recon_io():
@@ -761,24 +763,40 @@ def _recon_io():
 
 
 def _recon_w():
-    global _RECON_W_LOADED
-    if _RECON_W_LOADED is None and _RECON_FILE:
+    # Read QB_RECON_FILE LIVE, not the import-time global: on a warm worker that imported under a
+    # load-only run, clearing the env var must actually stop the reload (else a later training run
+    # loads the stale checkpoint and skips the repair), AND a switch tag A -> B must reload (else
+    # the cache serves A against B's eval). Keying on tag covers empty->drop, A->B->reload, reuse.
+    global _RECON_W_LOADED, _RECON_W_TAG
+    tag = os.environ.get("QB_RECON_FILE", "")
+    if not tag:
+        _RECON_W_LOADED, _RECON_W_TAG = None, None
+        return None
+    if _RECON_W_LOADED is None or tag != _RECON_W_TAG:
         import torch
 
-        p = f"/cache/qb_reconw_{_RECON_FILE}_dev{torch.cuda.current_device()}.pt"
+        p = f"/cache/qb_reconw_{tag}_dev{torch.cuda.current_device()}.pt"
         _RECON_W_LOADED = torch.load(p, map_location="cpu", weights_only=True)
+        _RECON_W_TAG = tag
     return _RECON_W_LOADED
 
 
 def dump_recon_w():
+    import os
+
     import torch
 
     if not _RECON_W:
         return 0
-    try:
-        torch.save(_RECON_W, f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt")
-    except Exception:  # noqa: BLE001
-        pass
+    # Atomic: write a temp then os.replace, so a mid-write interruption (e.g. a Modal timeout
+    # SIGKILL between the every-layer re-dumps) can never leave a truncated zip. A truncated
+    # torch.save loses the zip central directory (written last) -> "failed finding central
+    # directory" on reload. Do NOT swallow write errors: a full/unavailable /cache means the
+    # checkpoint is missing or stale, and returning success anyway is the silent-durability failure
+    # that cost 5.8h here. Fail loud so the run aborts visibly instead of finishing as if persisted.
+    p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
+    torch.save(_RECON_W, p + ".tmp")
+    os.replace(p + ".tmp", p)
     return len(_RECON_W)
 
 
@@ -806,7 +824,8 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         return wg, wu, wd
 
     res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
-                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE)
+                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
+                                     proj=_SPARSE_PROJ)
     _RECON_W[layer_idx] = res["repaired"]
     dump_recon_w()
     print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
