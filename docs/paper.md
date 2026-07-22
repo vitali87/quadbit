@@ -37,7 +37,10 @@ accuracy cost of sparsity is a *placement* problem — down-projection sparsity 
 while gate/up carries the tax, and a route-slot policy (top experts dense, low-weight tail 2:4)
 is the best quality/sparse-FLOP tradeoff. On GLM-5.2 the DeepSeek rule transfers: route-slot D2
 costs +0.065 held-out PPL and preserves a 4-task downstream smoke-suite average to within about
-one point of dense (.7508 vs .7603, no task collapsing). On accuracy the deployed dense path is
+one point of dense (.7508 vs .7603, no task collapsing). The same down-anchor rule transfers to a
+third architecture, **gpt-oss-20b**, which we serve end-to-end in vLLM 0.24 with training-free
+recovery (all-expert 2:4 is incoherent at 111 PPL; anchoring gate/up dense recovers to 6.499, within
+1.66x of stock) and a fused monolithic sparse MoE (+6% serve). On accuracy the deployed dense path is
 W4A4 and costs +0.63 PPL with no calibration; sparse deploys at its trained accuracy but stays a
 real PPL behind dense, so sparse is a speed Pareto point conditioned on prunability, not an
 accuracy win.
@@ -55,7 +58,9 @@ production-wide decode-speed win, and dense FP4 speed belongs to the ecosystem b
 the native delegate depends on FlashInfer availability and its swizzled NVFP4 scale layout; the GLM
 graph run is validated on a short held-out passage; GLM-5.2 requires 8x RTX PRO 6000; the GLM
 downstream evidence is a small 4-task smoke suite, not an exhaustive benchmark; and all-MLP sparsity
-carries a real PPL tax that training-free repair does not close.
+carries a real PPL tax that neither training-free repair nor any layerwise QAT objective closes (three
+QAT objectives, from per-expert to global router-weighted MoE QAT, run to the ground -- all negative,
+the tightest reconstruction giving the worst downstream).
 
 ---
 
@@ -111,7 +116,11 @@ the accuracy cost of sparsity is a *placement* problem that transfers across arc
 down-projection sparsity is far less damaging than gate/up, and a route-slot policy (top experts
 dense, low-weight tail 2:4) gives the best quality/sparse-FLOP tradeoff. A 4-task GLM downstream
 smoke suite rebuts the "PPL says fine but downstream collapses" concern for the route-slot D2
-policy (AVG .7508 vs dense .7603, no task collapsing).
+policy (AVG .7508 vs dense .7603, no task collapsing). The rule reaches a **third architecture**,
+gpt-oss-20b, served end-to-end in vLLM with training-free recovery (111 -> 6.499 PPL) and a fused
+monolithic sparse MoE (Section 10.3); and we close the "can training repair the gate/up tax?"
+question in the negative across the whole layerwise family (per-expert and global router-weighted
+MoE QAT both fail, tightest reconstruction giving worst downstream, Section 10.2).
 
 ---
 
@@ -803,6 +812,83 @@ within ~1 pt), and the prefill/large-M kernel Pareto of Section 5 (a kernel micr
 serving here). The remaining MoE decode gap is a kernel problem, a fused sparse grouped decode GEMM at
 tiny M, identified but not built. Board: [docs/c2/verdict.md](c2/verdict.md); logs `docs/audit/logs/c2_*.log`.
 
+### 10.2 Layerwise QAT does not clear the gate/up floor
+
+The gate/up tax of Section 10.1 raises the obvious question: can quantization-aware training recover
+what training-free placement avoids? We ran the whole tractable family of layerwise-repair objectives
+to the ground on a widened 8-task downstream battery (ARC-C, ARC-E, HellaSwag, PIQA, OBQA, BoolQ,
+Winogrande, MMLU-5; `limit=400`; dense NVFP4 AVG **.7548**), and every one is a negative:
+
+| gate/up recovery objective (DeepSeek-V4-Flash-NVFP4) | AVG-8 | vs one-shot |
+|---|---|---|
+| one-shot sparse gate/up (no training) | .7363 | — |
+| per-expert STE-QAT (each expert fit to its own dense output through the kernel) | .7332 | −0.31pt |
+| **global router-weighted MoE QAT** (top-k combine fit to the dense routed aggregate) | **.7259** | **−1.04pt** |
+
+The global objective is the one the per-expert fit discards routing weights for: it fits the
+router-weighted top-k combine to the dense routed aggregate the next layer actually sees, trained by
+Gauss-Seidel coordinate descent (one expert resident at a time; a joint 256-expert backward OOMs, and a
+Jacobi all-vs-round-start update diverges). It produced the **tightest reconstruction of any variant**
+(routed-aggregate relative error driven monotonically to 0.004-0.017, roughly 4-10x tighter than
+per-expert's 0.02-0.07) yet the **worst** downstream of the three, moving accuracy the wrong way. The
+same negative holds on a single dense model: full-stack through-kernel QAT on Llama-3.1-8B (the Gap-C
+harness) lands **0.3967 < the one-shot 0.4333**, below the very baseline it was meant to beat.
+
+The lesson is consistent across all four: **local reconstruction error does not predict downstream
+capability, and driving it tighter makes the mismatch worse** -- matching a calibration-trajectory
+target overfits layer-local statistics that do not transfer to held-out multiple-choice accuracy. No
+objective in the layerwise-repair family (own-output per-expert, routed-aggregate global,
+dense- or sparse-trajectory, single dense model) clears the 2:4 gate/up floor; the floor is a real
+capability property, not a reconstruction-objective artifact. You avoid the tax by anchoring gate/up
+dense (down-only or route-slot, Section 10.1), you do not repair it. True end-to-end QAT (attention and
+MLP jointly trainable *through* the sparse kernel) is **not** refuted -- it stays infra-blocked (no
+differentiable DeepSeek/GLM load exists; the serving path is inference-only) -- but this closes every
+layerwise objective the inference-only path can express. Verdicts:
+`docs/qat/{design,gateup_moe_verdict,global_moe_verdict}.md`.
+
+### 10.3 Transfer to gpt-oss-20b: full end-to-end serving and honest throughput
+
+A third architecture, and the one we serve most completely. **gpt-oss-20b** (24 layers, hidden 2880, 32
+experts, top-4, expert intermediate 2880) quantizes **only the expert MLPs to MXFP4** -- self-attention,
+router, embeddings, and lm_head stay dense -- which is *exactly* quadbit's sparsify-experts /
+keep-attention-router-embed-dense policy, arrived at independently by the checkpoint. Its fused 3D expert
+tensors store gate/up interleaved and use a clamped SwiGLU (alpha 1.702, limit 7.0). We decode the MXFP4
+experts **value-exact (100% round-trip)**, de-interleave gate/up, zero-pad 2880 -> 3072x2944 for kernel
+tile alignment (**padding-exact**: padded-real experts reach cos 0.987-0.990 vs fake-quant, *beating* an
+aligned-no-pad control at 0.978, so the pad adds no error), and pack into the two-level NVFP4 layout of
+Section 3. All offline gates pass on real weights (full-expert forward cos 0.99 vs fake-quant; the actual
+segmented serving kernel with top-4 routing cos 0.972 vs dense).
+
+**Served end-to-end in vLLM 0.24**, by patching the native `GptOssMxfp4MoEMethod`: gpt-oss-20b generates
+coherent text with the 2:4-sparse experts live, raw NVFP4 freed after packing (proof the sparse path
+executes, not a silent fallback). Unlike the ecosystem-blocked DeepSeek path (Section 10), gpt-oss serves
+cleanly on a single card, which let us both recover quality and attack the MoE plumbing:
+
+- **Training-free recovery reproduces the down-anchor rule on a third model.** All-expert 2:4 on both
+  projections is incoherent (PPL **111** vs stock **3.886**), but anchoring gate/up dense and sparsifying
+  only the down projection recovers to **6.499 PPL -- within 1.66x of stock, zero training**. The tax
+  living in gate/up now holds across DeepSeek, GLM, *and* gpt-oss.
+- **Fused monolith MoE.** A minimal-kernel pipeline (a counting-sort `moe_route`; `gu_swiglu` fusing
+  GEMM1 + clamped-SwiGLU + MXFP4 quant in one launch; `seg_bw` fusing down + bias + routing-weight into a
+  coalesced epilogue; an inverse-index `moe_combine` top-k) cuts the MoE to **~9.5 ms/layer, 2.2x** over
+  the unfused path, all stages cos >= 0.996, and a same-invocation A/B measures **+6.0% end-to-end serve**.
+
+**Honest throughput.** The 2:4-sparse-FP4 GEMM beats vLLM's *real* `marlin_gemm` by **2.15-3.04x** and
+the full 2-GEMM Marlin MoE by **1.81-2.24x** at gpt-oss/GLM/DeepSeek dims -- but Marlin is W4A16, a soft
+target. Against the real FP4 SOTA (FlashInfer `cutlass` dense `mm_fp4`, same invocation, M=8192) our
+sparse kernel **ties on gpt-oss and loses 0.82-0.84x on GLM/DeepSeek dims despite doing half the FLOPs**,
+consistent with the dense verdict of Section 4. In serving, gpt-oss's uniquely *small* experts
+(2944x3072, ~1016 tokens/expert) are Marlin's best shape, and the per-layer W4A4 activation-quant Marlin
+skips makes stock Marlin faster end-to-end. An exhaustive roofline settles that this is silicon, not
+tuning: a register-only sparse-mma microbench (`peak_fed`) sustains **97.7% of the sparse-mma peak**, so
+the kernel is not feed-starved; the deficit is occupancy -- the 128-accumulator register file pins the
+high-reuse tile at 1 CTA/SM, and SM120 has no `tcgen05`/TMEM to offload accumulators, while the
+2:4-metadata and block-scale smem tax blocks the deeper pipeline dense CUTLASS uses. A dense-throughput
+win on SM120 is physically unavailable. gpt-oss's win is therefore the same as the other two models:
+**only-deployed 2:4-sparse FP4, training-free capability recovery, and ~24% weight-memory reduction at
+full sparsity** -- not gpt-oss decode/prefill throughput, which lives on the large-expert frontier models
+where the GEMM dominates the forward. Harnesses: `harness/{gptoss_prep,fused_moe,serve_gptoss}.py`.
+
 ---
 
 ## 11. Related work
@@ -894,9 +980,15 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   of the single-MLP split-K down we already ship -- is future work, not yet built or measured. Because
   end-to-end DeepSeek-V4-Flash serving is ecosystem-blocked on SM120 (Section 10), decode latency for
   this model could not be exercised regardless.
-- **MoE accuracy recovery untried.** The MoE experts are pruned 2:4 by magnitude only; calibrated
-  SparseGPT / distillation on the experts (the dense-model levers of Section 8) are not yet applied at
-  MoE scale. The per-expert-output tax (cos ~0.70 on random activations) is reported un-repaired.
+- **Layerwise QAT does not recover the MoE gate/up tax; SparseGPT/distillation at MoE scale untried**
+  (Section 10.2). We ran STE-QAT at MoE scale in three forms -- per-expert own-output, and global
+  router-weighted combine fit to the dense routed aggregate -- and all fail to beat the one-shot sparse
+  baseline (.7332 and .7259 vs .7363 on the 8-task battery), the tightest reconstruction giving the worst
+  downstream; full-stack through-kernel QAT on dense Llama-3.1-8B is negative too (0.3967 < 0.4333). The
+  gate/up 2:4 floor is a real capability property, avoided by structural placement, not repaired. What
+  remains genuinely untried is calibrated SparseGPT/distillation on the experts (the dense-model levers of
+  Section 8) at MoE scale, and true end-to-end QAT trainable *through* the sparse kernel, which is
+  infra-blocked (no differentiable DeepSeek/GLM load), not refuted.
 - **The MoE plugin path is graph-enabled and the dense-anchor bottleneck is removed** (Section 10, P4 +
   C1). P4 replaced the old host-syncing `torch.unique(...).tolist()` expert loop with a fixed-capacity
   device-routing path (`route_fixed_cap` / `_route_slot_apply_gs`), so the deployed sparse policies
@@ -926,6 +1018,16 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   Full-size benchmarks, and downstream numbers for the down-only/gate-up GLM rows, are unmeasured; we
   make **no claim of exhaustive GLM downstream preservation**. The most complete downstream accounting of
   record remains DeepSeek's (full AVG across every policy).
+- **gpt-oss-20b is served and recovered, but does not win throughput** (Section 10.3). We serve gpt-oss
+  end-to-end with the 2:4-sparse experts live and recover quality training-free (111 -> 6.499 PPL), and
+  the fused monolith gives +6% serve over our own unfused path; but stock Marlin W4A16 still serves
+  gpt-oss faster, because its uniquely small experts (2944x3072, ~1016 tok/expert) are Marlin's best shape
+  and W4A4 pays a per-layer activation-quant Marlin skips. The GEMM math wins (2.15-3.04x vs real Marlin;
+  tie/-18% vs FlashInfer cutlass dense at M=8192), but on SM120 a dense-throughput serving win is
+  physically unavailable (no `tcgen05`/TMEM; 1-CTA/SM occupancy on the high-reuse tile). gpt-oss's
+  contribution is quality + ~24% memory + being the only deployed sparse-FP4 path, **not** its throughput;
+  the throughput win lives on large-expert frontier models where the GEMM dominates the forward. The gpt-oss
+  quality evidence is a held-out-passage PPL, not a downstream MC suite.
 
 ---
 
@@ -952,9 +1054,16 @@ layers sparse; a per-expert weight repair, by contrast, fails). Second, the same
 transfer to **GLM-5.2** served on 8x RTX PRO 6000, whose Deep Sparse Attention runs natively on SM120:
 down-only sparsity costs about half of gate/up there too, and the route-slot D2 policy costs +0.065
 held-out PPL while preserving a 4-task downstream smoke-suite average to within about one point of dense
-(.7508 vs .7603, no task collapsing) -- so D2's small PPL cost is not masking a downstream collapse. Both
-models run eager; graph-capturable expert-parallel MoE (blocked only by a plugin host-sync), a full GLM
-downstream benchmark, and MoE accuracy recovery are the remaining work.
+(.7508 vs .7603, no task collapsing) -- so D2's small PPL cost is not masking a downstream collapse.
+Third, the down-anchor rule reaches a **third architecture, gpt-oss-20b**, which we serve end-to-end in
+vLLM with training-free recovery (111 -> 6.499 PPL) and a fused monolithic sparse MoE, the most complete
+serving of the three. The deployed sparse policies now CUDA-graph-capture on SM120 (native-delegate
+captured DeepSeek-D2 decodes 1.44x its eager reference), and we close the "can training recover the
+gate/up tax?" question in the negative across the whole layerwise family: per-expert and global
+router-weighted MoE QAT both fail, the tightest reconstruction giving the worst downstream, so the
+capability-preserving move is structural placement, not weight repair. The honest ceilings remain a full
+GLM downstream benchmark, a fused sparse grouped *decode* GEMM (the dense NVFP4 fused MoE is the SM120
+decode SOTA), and true end-to-end QAT through the sparse kernel (infra-blocked, not refuted).
 
 ---
 

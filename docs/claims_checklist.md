@@ -302,3 +302,24 @@ cross-compare absolute values.
 | Recovery beats one-shot / closes the residual | NOT claimed (disproven): recovery worsened both PPL (149->203) and downstream (0.4333->0.3967) vs one-shot | not claimed (disproven) |
 | This is a kernel-fidelity, OOM, or attention-packing/STE failure | NOT claimed (disproven): deploy gap 0.005, run completed with ~14.4 GB free at phase-2 peak, STE bit-matches the kernel | not claimed (disproven) |
 | The run used the pre-registered recipe (no knob tuning) | infra-only fixes `2ff580a` (resume GPU-duplicate) + `90be3e2` (durable phase-2 resume); LR/steps/alpha/attn/optimizer/selection/corpus/hardware/model/eval unchanged | backed |
+
+## 19. gpt-oss-20b sparse-FP4 deployment (serving + recovery + throughput)
+
+Third-architecture transfer, landed on main via PR #36 (merge `66746fb`), issue #28 closed. Harnesses
+`harness/{gptoss_prep,fused_moe,serve_gptoss}.py`; full note memory `quadbit-gptoss-campaign.md`; paper
+[docs/paper.md](paper.md) Section 10.3.
+
+| claim | evidence | status |
+|---|---|---|
+| gpt-oss-20b quantizes only the expert MLPs to MXFP4 (attn/router/embed/lm_head dense) = quadbit's sparsify-experts policy, arrived at independently | HF config `quantization_config`; `harness/gptoss_prep.py` | backed |
+| MXFP4 expert decode is value-exact (100% round-trip) on real 3D fused experts | `harness/gptoss_prep.py::run` (M0 gate) | backed |
+| Pad 2880 -> 3072x2944 is padding-exact: padded-real cos 0.987-0.990 vs fake-quant beats aligned-no-pad control 0.978 | `harness/gptoss_prep.py::sparse_validate` (M2 gate) | backed |
+| Offline forward gates green: full-expert cos 0.99 vs fake-quant; segmented serving kernel + top-4 routing cos 0.972 vs dense | `harness/gptoss_prep.py::{m1_validate,seg_validate}` | backed |
+| Served end-to-end in vLLM 0.24 via `GptOssMxfp4MoEMethod` patch: coherent generation, raw NVFP4 freed after packing (sparse path executed, not fallback) | `harness/serve_gptoss.py`; `qb_sm120_plugin.py::_install_gptoss_moe` | backed |
+| Training-free recovery on a third model: all-expert 2:4 both-proj incoherent (111 PPL vs stock 3.886); down-anchor recovers to 6.499 (within 1.66x), zero training; tax lives in gate_up (DeepSeek/GLM/gpt-oss) | `harness/serve_gptoss.py` WT-passage teacher-forced PPL sweep | backed |
+| Fused monolith MoE (moe_route/gu_swiglu/seg_bw/moe_combine) cuts MoE ~9.5ms/layer (2.2x), all cos >= 0.996; same-invocation A/B = +6.0% end-to-end serve vs unfused | `harness/fused_moe.py`; `serve_gptoss.py --ab` | backed |
+| 2:4-sparse-FP4 GEMM beats REAL vLLM `marlin_gemm` 2.15-3.04x and full 2-GEMM Marlin MoE 1.81-2.24x (same invocation, M=8192); Marlin = W4A16, a soft target | `serve_gptoss.py::bench_vs_marlin` | backed |
+| vs real FP4 SOTA (FlashInfer cutlass dense `mm_fp4`, same invocation, M=8192): TIE gpt-oss, LOSE 0.82-0.84x GLM/DeepSeek despite half the FLOPs | `serve_gptoss.py::bench_vs_sota` | backed |
+| gpt-oss serve throughput beats stock Marlin | NOT claimed (disproven): stock Marlin W4A16 serves gpt-oss faster (small experts 2944x3072 ~1016 tok/e = Marlin's best shape; W4A4 pays per-layer act-quant) | not claimed (disproven) |
+| SM120 dense-throughput serving win | NOT claimed (physically unavailable): `peak_fed` = 97.7% of sparse-mma peak (not feed-bound); no `tcgen05`/TMEM to offload the 128-acc register file, 2:4-metadata+scale smem tax pins 1 CTA/SM on the high-reuse tile; every occupancy/tile/pipeline lever tested | `cuda/mma_peak.cu`; `harness/fused_moe.py::{profile_sass,bench_shapes}` | not claimed |
+| gpt-oss contribution = only-deployed sparse-FP4 + training-free recovery + ~24% weight memory at full sparsity, NOT throughput | `serve_gptoss.py` (mem: both0 all-24-sparse 10.44 vs stock 13.8 GiB) | backed |
