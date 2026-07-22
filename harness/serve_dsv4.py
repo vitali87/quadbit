@@ -3308,8 +3308,10 @@ def recon(
     os.environ["QB_RECON_LR"] = str(lr)
     os.environ["QB_RECON_MODE"] = mode  # "global" = fit the routed combine to the dense aggregate
     os.environ["QB_RECON_ROUNDS"] = str(rounds)
-    if scale_only:
-        os.environ["QB_RECON_SCALE_ONLY"] = "1"
+    # Set scale-only unconditionally (not just when true): a warm container from a prior scale-only
+    # run would otherwise leave QB_RECON_SCALE_ONLY="1" and leak it into this non-scale run, exactly
+    # like the QB_RECON_FILE leak cleared above.
+    os.environ["QB_RECON_SCALE_ONLY"] = "1" if scale_only else "0"
     _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len, sparse_proj)
 
 
