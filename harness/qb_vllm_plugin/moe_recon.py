@@ -465,8 +465,8 @@ def train_layer_global(
                     xr, wg, wu, wd, cgu[le], cdn[le], proj
                 )
             # target = y - sum(others) = (y - combined) + this expert's own share. Gauss-Seidel:
-            # `combined` is updated in place after each expert (below), so this sees the LATEST other
-            # experts, not the round-start snapshot. That damps the Jacobi overshoot that blew some
+            # `combined` is updated in place after each expert (below), so this sees the LATEST
+            # other experts, not the round-start snapshot. That damps the Jacobi overshoot that blew
             # layers up (agg_rel 0.58 -> 2.43): sequential updates see each other instead of all
             # stepping against a stale residual at once.
             target = (y[tr] - combined[tr]) + contrib_start
