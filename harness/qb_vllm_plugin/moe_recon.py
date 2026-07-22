@@ -402,7 +402,14 @@ def train_layer_global(
     keep = flat_e >= 0
     tok, flat_e, flat_w = tok[keep], flat_e[keep], flat_w[keep]
 
-    routed = sorted(e for e in torch.unique(flat_e).tolist() if (flat_e == e).sum() >= 8)
+    # EVERY routed expert (>=1 route) contributes to the teacher y and the fixed aggregate, because
+    # serving restores all of them; only experts with enough sampled routes (>=8) are UPDATED (a
+    # <8-route fit is unstable). Rare experts stay at their sparse weights and enter both y (dense)
+    # and combined (sparse) as fixed terms, so the trainable experts absorb the rare experts'
+    # sparsification error too, matching the aggregate the next layer actually sees. Restricting
+    # only which experts update (not which enter the teacher/aggregate) closes the residual gap.
+    routed_all = sorted(e for e in torch.unique(flat_e).tolist() if e >= 0)
+    trainable = [le for le in routed_all if int((flat_e == le).sum()) >= 8]
 
     def _rows(le):
         m = flat_e == le
@@ -415,7 +422,7 @@ def train_layer_global(
     # torch.zeros(n, h) would be bf16 and index_add of the float32 expert outputs raises a dtype
     # mismatch. All internal accumulators are float32 to match _dense_expert / _sparse_expert.
     cur, y = {}, torch.zeros(n, h, device=dev, dtype=torch.float32)
-    for le in routed:
+    for le in routed_all:
         wg, wu, wd = get_expert(le)
         wgf, wuf, wdf = wg.float(), wu.float(), wd.float()
         tr, wr = _rows(le)
@@ -427,7 +434,7 @@ def train_layer_global(
 
     def _combined():
         c = torch.zeros(n, h, device=dev, dtype=torch.float32)
-        for le in routed:
+        for le in routed_all:
             wg, wu, wd = (w.to(dev).float() for w in cur[le])
             tr, wr = _rows(le)
             out = _sparse_expert(x[tr], wg, wu, wd, cgu[le], cdn[le], proj)
@@ -438,9 +445,9 @@ def train_layer_global(
     yn = y.norm().clamp_min(1e-6)
     agg_rel = []
     for _ in range(rounds):
-        combined = _combined()  # round-start aggregate (all experts), no_grad
+        combined = _combined()  # round-start aggregate (all routed experts), no_grad
         agg_rel.append(round(((combined - y).norm() / yn).item(), 4))
-        for le in routed:
+        for le in trainable:
             tr, wr = _rows(le)
             xr = x[tr]
             wg, wu, wd = (w.to(dev).float() for w in cur[le])
@@ -457,13 +464,15 @@ def train_layer_global(
             del wg, wu, wd, xr, target, contrib_start
     agg_rel.append(round(((_combined() - y).norm() / yn).item(), 4))  # final, post-training
 
+    # Only the UPDATED experts are packed; rare (<8-route) experts kept their sparse weights and are
+    # left for the caller to dense-dequant at pack time (they were fixed teacher/aggregate terms).
     repaired = {
-        le: (torch.cat([wg, wu], 0), wd)  # already bf16 CPU (w13form[2I,H], w2form[H,I])
-        for le, (wg, wu, wd) in cur.items()
+        le: (torch.cat([cur[le][0], cur[le][1]], 0), cur[le][2])  # bf16 CPU (w13form, w2form)
+        for le in trainable
     }
     return {
         "repaired": repaired,
-        "n_experts": len(routed),
+        "n_experts": len(trainable),
         # global routed-aggregate rel per round + final; [0] is one-shot, last is trained
         "agg_rel": agg_rel,
         "rel_mean": agg_rel[-1],

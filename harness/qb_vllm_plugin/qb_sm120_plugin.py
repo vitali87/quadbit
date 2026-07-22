@@ -745,10 +745,8 @@ _RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(","
 _RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
 _RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
 _RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
-# QB_RECON_MODE: "perexpert" (default, train_layer_lazy: fit each expert to its own dense output) or
-# "global" (train_layer_global: fit the router-weighted top-k combine to the dumped dense aggregate).
-_RECON_MODE = os.environ.get("QB_RECON_MODE", "perexpert")
-_RECON_ROUNDS = int(os.environ.get("QB_RECON_ROUNDS", "3"))  # global-mode coordinate-descent sweeps
+# QB_RECON_MODE ("perexpert" default -> train_layer_lazy; "global" -> train_layer_global) and
+# QB_RECON_ROUNDS are read LIVE at dispatch in _recon_weights (warm-worker safe), not cached here.
 _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
 _RECON_IO_LOADED = None
 _RECON_W_LOADED = None
@@ -827,11 +825,20 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
         return wg, wu, wd
 
-    if _RECON_MODE == "global":
+    # Read mode/rounds LIVE (not the import-time globals): a warm worker reused across a per-expert
+    # run then a global run must pick up the new QB_RECON_MODE/ROUNDS, exactly as _recon_w() reads
+    # QB_RECON_FILE live. Otherwise it silently runs the old trainer or round count.
+    mode = os.environ.get("QB_RECON_MODE", "perexpert")
+    rounds = int(os.environ.get("QB_RECON_ROUNDS", "3"))
+    if mode == "global":
+        if _RECON_SCALE:
+            # global mode has no scale-only path (it optimizes the surviving weight values). Reject
+            # the combination loudly rather than silently writing a full-weight repair.
+            raise ValueError("QB_RECON_MODE=global does not support QB_RECON_SCALE_ONLY")
         res = moe_recon.train_layer_global(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
-                                           steps=_RECON_STEPS, lr=_RECON_LR, rounds=_RECON_ROUNDS,
+                                           steps=_RECON_STEPS, lr=_RECON_LR, rounds=rounds,
                                            proj=_SPARSE_PROJ)
-        extra = f"mode=global rounds={_RECON_ROUNDS} agg_rel={res.get('agg_rel')}"
+        extra = f"mode=global rounds={rounds} agg_rel={res.get('agg_rel')}"
     else:
         res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
                                          steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
