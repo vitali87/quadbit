@@ -464,13 +464,22 @@ def train_layer_global(
                 contrib_start = wr.unsqueeze(1) * _sparse_expert(
                     xr, wg, wu, wd, cgu[le], cdn[le], proj
                 )
-            # target = y - sum(others at round start) = (y - combined) + this expert's own share
+            # target = y - sum(others) = (y - combined) + this expert's own share. Gauss-Seidel:
+            # `combined` is updated in place after each expert (below), so this sees the LATEST other
+            # experts, not the round-start snapshot. That damps the Jacobi overshoot that blew some
+            # layers up (agg_rel 0.58 -> 2.43): sequential updates see each other instead of all
+            # stepping against a stale residual at once.
             target = (y[tr] - combined[tr]) + contrib_start
             r = _fit_contribution(
                 xr, wr, target, wg, wu, wd, cgu[le], cdn[le], steps, lr, proj
             )
+            with torch.no_grad():
+                contrib_new = wr.unsqueeze(1) * _sparse_expert(
+                    xr, r["wg"], r["wu"], r["wd"], cgu[le], cdn[le], proj
+                )
+                combined.index_add_(0, tr, contrib_new - contrib_start)
             cur[le] = tuple(w.to(torch.bfloat16).cpu() for w in (r["wg"], r["wu"], r["wd"]))
-            del wg, wu, wd, xr, target, contrib_start
+            del wg, wu, wd, xr, target, contrib_start, contrib_new
     final_rel = ((_combined() - y).norm() / yn).item()
     agg_rel.append(round(final_rel, 4))  # final, post-training
     if final_rel < best_rel:

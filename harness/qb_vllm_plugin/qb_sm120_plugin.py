@@ -751,6 +751,7 @@ _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persist
 _RECON_IO_LOADED = None
 _RECON_W_LOADED = None
 _RECON_W_TAG = None    # tag currently cached in _RECON_W_LOADED; reload when QB_RECON_FILE changes
+_RECON_RESUMED = False  # once-per-process: reload this tag's persisted partial reconw for resume
 
 
 def _recon_io():
@@ -811,6 +812,21 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         return rw[layer_idx]
     if not (_RECON and layer_idx in _RECON_LAYERS):
         return None
+    # Preemption resume: a Modal SIGINT/SIGKILL restarts the container and re-runs recon from the
+    # first layer. Reload this tag's atomic per-layer reconw once so already-trained layers are
+    # served (and skipped below) instead of retrained from scratch -- global mode is ~12h and WILL
+    # cross a preemption. At most one in-progress layer is lost per restart.
+    global _RECON_RESUMED
+    if not _RECON_RESUMED:
+        import torch
+
+        _RECON_RESUMED = True
+        p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
+        if os.path.exists(p):
+            _RECON_W.update(torch.load(p, map_location="cpu", weights_only=True))
+            print(f"[qb_sm120] recon RESUME: preloaded {len(_RECON_W)} layers from {p}", flush=True)
+    if layer_idx in _RECON_W:
+        return _RECON_W[layer_idx]
     io = _recon_io()
     if io is None or layer_idx not in io or cn_gu is None:
         print(f"[qb_sm120] recon skip layer {layer_idx}: io/calib missing", flush=True)
