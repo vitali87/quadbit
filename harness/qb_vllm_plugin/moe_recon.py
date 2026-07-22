@@ -298,6 +298,175 @@ def train_layer_lazy(
     }
 
 
+def _fit_contribution(
+    xr: torch.Tensor,
+    wrows: torch.Tensor,
+    target: torch.Tensor,
+    wg: torch.Tensor,
+    wu: torch.Tensor,
+    wd: torch.Tensor,
+    cgu: torch.Tensor,
+    cdn: torch.Tensor,
+    steps: int,
+    lr: float,
+    proj: str,
+) -> dict:
+    """Global-QAT inner fit: drive this expert's ROUTING-WEIGHTED contribution `wrows * sparse(xr)`
+    to `target` (its share of the routed residual y - sum(other experts)), not its own dense output.
+    This is the one thing the per-expert KILL missed: a barely-routed expert (wrows~0.01) now costs
+    the loss ~none, a dominant one (wrows~0.9) dominates it, and the fit target is the aggregate the
+    NEXT layer actually sees. proj="gateup" keeps down dense-exact (deployed gateup49 policy)."""
+    gu_only = proj == "gateup"
+    mg = (served_weight(wg, cgu) != 0).float()
+    mu = (served_weight(wu, cgu) != 0).float()
+    md = torch.ones_like(wd) if gu_only else (served_weight(wd, cdn) != 0).float()
+    wd_frozen = wd.float()
+    w1 = wrows.float().unsqueeze(1)  # (rows,1) per-row routing weight
+    tn = target.norm().clamp_min(1e-6)
+
+    pg = (wg.float() * mg).requires_grad_(True)
+    pu = (wu.float() * mu).requires_grad_(True)
+    params = [pg, pu]
+    if not gu_only:
+        pd = (wd.float() * md).requires_grad_(True)
+        params.append(pd)
+
+    def _weights():
+        return pg * mg, pu * mu, wd_frozen if gu_only else pd * md
+
+    opt = torch.optim.Adam(params, lr=lr)
+    best_rel, best_w = float("inf"), None
+    for step in range(1, steps + 1):
+        wg_, wu_, wd_ = _weights()
+        pred = w1 * _sparse_expert(xr, wg_, wu_, wd_, cgu, cdn, proj)
+        loss = (pred - target).pow(2).mean() + 0.1 * (
+            1 - F.cosine_similarity(pred, target, dim=1).mean()
+        )
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if step == 1 or step % max(1, steps // 4) == 0 or step == steps:
+            with torch.no_grad():
+                wg_, wu_, wd_ = _weights()
+                p2 = w1 * _sparse_expert(xr, wg_, wu_, wd_, cgu, cdn, proj)
+                rel = ((p2 - target).norm() / tn).item()
+            if rel < best_rel:
+                best_rel = rel
+                best_w = tuple(w.detach().clone() for w in (wg_, wu_, wd_))
+    if best_w is None:
+        with torch.no_grad():
+            best_w = tuple(w.detach() for w in _weights())
+    return {"wg": best_w[0], "wu": best_w[1], "wd": best_w[2], "rel": round(best_rel, 4)}
+
+
+def train_layer_global(
+    io: dict,
+    get_expert,
+    cgu: torch.Tensor,
+    cdn: torch.Tensor,
+    inter: int,
+    dev: torch.device,
+    steps: int = 200,
+    lr: float = 1e-4,
+    rounds: int = 3,
+    proj: str = "both",
+) -> dict:
+    """GLOBAL MoE QAT: fit the ROUTER-WEIGHTED top-k combine to the dumped dense aggregate y, not
+    each expert to its own dense output (the per-expert KILL's objective). Loss is on what the next
+    layer sees: sum_k tw_k * sparse_expert_{tid_k}(x) vs teacher y[N,H].
+
+    Memory: joint backward over every routed expert of a layer would resident-stack all E (~13 GiB
+    bf16, ~26 GiB fp32 + Adam) and OOM the near-full serving GPU. So this runs Gauss-Seidel/Jacobi
+    block coordinate descent instead: each expert is fit to its share of the routed residual
+    (y - sum of the OTHER experts, held at round-start), with strictly ONE expert resident on GPU at
+    a time (same peak as train_layer_lazy). `combined` is precomputed once per round by looping
+    experts one at a time, so a mid-write kill or OOM never stacks E. Repeat `rounds` sweeps; the
+    residual refreshes each round so the fixed point is the joint routed-aggregate optimum.
+
+    io needs x[N,H], tid[N,K] (LOCAL expert ids, -1 = off-rank), tw[N,K] (routing weights). The
+    dense teacher y is BUILT here as the router-weighted combine of the DENSE experts on dumped x
+    (NOT io["y"]: the reio2 sparse-trajectory dump stores the sparse block out, marked unused). This
+    is the correct serve-consistent global target: given the sparse model's actual routing/inputs,
+    match what the dense experts would produce under that same routing, per EP rank (the dumped y is
+    the per-rank partial, so each rank fits its own experts to its own partial teacher). Returns
+    {le: (w13form[2I,H], w2form[H,I]) bf16 CPU} for routed experts plus the global aggregate rel per
+    round (agg_rel, the metric the per-expert rel could not move)."""
+    x = io["x"].to(dev).float()
+    tid = io["tid"].to(dev).long()
+    tw = io["tw"].to(dev).float()
+    n, k = tid.shape
+    h = x.shape[1]
+    tok = torch.arange(n, device=dev).repeat_interleave(k)
+    flat_e = tid.reshape(-1)
+    flat_w = tw.reshape(-1)
+    keep = flat_e >= 0
+    tok, flat_e, flat_w = tok[keep], flat_e[keep], flat_w[keep]
+
+    routed = sorted(e for e in torch.unique(flat_e).tolist() if (flat_e == e).sum() >= 8)
+
+    def _rows(le):
+        m = flat_e == le
+        return tok[m], flat_w[m]
+
+    # cur[le] = dense-dequant (wg,wu,wd) bf16 on CPU; served re-applied each forward. Loaded once.
+    # Teacher y = DENSE combine (built from the same dense weights, one expert at a time so peak GPU
+    # scratch stays a single expert), NOT the dumped sparse y.
+    cur, y = {}, torch.zeros(n, h, device=dev)
+    for le in routed:
+        wg, wu, wd = get_expert(le)
+        wgf, wuf, wdf = wg.float(), wu.float(), wd.float()
+        tr, wr = _rows(le)
+        with torch.no_grad():
+            out = _dense_expert(x[tr], wgf, wuf, wdf)
+        y.index_add_(0, tr, wr.unsqueeze(1) * out)
+        cur[le] = tuple(w.to(torch.bfloat16).cpu() for w in (wgf, wuf, wdf))
+        del wg, wu, wd, wgf, wuf, wdf, out
+
+    def _combined():
+        c = torch.zeros(n, h, device=dev)
+        for le in routed:
+            wg, wu, wd = (w.to(dev).float() for w in cur[le])
+            tr, wr = _rows(le)
+            out = _sparse_expert(x[tr], wg, wu, wd, cgu[le], cdn[le], proj)
+            c.index_add_(0, tr, wr.unsqueeze(1) * out)
+            del wg, wu, wd, out
+        return c
+
+    yn = y.norm().clamp_min(1e-6)
+    agg_rel = []
+    for _ in range(rounds):
+        combined = _combined()  # round-start aggregate (all experts), no_grad
+        agg_rel.append(round(((combined - y).norm() / yn).item(), 4))
+        for le in routed:
+            tr, wr = _rows(le)
+            xr = x[tr]
+            wg, wu, wd = (w.to(dev).float() for w in cur[le])
+            with torch.no_grad():
+                contrib_start = wr.unsqueeze(1) * _sparse_expert(
+                    xr, wg, wu, wd, cgu[le], cdn[le], proj
+                )
+            # target = y - sum(others at round start) = (y - combined) + this expert's own share
+            target = (y[tr] - combined[tr]) + contrib_start
+            r = _fit_contribution(
+                xr, wr, target, wg, wu, wd, cgu[le], cdn[le], steps, lr, proj
+            )
+            cur[le] = tuple(w.to(torch.bfloat16).cpu() for w in (r["wg"], r["wu"], r["wd"]))
+            del wg, wu, wd, xr, target, contrib_start
+    agg_rel.append(round(((_combined() - y).norm() / yn).item(), 4))  # final, post-training
+
+    repaired = {
+        le: (torch.cat([wg, wu], 0), wd)  # already bf16 CPU (w13form[2I,H], w2form[H,I])
+        for le, (wg, wu, wd) in cur.items()
+    }
+    return {
+        "repaired": repaired,
+        "n_experts": len(routed),
+        # global routed-aggregate rel per round + final; [0] is one-shot, last is trained
+        "agg_rel": agg_rel,
+        "rel_mean": agg_rel[-1],
+    }
+
+
 def _selfcheck() -> None:
     # tiny CPU check: served_weight is 2:4 (half the pairs zero), STE keeps the forward value + a
     # gradient, and a per-expert fit drives the dense-match relative error down.
@@ -364,9 +533,56 @@ def _selfcheck() -> None:
     w13f, w2f = lz["repaired"][le0]
     assert w13f.shape == (2 * inter, h) and w2f.shape == (h, inter), f"bad shapes {w13f.shape}"
     assert w13f.is_cpu and w2f.is_cpu, "repaired weights must be on CPU"
+    # GLOBAL MoE QAT (train_layer_global): fit the ROUTER-WEIGHTED combine to the dense aggregate y.
+    # Build a routed synthetic (top-2 of 4 experts, correlated tokens), so the dense combine y is
+    # genuinely approximable by repaired 2:4 survivors. Two assertions that FAIL if the loop were
+    # secretly per-expert: (1) the global AGGREGATE rel must fall across rounds; (2) global beats
+    # per-expert ON THE AGGREGATE (its home metric) - the whole reason to fit the combine.
+    torch.manual_seed(1)
+    h2, inter2, ne2, nt, kk = 256, 128, 4, 384, 2
+    w13g = torch.randn(ne2, 2 * inter2, h2) * 0.05
+    w2g = torch.randn(ne2, h2, inter2) * 0.05
+    xg = (torch.randn(nt, 8) @ torch.randn(8, h2)) * (8**-0.5)
+    logits = xg @ torch.randn(h2, ne2)
+    tw_all, tid_g = torch.softmax(logits, 1).topk(kk, dim=1)
+    tw_g = tw_all / tw_all.sum(1, keepdim=True)  # renormalized top-k weights (as vLLM routes)
+    with torch.no_grad():
+        yg = torch.zeros(nt, h2)
+        for t in range(nt):
+            for j in range(kk):
+                e = tid_g[t, j].item()
+                yg[t] += tw_g[t, j] * _dense_expert(
+                    xg[t : t + 1], w13g[e, :inter2], w13g[e, inter2:], w2g[e]
+                )[0]
+    io_g = {"x": xg, "tid": tid_g, "tw": tw_g, "y": yg}
+    ge = lambda le: (w13g[le, :inter2], w13g[le, inter2:], w2g[le])  # noqa: E731
+    cn_gu2, cn_dn2 = xg.new_ones(ne2, h2), xg.new_ones(ne2, inter2)
+    gl = train_layer_global(io_g, ge, cn_gu2, cn_dn2, inter2, xg.device,
+                            steps=120, lr=5e-4, rounds=3)
+    assert gl["agg_rel"][-1] < gl["agg_rel"][0], f"global agg rel did not fall: {gl['agg_rel']}"
+
+    def _agg_rel(repaired):
+        # aggregate rel of a repaired-expert dict against the dense teacher yg (sparse combine).
+        c = torch.zeros(nt, h2)
+        for t in range(nt):
+            for j in range(kk):
+                e = tid_g[t, j].item()
+                w13f, w2f = repaired[e]
+                c[t] += tw_g[t, j] * _sparse_expert(
+                    xg[t : t + 1], w13f[:inter2].float(), w13f[inter2:].float(),
+                    w2f.float(), cn_gu2[e], cn_dn2[e],
+                )[0]
+        return ((c - yg).norm() / yg.norm().clamp_min(1e-6)).item()
+
+    pe = train_layer_lazy(io_g, ge, cn_gu2, cn_dn2, inter2, xg.device, steps=120, lr=5e-4)
+    g_agg, p_agg = gl["agg_rel"][-1], _agg_rel(pe["repaired"])
+    assert g_agg <= p_agg + 1e-3, f"global {g_agg:.4f} not <= per-expert {p_agg:.4f} on aggregate"
+    win = "WINS" if g_agg <= p_agg else "LOSES"
     print(
         f"selfcheck OK: 2:4 kept={nz:.3f}, loss {l0:.5f}->{l1:.5f}, "
-        f"rel {tr[0][1]:.3f}->{tr[-1][1]:.3f}, lazy {lz['n_experts']}exp rel={lz['rel_mean']}"
+        f"rel {tr[0][1]:.3f}->{tr[-1][1]:.3f}, lazy {lz['n_experts']}exp rel={lz['rel_mean']}\n"
+        f"  global-QAT: agg_rel {gl['agg_rel']} (one-shot {gl['agg_rel'][0]:.3f} -> "
+        f"trained {g_agg:.3f}); per-expert aggregate {p_agg:.3f} -> global {win}"
     )
 
 

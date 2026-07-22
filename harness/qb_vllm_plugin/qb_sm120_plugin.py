@@ -745,6 +745,10 @@ _RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(","
 _RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
 _RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
 _RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
+# QB_RECON_MODE: "perexpert" (default, train_layer_lazy: fit each expert to its own dense output) or
+# "global" (train_layer_global: fit the router-weighted top-k combine to the dumped dense aggregate).
+_RECON_MODE = os.environ.get("QB_RECON_MODE", "perexpert")
+_RECON_ROUNDS = int(os.environ.get("QB_RECON_ROUNDS", "3"))  # global-mode coordinate-descent sweeps
 _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
 _RECON_IO_LOADED = None
 _RECON_W_LOADED = None
@@ -823,13 +827,20 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
         return wg, wu, wd
 
-    res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
-                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
-                                     proj=_SPARSE_PROJ)
+    if _RECON_MODE == "global":
+        res = moe_recon.train_layer_global(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
+                                           steps=_RECON_STEPS, lr=_RECON_LR, rounds=_RECON_ROUNDS,
+                                           proj=_SPARSE_PROJ)
+        extra = f"mode=global rounds={_RECON_ROUNDS} agg_rel={res.get('agg_rel')}"
+    else:
+        res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
+                                         steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
+                                         proj=_SPARSE_PROJ)
+        extra = f"scale={int(_RECON_SCALE)}"
     _RECON_W[layer_idx] = res["repaired"]
     dump_recon_w()
     print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
-          f"steps={_RECON_STEPS} scale={int(_RECON_SCALE)}", flush=True)
+          f"steps={_RECON_STEPS} {extra}", flush=True)
     return res["repaired"]
 
 
