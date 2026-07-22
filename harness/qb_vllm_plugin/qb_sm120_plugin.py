@@ -744,7 +744,7 @@ _RECON_IO = os.environ.get("QB_RECON_IO", "")     # dump tag to load teacher I/O
 _RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(",") if x.strip()}
 _RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
 _RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
-_RECON_SCALE = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
+# QB_RECON_SCALE_ONLY is read LIVE at dispatch in _recon_weights (warm-worker safe), not cached here.
 # QB_RECON_MODE ("perexpert" default -> train_layer_lazy; "global" -> train_layer_global) and
 # QB_RECON_ROUNDS are read LIVE at dispatch in _recon_weights (warm-worker safe), not cached here.
 _RECON_W = {}          # layer_idx -> {"w13","w2"} repaired (this rank), persisted for serving
@@ -825,13 +825,16 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         wd = _dequant_nvfp4_expert(w2[le], w2s[le], w2s2[le])
         return wg, wu, wd
 
-    # Read mode/rounds LIVE (not the import-time globals): a warm worker reused across a per-expert
-    # run then a global run must pick up the new QB_RECON_MODE/ROUNDS, exactly as _recon_w() reads
-    # QB_RECON_FILE live. Otherwise it silently runs the old trainer or round count.
+    # Read mode/rounds/scale LIVE (not the import-time globals): a warm worker reused across a
+    # per-expert run then a global run must pick up the new QB_RECON_MODE/ROUNDS/SCALE_ONLY, exactly
+    # as _recon_w() reads QB_RECON_FILE live. Reading scale live too keeps the guard consistent with
+    # mode -- else it could gate on stale scale state and either allow global+scale or reject a valid
+    # non-scale run.
     mode = os.environ.get("QB_RECON_MODE", "perexpert")
     rounds = int(os.environ.get("QB_RECON_ROUNDS", "3"))
+    scale_only = os.environ.get("QB_RECON_SCALE_ONLY") == "1"
     if mode == "global":
-        if _RECON_SCALE:
+        if scale_only:
             # global mode has no scale-only path (it optimizes the surviving weight values). Reject
             # the combination loudly rather than silently writing a full-weight repair.
             raise ValueError("QB_RECON_MODE=global does not support QB_RECON_SCALE_ONLY")
@@ -841,9 +844,9 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         extra = f"mode=global rounds={rounds} agg_rel={res.get('agg_rel')}"
     else:
         res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
-                                         steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
+                                         steps=_RECON_STEPS, lr=_RECON_LR, scale_only=scale_only,
                                          proj=_SPARSE_PROJ)
-        extra = f"scale={int(_RECON_SCALE)}"
+        extra = f"scale={int(scale_only)}"
     _RECON_W[layer_idx] = res["repaired"]
     dump_recon_w()
     print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
