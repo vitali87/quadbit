@@ -739,7 +739,8 @@ def dump_recon_io():
 # /cache/qb_reconw_{tag}_dev{rank}.pt. QB_RECON_FILE=<tag> (in a later run) reloads them in pack().
 _RECON = os.environ.get("QB_RECON") == "1"
 _RECON_IO = os.environ.get("QB_RECON_IO", "")     # dump tag to load teacher I/O from
-_RECON_FILE = os.environ.get("QB_RECON_FILE", "")  # serving: reload repaired weights from this tag
+# QB_RECON_FILE (serving: reload repaired weights) is read LIVE in _recon_w(), not cached here, so a
+# warm worker that clears it between a load-only run and a training run does not serve a stale tag.
 _RECON_LAYERS = {int(x) for x in os.environ.get("QB_RECON_LAYERS", "").split(",") if x.strip()}
 _RECON_STEPS = int(os.environ.get("QB_RECON_STEPS", "200"))
 _RECON_LR = float(os.environ.get("QB_RECON_LR", "0.001"))
@@ -761,11 +762,19 @@ def _recon_io():
 
 
 def _recon_w():
+    # Read QB_RECON_FILE LIVE, not the import-time _RECON_FILE global: on a warm worker that first
+    # imported under a load-only run, the caller clearing the env var must actually stop the reload,
+    # else a later training run loads the stale checkpoint and skips the requested repair. An empty
+    # env also drops any cached dict so the same process can switch load-tag -> train cleanly.
     global _RECON_W_LOADED
-    if _RECON_W_LOADED is None and _RECON_FILE:
+    tag = os.environ.get("QB_RECON_FILE", "")
+    if not tag:
+        _RECON_W_LOADED = None
+        return None
+    if _RECON_W_LOADED is None:
         import torch
 
-        p = f"/cache/qb_reconw_{_RECON_FILE}_dev{torch.cuda.current_device()}.pt"
+        p = f"/cache/qb_reconw_{tag}_dev{torch.cuda.current_device()}.pt"
         _RECON_W_LOADED = torch.load(p, map_location="cpu", weights_only=True)
     return _RECON_W_LOADED
 
