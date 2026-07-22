@@ -444,9 +444,18 @@ def train_layer_global(
 
     yn = y.norm().clamp_min(1e-6)
     agg_rel = []
+    # Keep the best-aggregate state, not the final: Jacobi coordinate descent (all experts update
+    # against round-start residuals) can OVERSHOOT, so a later round sometimes raises the aggregate
+    # (seen in-model: agg_rel 0.316 -> 0.192 -> 0.180 -> 0.241, round 3 worse). Serving the final
+    # would ship a worse-than-achieved repair; snapshot cur whenever the aggregate improves. cur[le]
+    # is reassigned (never mutated in place) each round, so a shallow dict copy is a valid snapshot.
+    best_rel, best = float("inf"), None
     for _ in range(rounds):
         combined = _combined()  # round-start aggregate (all routed experts), no_grad
-        agg_rel.append(round(((combined - y).norm() / yn).item(), 4))
+        rel0 = ((combined - y).norm() / yn).item()
+        agg_rel.append(round(rel0, 4))
+        if rel0 < best_rel:  # captures the state entering this round (prior rounds' result)
+            best_rel, best = rel0, dict(cur)
         for le in trainable:
             tr, wr = _rows(le)
             xr = x[tr]
@@ -462,20 +471,25 @@ def train_layer_global(
             )
             cur[le] = tuple(w.to(torch.bfloat16).cpu() for w in (r["wg"], r["wu"], r["wd"]))
             del wg, wu, wd, xr, target, contrib_start
-    agg_rel.append(round(((_combined() - y).norm() / yn).item(), 4))  # final, post-training
+    final_rel = ((_combined() - y).norm() / yn).item()
+    agg_rel.append(round(final_rel, 4))  # final, post-training
+    if final_rel < best_rel:
+        best_rel, best = final_rel, dict(cur)
 
     # Only the UPDATED experts are packed; rare (<8-route) experts kept their sparse weights and are
     # left for the caller to dense-dequant at pack time (they were fixed teacher/aggregate terms).
     repaired = {
-        le: (torch.cat([cur[le][0], cur[le][1]], 0), cur[le][2])  # bf16 CPU (w13form, w2form)
+        le: (torch.cat([best[le][0], best[le][1]], 0), best[le][2])  # bf16 CPU (w13form, w2form)
         for le in trainable
     }
     return {
         "repaired": repaired,
         "n_experts": len(trainable),
-        # global routed-aggregate rel per round + final; [0] is one-shot, last is trained
+        # routed-aggregate rel per round + final; [0] is one-shot, last is trained. The SERVED state
+        # is the best of these (best_agg), which may not be the final round.
         "agg_rel": agg_rel,
-        "rel_mean": agg_rel[-1],
+        "best_agg": round(best_rel, 4),
+        "rel_mean": round(best_rel, 4),  # the served (best-round) aggregate rel
     }
 
 
@@ -578,7 +592,8 @@ def _selfcheck() -> None:
                                 steps=120, lr=5e-4, rounds=3)
     finally:
         torch.set_default_dtype(_saved_dtype)
-    assert gl["agg_rel"][-1] < gl["agg_rel"][0], f"global agg rel did not fall: {gl['agg_rel']}"
+    assert gl["best_agg"] < gl["agg_rel"][0], f"global agg rel did not fall: {gl['agg_rel']}"
+    assert gl["best_agg"] <= min(gl["agg_rel"]), "best_agg must be the min of the trajectory"
 
     def _agg_rel(repaired):
         # aggregate rel of a repaired-expert dict against the dense teacher yg (sparse combine).
@@ -594,7 +609,8 @@ def _selfcheck() -> None:
         return ((c - yg).norm() / yg.norm().clamp_min(1e-6)).item()
 
     pe = train_layer_lazy(io_g, ge, cn_gu2, cn_dn2, inter2, xg.device, steps=120, lr=5e-4)
-    g_agg, p_agg = gl["agg_rel"][-1], _agg_rel(pe["repaired"])
+    # compare SERVED states: _agg_rel recomputes from each trainer's repaired (best-round) weights
+    g_agg, p_agg = _agg_rel(gl["repaired"]), _agg_rel(pe["repaired"])
     assert g_agg <= p_agg + 1e-3, f"global {g_agg:.4f} not <= per-expert {p_agg:.4f} on aggregate"
     win = "WINS" if g_agg <= p_agg else "LOSES"
     print(
