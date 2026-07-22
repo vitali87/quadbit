@@ -981,8 +981,8 @@ specific move is retargeting the mask to pair-granular 2:4 for the FP4 sparse pa
   end-to-end DeepSeek-V4-Flash serving is ecosystem-blocked on SM120 (Section 10), decode latency for
   this model could not be exercised regardless.
 - **Layerwise QAT does not recover the MoE gate/up tax; SparseGPT/distillation at MoE scale untried**
-  (Section 10.2). We ran STE-QAT at MoE scale in three forms -- per-expert own-output, and global
-  router-weighted combine fit to the dense routed aggregate -- and all fail to beat the one-shot sparse
+  (Section 10.2). We ran STE-QAT at MoE scale in two forms -- per-expert own-output, and global
+  router-weighted combine fit to the dense routed aggregate -- and both fail to beat the one-shot sparse
   baseline (.7332 and .7259 vs .7363 on the 8-task battery), the tightest reconstruction giving the worst
   downstream; full-stack through-kernel QAT on dense Llama-3.1-8B is negative too (0.3967 < 0.4333). The
   gate/up 2:4 floor is a real capability property, avoided by structural placement, not repaired. What
