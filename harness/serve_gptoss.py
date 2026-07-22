@@ -270,11 +270,11 @@ def marlin_probe() -> None:
 
 @app.function(gpu="RTX-PRO-6000", timeout=20 * MIN, volumes={"/cache": vol})
 def bench_vs_marlin(iters: int = 30, mrows: int = 8192) -> None:
-    M = mrows
     """(b) DEFINITIVE real-Marlin GEMM comparison, same invocation: our 2:4-sparse-FP4 GEMM vs vLLM's real
     Marlin W4A16 GEMM (_custom_ops.marlin_gemm) at gpt-oss/GLM/DeepSeek gate_up dims [M, N=2I, K=H]. Same
     M/N/K/FLOPs. Marlin = the actual tuned kernel Marlin serves (bf16 mma after 4-bit dequant), so this
     settles whether our GEMM really beats Marlin's, not just its bf16 ceiling. No clock noise (interleaved)."""
+    M = mrows
     import ctypes
     import time
 
