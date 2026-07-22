@@ -411,7 +411,10 @@ def train_layer_global(
     # cur[le] = dense-dequant (wg,wu,wd) bf16 on CPU; served re-applied each forward. Loaded once.
     # Teacher y = DENSE combine (built from the same dense weights, one expert at a time so peak GPU
     # scratch stays a single expert), NOT the dumped sparse y.
-    cur, y = {}, torch.zeros(n, h, device=dev)
+    # Explicit float32: the vLLM worker sets torch default dtype to bfloat16, so a bare
+    # torch.zeros(n, h) would be bf16 and index_add of the float32 expert outputs raises a dtype
+    # mismatch. All internal accumulators are float32 to match _dense_expert / _sparse_expert.
+    cur, y = {}, torch.zeros(n, h, device=dev, dtype=torch.float32)
     for le in routed:
         wg, wu, wd = get_expert(le)
         wgf, wuf, wdf = wg.float(), wu.float(), wd.float()
@@ -423,7 +426,7 @@ def train_layer_global(
         del wg, wu, wd, wgf, wuf, wdf, out
 
     def _combined():
-        c = torch.zeros(n, h, device=dev)
+        c = torch.zeros(n, h, device=dev, dtype=torch.float32)
         for le in routed:
             wg, wu, wd = (w.to(dev).float() for w in cur[le])
             tr, wr = _rows(le)
@@ -557,13 +560,20 @@ def _selfcheck() -> None:
     io_g = {"x": xg, "tid": tid_g, "tw": tw_g, "y": yg}
     ge = lambda le: (w13g[le, :inter2], w13g[le, inter2:], w2g[le])  # noqa: E731
     cn_gu2, cn_dn2 = xg.new_ones(ne2, h2), xg.new_ones(ne2, inter2)
-    gl = train_layer_global(io_g, ge, cn_gu2, cn_dn2, inter2, xg.device,
-                            steps=120, lr=5e-4, rounds=3)
+    # Run under a bfloat16 default dtype, mirroring the vLLM worker: catches the index_add dtype
+    # mismatch (bf16 default accumulators vs float32 expert outputs) that only bites in-model.
+    _saved_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        gl = train_layer_global(io_g, ge, cn_gu2, cn_dn2, inter2, xg.device,
+                                steps=120, lr=5e-4, rounds=3)
+    finally:
+        torch.set_default_dtype(_saved_dtype)
     assert gl["agg_rel"][-1] < gl["agg_rel"][0], f"global agg rel did not fall: {gl['agg_rel']}"
 
     def _agg_rel(repaired):
         # aggregate rel of a repaired-expert dict against the dense teacher yg (sparse combine).
-        c = torch.zeros(nt, h2)
+        c = torch.zeros(nt, h2, dtype=torch.float32)
         for t in range(nt):
             for j in range(kk):
                 e = tid_g[t, j].item()
