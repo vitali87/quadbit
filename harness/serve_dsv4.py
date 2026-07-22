@@ -3245,7 +3245,9 @@ def glm_downstream(
 
 @app.function(
     gpu="RTX-PRO-6000:2",
-    timeout=360 * MIN,
+    # train (300 steps x 21 layers ~5.8h) + in-process eval must fit ONE job: the 6h window timed
+    # out during eval warmup and the SIGKILL corrupted the mid-write reconw dump.
+    timeout=720 * MIN,
     volumes={"/cache": vol},
     secrets=[modal.Secret.from_name("huggingface")],
 )
@@ -3259,22 +3261,39 @@ def recon(
     scale_only: bool = False,
     limit: int = 400,
     max_len: int = 2048,
+    sparse_proj: str = "both",
+    lr: float = 1e-4,
+    recon_file: str = "",
 ) -> None:
-    """A3 layerwise repair: QB_RECON trains the listed sparse MoE layers vs the dumped teacher I/O
+    """Layerwise repair: QB_RECON trains the listed sparse MoE layers vs the dumped teacher I/O
     during load, packs the repaired weights, then runs downstream eval on the repaired model in the
-    same job. Repaired weights persist to /cache/qb_reconw_{tag}_dev*.pt for later serving."""
+    same job. Repaired weights persist to /cache/qb_reconw_{tag}_dev*.pt for later serving.
+
+    sparse_proj="gateup" isolates the gate_up tax (down stays dense-exact, only gate_up trained) =
+    the untried config: A3 ran both-proj per-expert at lr=1e-3 (which the synthetic probe showed
+    DIVERGES under the FP4 STE). Default lr=1e-4 is the probe-validated stable rate.
+
+    recon_file=<tag> switches to load-only eval: reload the already-trained repaired weights from
+    /cache/qb_reconw_{recon_file}_dev*.pt (no training), then run downstream. Use to finish the eval
+    when a train+eval run trained all layers but hit the function timeout before eval (recon at
+    steps=300 x 21 layers is ~5.8h, leaving no room in a 6h window)."""
     import os
 
     import moe_recon
 
+    if recon_file:
+        os.environ["QB_RECON_FILE"] = recon_file  # load-only: reload trained weights, skip training
+        _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len, sparse_proj)
+        return
     moe_recon._selfcheck()  # fail fast on a trainer logic bug before the 8-min model load
     os.environ["QB_RECON"] = "1"
     os.environ["QB_RECON_IO"] = recon_io
     os.environ["QB_RECON_LAYERS"] = recon_layers
     os.environ["QB_RECON_STEPS"] = str(steps)
+    os.environ["QB_RECON_LR"] = str(lr)
     if scale_only:
         os.environ["QB_RECON_SCALE_ONLY"] = "1"
-    _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len)
+    _downstream_impl(2, tag, "sparse", dense_layers, calib_file, limit, max_len, sparse_proj)
 
 
 @app.function(

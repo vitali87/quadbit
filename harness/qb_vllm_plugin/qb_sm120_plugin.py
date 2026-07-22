@@ -771,12 +771,20 @@ def _recon_w():
 
 
 def dump_recon_w():
+    import os
+
     import torch
 
     if not _RECON_W:
         return 0
+    # Atomic: write a temp then os.replace, so a mid-write interruption (e.g. a Modal timeout
+    # SIGKILL between the every-layer re-dumps) can never leave a truncated zip. A truncated
+    # torch.save loses the zip central directory (written last) -> "failed finding central
+    # directory" on reload.
+    p = f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt"
     try:
-        torch.save(_RECON_W, f"/cache/qb_reconw_{_RUNTAG}_dev{torch.cuda.current_device()}.pt")
+        torch.save(_RECON_W, p + ".tmp")
+        os.replace(p + ".tmp", p)
     except Exception:  # noqa: BLE001
         pass
     return len(_RECON_W)
@@ -806,7 +814,8 @@ def _recon_weights(layer, layer_idx, i, e, w13, w13s, w13s2, w2, w2s, w2s2, cn_g
         return wg, wu, wd
 
     res = moe_recon.train_layer_lazy(io[layer_idx], get_expert, cn_gu, cn_dn, i, dev,
-                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE)
+                                     steps=_RECON_STEPS, lr=_RECON_LR, scale_only=_RECON_SCALE,
+                                     proj=_SPARSE_PROJ)
     _RECON_W[layer_idx] = res["repaired"]
     dump_recon_w()
     print(f"[qb_sm120] recon L{layer_idx}: {res['n_experts']}exp rel={res['rel_mean']} "
