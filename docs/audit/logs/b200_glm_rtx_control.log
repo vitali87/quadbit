@@ -440,3 +440,255 @@ WARNING 07-23 23:14:11 [system_utils.py:157] We must use the `spawn` multiproces
 (EngineCore pid=77) INFO 07-23 23:20:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
 (Worker_TP0_EP0 pid=106) INFO 07-23 23:20:30 [backends.py:378] Cache the graph of compile range (1, 2048) for later use
 (EngineCore pid=77) INFO 07-23 23:21:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:21:45 [backends.py:393] Compiling a graph for compile range (1, 2048) takes 101.04 s
+(EngineCore pid=77) INFO 07-23 23:22:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:23:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:24:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:25:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:26:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:27:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:28:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:29:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:30:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:31:12 [decorators.py:708] saved AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/00374068c600107dbc1d41feadc316fa7658f8d0ddcef2554af7083c1563ef04/rank_0_0/model
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:31:12 [monitor.py:53] torch.compile took 705.03 s in total
+(EngineCore pid=77) INFO 07-23 23:31:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:32:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:33:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:34:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:35:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:36:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(EngineCore pid=77) INFO 07-23 23:37:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:37:30 [monitor.py:81] Initial profiling/warmup run took 378.22 s
+(Worker_TP4_EP4 pid=110) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP5_EP5 pid=111) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP1_EP1 pid=107) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:38:23 [indexer.py:276] DSA indexer decode path: use_flattening=False (next_n=1, use_fp4_indexer_cache=False)
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP2_EP2 pid=108) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP7_EP7 pid=113) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP6_EP6 pid=112) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP3_EP3 pid=109) INFO 07-23 23:38:23 [gpu_model_runner.py:6483] Profiling CUDA graph memory: PIECEWISE=3 (largest=4), FULL=2 (largest=2)
+(Worker_TP3_EP3 pid=109) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=109 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP0_EP0 pid=106) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=106 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP7_EP7 pid=113) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=113 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP1_EP1 pid=107) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=107 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP2_EP2 pid=108) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=108 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP4_EP4 pid=110) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=110 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP5_EP5 pid=111) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=111 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP6_EP6 pid=112) [qb_sm120] indexer decode paged-mqa bf16 ACTIVE pid=112 q=(2, 1, 32, 128)/torch.float8_e4m3fn kv_cache=(4, 64, 1, 132)/torch.uint8 ctx=(2, 1) bt=(2, 32)
+(Worker_TP3_EP3 pid=109) [qb_sm120] torch top-k ACTIVE pid=109 logits=(2, 2048) topk=2048
+(Worker_TP7_EP7 pid=113) [qb_sm120] torch top-k ACTIVE pid=113 logits=(2, 2048) topk=2048
+(Worker_TP1_EP1 pid=107) [qb_sm120] torch top-k ACTIVE pid=107 logits=(2, 2048) topk=2048
+(Worker_TP0_EP0 pid=106) [qb_sm120] torch top-k ACTIVE pid=106 logits=(2, 2048) topk=2048
+(Worker_TP2_EP2 pid=108) [qb_sm120] torch top-k ACTIVE pid=108 logits=(2, 2048) topk=2048
+(Worker_TP5_EP5 pid=111) [qb_sm120] torch top-k ACTIVE pid=111 logits=(2, 2048) topk=2048
+(Worker_TP4_EP4 pid=110) [qb_sm120] torch top-k ACTIVE pid=110 logits=(2, 2048) topk=2048
+(Worker_TP6_EP6 pid=112) [qb_sm120] torch top-k ACTIVE pid=112 logits=(2, 2048) topk=2048
+(EngineCore pid=77) INFO 07-23 23:38:27 [shm_broadcast.py:705] No available shared memory broadcast block found in 60 seconds. This typically happens when some processes are hanging or doing some time-consuming work (e.g. compilation, weight/kv cache quantization).
+(Worker_TP7_EP7 pid=113) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP5_EP5 pid=111) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP1_EP1 pid=107) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP2_EP2 pid=108) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP6_EP6 pid=112) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP3_EP3 pid=109) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP4_EP4 pid=110) INFO 07-23 23:38:50 [gpu_model_runner.py:6588] Estimated CUDA graph memory: 0.30 GiB total
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:38:51 [gpu_worker.py:508] Available KV cache memory: 31.64 GiB
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP5_EP5 pid=111) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP1_EP1 pid=107) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP7_EP7 pid=113) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP4_EP4 pid=110) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP2_EP2 pid=108) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP6_EP6 pid=112) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(Worker_TP3_EP3 pid=109) INFO 07-23 23:38:51 [gpu_worker.py:523] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.9168 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9232. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(EngineCore pid=77) INFO 07-23 23:38:51 [kv_cache_utils.py:2146] GPU KV cache size: 629,760 tokens
+(EngineCore pid=77) INFO 07-23 23:38:51 [kv_cache_utils.py:2147] Maximum concurrency for 2,048 tokens per request: 307.50x
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:38:51 [flashinfer_sparse_mla_warmup.py:124] Autotuning FlashInfer SM120 sparse MLA DSv3.2 decode with cache: /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:38:51,939 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP3_EP3 pid=109) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=109 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP1_EP1 pid=107) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=107 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP2_EP2 pid=108) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=108 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP5_EP5 pid=111) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=111 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP7_EP7 pid=113) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=113 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP0_EP0 pid=106) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=106 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP4_EP4 pid=110) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=110 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP6_EP6 pid=112) [qb_sm120] indexer prefill mqa bf16 ACTIVE pid=112 q=(15, 32, 128)/torch.float8_e4m3fn k=(16, 128)/torch.float8_e4m3fn w=(15, 32)
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv3_2:   0%|          | 0/6 [00:00<?, ?profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv3_2:  17%|█▋        | 1/6 [00:06<00:30,  6.19s/profile]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv3_2:  67%|██████▋   | 4/6 [00:06<00:02,  1.21s/profile]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv3_2: 100%|██████████| 6/6 [00:06<00:00,  1.42profile/s]
+[1A[AutoTuner]: Tuning sparse_mla_sm120_decode_dsv3_2: 100%|██████████| 6/6 [00:06<00:00,  1.07s/profile]
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1:   0%|          | 0/3 [00:00<?, ?profile/s]2026-07-23 23:38:59,696 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 4 unsupported tactic(s) for trtllm::fused_moe::gemm1 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1:  33%|███▎      | 1/3 [00:00<00:01,  1.34profile/s]2026-07-23 23:38:59,777 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 4 unsupported tactic(s) for trtllm::fused_moe::gemm1 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:38:59,873 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 4 unsupported tactic(s) for trtllm::fused_moe::gemm1 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1: 100%|██████████| 3/3 [00:00<00:00,  3.86profile/s]
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm1: 100%|██████████| 3/3 [00:00<00:00,  3.25profile/s]
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2:   0%|          | 0/3 [00:00<?, ?profile/s]2026-07-23 23:39:00,076 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 10 unsupported tactic(s) for trtllm::fused_moe::gemm2 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2:  33%|███▎      | 1/3 [00:00<00:00,  5.04profile/s]2026-07-23 23:39:00,247 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 10 unsupported tactic(s) for trtllm::fused_moe::gemm2 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2:  67%|██████▋   | 2/3 [00:00<00:00,  5.49profile/s]2026-07-23 23:39:00,433 - INFO - autotuner.py:1351 - flashinfer.jit: [Autotuner]: Skipped 10 unsupported tactic(s) for trtllm::fused_moe::gemm2 (enable debug logs to see details)
+(Worker_TP0_EP0 pid=106) 
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2: 100%|██████████| 3/3 [00:00<00:00,  5.44profile/s]
+[1A[AutoTuner]: Tuning trtllm::fused_moe::gemm2: 100%|██████████| 3/3 [00:00<00:00,  5.40profile/s]
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:39:01,741 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:39:01,788 - INFO - autotuner.py:1808 - flashinfer.jit: [Autotuner]: Saved 12 configs to /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json (12 new, 0 from previous config)
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:39:01,838 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 0 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP3_EP3 pid=109) 2026-07-23 23:39:01,841 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP1_EP1 pid=107) 2026-07-23 23:39:01,841 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP3_EP3 pid=109) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 3 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP1_EP1 pid=107) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 1 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP6_EP6 pid=112) 2026-07-23 23:39:01,842 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP6_EP6 pid=112) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 6 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP5_EP5 pid=111) 2026-07-23 23:39:01,842 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP4_EP4 pid=110) 2026-07-23 23:39:01,842 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:39:01,842 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP2_EP2 pid=108) 2026-07-23 23:39:01,842 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP7_EP7 pid=113) 2026-07-23 23:39:01,842 - INFO - autotuner.py:1899 - flashinfer.jit: [Autotuner]: Loaded 12 configs from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json
+(Worker_TP5_EP5 pid=111) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 5 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP2_EP2 pid=108) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 2 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP7_EP7 pid=113) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 7 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP4_EP4 pid=110) INFO 07-23 23:39:01 [flashinfer_sparse_mla_warmup.py:181] FlashInfer SM120 sparse MLA DSv3.2 decode autotune cache loaded on rank 4 from /root/.cache/vllm/flashinfer_autotune_cache/0.6.14/120f/646631f9db4edafea366e65190737a008c8507d101edfa52a5dee71d6717d28a/autotune_configs.json.
+(Worker_TP3_EP3 pid=109) 2026-07-23 23:39:01,845 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP6_EP6 pid=112) 2026-07-23 23:39:01,846 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP1_EP1 pid=107) 2026-07-23 23:39:01,846 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP5_EP5 pid=111) 2026-07-23 23:39:01,846 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP2_EP2 pid=108) 2026-07-23 23:39:01,846 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP7_EP7 pid=113) 2026-07-23 23:39:01,846 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP4_EP4 pid=110) 2026-07-23 23:39:01,846 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(Worker_TP6_EP6 pid=112) 2026-07-23 23:39:01,867 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP1_EP1 pid=107) 2026-07-23 23:39:01,867 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP1_EP1 pid=107) 2026-07-23 23:39:01,867 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP6_EP6 pid=112) 2026-07-23 23:39:01,867 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP2_EP2 pid=108) 2026-07-23 23:39:01,868 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP7_EP7 pid=113) 2026-07-23 23:39:01,868 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP3_EP3 pid=109) 2026-07-23 23:39:01,868 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP2_EP2 pid=108) 2026-07-23 23:39:01,868 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP7_EP7 pid=113) 2026-07-23 23:39:01,868 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP3_EP3 pid=109) 2026-07-23 23:39:01,869 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP5_EP5 pid=111) 2026-07-23 23:39:01,869 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP5_EP5 pid=111) 2026-07-23 23:39:01,869 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP4_EP4 pid=110) 2026-07-23 23:39:01,870 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm1 (runner=MoERunner, source=config file)
+(Worker_TP4_EP4 pid=110) 2026-07-23 23:39:01,871 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for trtllm::fused_moe::gemm2 (runner=MoERunner, source=config file)
+(Worker_TP0_EP0 pid=106) 2026-07-23 23:39:02,221 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP5_EP5 pid=111) 2026-07-23 23:39:02,237 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP6_EP6 pid=112) 2026-07-23 23:39:02,240 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP1_EP1 pid=107) 2026-07-23 23:39:02,245 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP3_EP3 pid=109) 2026-07-23 23:39:02,249 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP7_EP7 pid=113) 2026-07-23 23:39:02,254 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP4_EP4 pid=110) 2026-07-23 23:39:02,254 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP2_EP2 pid=108) 2026-07-23 23:39:02,257 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(Worker_TP0_EP0 pid=106) 
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/3 [00:00<?, ?it/s]
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE):  33%|███▎      | 1/3 [00:00<00:01,  1.34it/s]
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE):  67%|██████▋   | 2/3 [00:01<00:00,  1.40it/s](Worker_TP6_EP6 pid=112) 2026-07-23 23:39:05,243 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+(Worker_TP1_EP1 pid=107) 2026-07-23 23:39:05,249 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+(Worker_TP4_EP4 pid=110) 2026-07-23 23:39:05,252 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+(Worker_TP2_EP2 pid=108) 2026-07-23 23:39:05,256 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+(Worker_TP7_EP7 pid=113) 2026-07-23 23:39:05,256 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+(Worker_TP5_EP5 pid=111) 2026-07-23 23:39:05,257 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+(Worker_TP3_EP3 pid=109) 2026-07-23 23:39:05,260 - INFO - autotuner.py:1009 - flashinfer.jit: [Autotuner]: Config cache hit for sparse_mla_sm120_decode_dsv3_2 (runner=_SparseMlaDecodeDsv3Runner, source=config file)
+
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 3/3 [00:02<00:00,  1.41it/s]
+[1ACapturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 3/3 [00:02<00:00,  1.40it/s]
+(Worker_TP0_EP0 pid=106) 
+[1ACapturing CUDA graphs (decode, FULL):   0%|          | 0/2 [00:00<?, ?it/s]
+[1ACapturing CUDA graphs (decode, FULL):  50%|█████     | 1/2 [00:00<00:00,  1.57it/s]
+[1ACapturing CUDA graphs (decode, FULL): 100%|██████████| 2/2 [00:01<00:00,  1.58it/s]
+[1ACapturing CUDA graphs (decode, FULL): 100%|██████████| 2/2 [00:01<00:00,  1.57it/s]
+(Worker_TP4_EP4 pid=110) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP1_EP1 pid=107) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP2_EP2 pid=108) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:39:07 [gpu_model_runner.py:6656] Graph capturing finished in 5 secs, took 0.10 GiB
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP3_EP3 pid=109) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP5_EP5 pid=111) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP7_EP7 pid=113) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP6_EP6 pid=112) INFO 07-23 23:39:07 [gpu_worker.py:667] CUDA graph pool memory: 0.1 GiB (actual), 0.3 GiB (estimated), difference: 0.2 GiB (192.5%).
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP1_EP1 pid=107) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP3_EP3 pid=109) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP4_EP4 pid=110) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP5_EP5 pid=111) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP2_EP2 pid=108) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP7_EP7 pid=113) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(Worker_TP6_EP6 pid=112) INFO 07-23 23:39:07 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=77) INFO 07-23 23:39:08 [core.py:337] init engine (profile, create kv cache, warmup model) took 1181.63 s (compilation: 721.15 s)
+(EngineCore pid=77) INFO 07-23 23:39:11 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=77) INFO 07-23 23:39:11 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=77) INFO 07-23 23:39:11 [compilation.py:310] Enabled custom fusions: act_quant
+  load+capture ok in 1527s (captured => graph capture SUCCEEDED)
+
+[1ARendering prompts:   0%|          | 0/4 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 4/4 [00:00<00:00, 51.06it/s]
+
+(Worker_TP0_EP0 pid=106) WARNING 07-23 23:39:11 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(Worker_TP0_EP0 pid=106) WARNING 07-23 23:39:11 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _build_prefill_chunk_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+[1AProcessed prompts:   0%|          | 0/4 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts:  25%|██▌       | 1/4 [00:01<00:04,  1.57s/it, est. speed input: 3.19 toks/s, output: 15.31 toks/s]
+[1AProcessed prompts:  75%|███████▌  | 3/4 [00:02<00:00,  1.30it/s, est. speed input: 5.51 toks/s, output: 28.33 toks/s]
+[1AProcessed prompts: 100%|██████████| 4/4 [00:02<00:00,  1.30it/s, est. speed input: 7.78 toks/s, output: 37.35 toks/s]
+[1AProcessed prompts: 100%|██████████| 4/4 [00:02<00:00,  1.56it/s, est. speed input: 7.78 toks/s, output: 37.35 toks/s]
+  [gen] 'The capital of France is' -> ' Paris. Distance from Paris to Lyon is 391 km, while direct flight time is 1 h 5 min'
+        ids=[12089, 13, 31008, 504, 12089, 311, 54831, 374, 220, 101294, 16, 13128, 11, 1393, 2118, 10966, 882, 374, 220, 16, 305, 220, 20, 1308]
+  [gen] 'def fibonacci(n):' -> ' \n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1'
+        ids=[715, 262, 421, 308, 621, 220, 15, 510, 286, 470, 220, 15, 198, 262, 4409, 308, 621, 220, 16, 510, 286, 470, 220, 16]
+  [gen] 'The three primary colors are' -> ' red, blue, and yellow. These colors are equally spaced on the color wheel, and they form the basis for all'
+        ids=[2518, 11, 6303, 11, 323, 13744, 13, 4220, 7986, 525, 18279, 63373, 389, 279, 1894, 13276, 11, 323, 807, 1352, 279, 8036, 369, 678]
+  [gen] 'Water is made of hydrogen and' -> ' oxygen, H2O. The hydrogen in water is the part that burns. Hydrogen is a flammable gas.'
+        ids=[23487, 11, 472, 17, 46, 13, 576, 34513, 304, 3015, 374, 279, 949, 429, 42809, 13, 39287, 4370, 374, 264, 1320, 98268, 6819, 13]
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 2135.59it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.04s/it, est. speed input: 77.72 toks/s, output: 0.96 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.04s/it, est. speed input: 77.72 toks/s, output: 0.96 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.04s/it, est. speed input: 77.72 toks/s, output: 0.96 toks/s]
+# PPL over 80-token passage: 3.9168
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 1542.59it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:00<00:00,  5.25it/s, est. speed input: 52.47 toks/s, output: 20.99 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:00<00:00,  5.25it/s, est. speed input: 52.47 toks/s, output: 20.99 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:00<00:00,  5.24it/s, est. speed input: 52.47 toks/s, output: 20.99 toks/s]
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 1794.74it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:00<00:00,  9.73it/s, est. speed input: 97.34 toks/s, output: 9.73 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:00<00:00,  9.73it/s, est. speed input: 97.34 toks/s, output: 9.73 toks/s]Processed prompts: 100%|██████████| 1/1 [00:00<00:00,  9.70it/s, est. speed input: 97.34 toks/s, output: 9.73 toks/s]
+
+[1ARendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]
+[1ARendering prompts: 100%|██████████| 1/1 [00:00<00:00, 3095.43it/s]
+
+[1AProcessed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.94s/it, est. speed input: 5.16 toks/s, output: 33.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.94s/it, est. speed input: 5.16 toks/s, output: 33.00 toks/s]
+[1AProcessed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.94s/it, est. speed input: 5.16 toks/s, output: 33.00 toks/s]
+# decode tok/s: 34.305 (wall1=0.104s wall64=1.941s)
+# graph_gate C-captured PASS (ntok=96, ppl=3.9168, decode_tps=34.305, prefill_tps=nan)
+(EngineCore pid=77) INFO 07-23 23:39:17 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=77) INFO 07-23 23:39:17 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=77) INFO 07-23 23:39:17 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=77) INFO 07-23 23:39:17 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(Worker_TP0_EP0 pid=106) INFO 07-23 23:39:17 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(EngineCore pid=77) INFO 07-23 23:39:17 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=8
+WARNING 07-23 23:39:22 [utils.py:620] [shutdown] Process manager: force killing remaining processes count=1
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 8 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+/usr/local/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 7 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[modal-client] 2026-07-24T03:39:32+0400 Timed out waiting for final app logs.
+✓ App completed. View run at 
+https://modal.com/apps/anterior-ai/main/ap-JaYKZZmaOmEH81TssfxEkl
