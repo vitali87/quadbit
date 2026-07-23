@@ -1,0 +1,108 @@
+✓ Initialized. View run at 
+https://modal.com/apps/anterior-ai/main/ap-JRzA9c13owbYtr70r5wRUC
+Building image im-ObtSrTSkHUxnB863bwsJ6o
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: COPY . /
+Saving image...
+Image saved, took 1.92s
+
+Built image im-ObtSrTSkHUxnB863bwsJ6o in 3.56s
+
+
+Building image im-AJBnt2xJg89C4bjDppeNw2
+
+Using legacy Image Builder version. We suggest upgrading at https://modal.com/settings/image-config.
+
+=> Step 0: FROM base
+
+=> Step 1: RUN pip install --force-reinstall --no-deps /opt/qb_plugin
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Processing ./opt/qb_plugin
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: qb-sm120-plugin
+  Building wheel for qb-sm120-plugin (pyproject.toml): started
+  Building wheel for qb-sm120-plugin (pyproject.toml): finished with status 'done'
+  Created wheel for qb-sm120-plugin: filename=qb_sm120_plugin-0.9.0-py3-none-any.whl size=57747 sha256=e980c1e14ed256b55ee155e11d24f6ddfd22b221e498a62738337cf2e9b119ad
+  Stored in directory: /tmp/pip-ephem-wheel-cache-j046s8ed/wheels/bf/25/eb/0d89a1eb7399f84228f7e0fb830e14e3a644c5dcf130078b17
+Successfully built qb-sm120-plugin
+Installing collected packages: qb-sm120-plugin
+Successfully installed qb-sm120-plugin-0.9.0
+Saving image...
+Image saved, took 2.26s
+
+Built image im-AJBnt2xJg89C4bjDppeNw2 in 8.63s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/serve_dsv4.py
+├── 🔨 Created mount 
+│   /Users/vitaliavagyan/Documents/quadbit/harness/qb_vllm_plugin
+├── 🔨 Created function inspect_dp.
+├── 🔨 Created function inspect_vllm.
+├── 🔨 Created function inspect_pp.
+├── 🔨 Created function glm_baseline.
+├── 🔨 Created function unblock.
+├── 🔨 Created function graph_gate.
+├── 🔨 Created function graph_gate4.
+├── 🔨 Created function graph_gate2.
+├── 🔨 Created function graph_gate_dp.
+├── 🔨 Created function graph_gate_pp.
+├── 🔨 Created function glm_graph_gate.
+├── 🔨 Created function glm_b200.
+├── 🔨 Created function c3_profile.
+├── 🔨 Created function floor_profile.
+├── 🔨 Created function baseline.
+├── 🔨 Created function inspect_moe.
+├── 🔨 Created function test_so.
+├── 🔨 Created function quadbit.
+├── 🔨 Created function versions.
+├── 🔨 Created function glm_inspect.
+├── 🔨 Created function dumpsrc.
+├── 🔨 Created function c1_recon.
+├── 🔨 Created function c1_recon2.
+├── 🔨 Created function c1_dense_anchor.
+├── 🔨 Created function probe.
+├── 🔨 Created function sweep2.
+├── 🔨 Created function sweep4.
+├── 🔨 Created function downstream.
+├── 🔨 Created function downstream4.
+├── 🔨 Created function glm_downstream.
+├── 🔨 Created function recon.
+├── 🔨 Created function qmap.
+└── 🔨 Created function calib.
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 13.0.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+# B200 head-to-head: 4x NVIDIA B200 sm_100, tp=4 vs the SM120 reference 33.810 tok/s (8x RTX PRO 6000, PCIe)
+# M4 graph_gate cfg=C-captured BASELINE-dense-nvfp4 (QB_MOE=off, native FlashInfer-CUTLASS fused MoE) cap=128 max_seqs=2 QB_GRAPH=1 enforce_eager=False tp=4 model=GLM dense_backend=dequant
+[qb_sm120] QB_DENSE=off -> native path (expect the SM120 fp8 wall)
+INFO 07-23 22:40:56 [api_utils.py:273] non-default args: {'trust_remote_code': True, 'kv_cache_dtype': 'fp8', 'max_model_len': 2048, 'tensor_parallel_size': 4, 'enable_expert_parallel': True, 'max_num_batched_tokens': 2048, 'max_num_seqs': 2, 'disable_log_stats': True, 'model': 'nvidia/GLM-5.2-NVFP4'}
+INFO 07-23 22:41:19 [model.py:598] Resolved architecture: GlmMoeDsaForCausalLM
+INFO 07-23 22:41:19 [model.py:1725] Using max model len 2048
+INFO 07-23 22:41:20 [cache.py:279] Using fp8 data type to store kv cache. It reduces the GPU memory footprint and boosts the performance. Meanwhile, it may cause accuracy drop without a proper scaling factor
+INFO 07-23 22:41:20 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=2048.
+WARNING 07-23 22:41:20 [modelopt.py:1028] Detected ModelOpt NVFP4 checkpoint (quant_algo=NVFP4). Please note that the format is experimental and could change in future.
+INFO 07-23 22:41:20 [vllm.py:1006] Asynchronous scheduling is enabled.
+INFO 07-23 22:41:20 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
