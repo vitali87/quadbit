@@ -1040,6 +1040,7 @@ def glm_b200(
     max_seqs: int = 2,
     max_len: int = 2048,
     gpu_mem: float = 0.92,
+    spec: int = 0,
 ) -> None:
     """The SM100 counterfactual for the GLM-5.2 dense-NVFP4 decode row (C2 `glm_sota.md`: 33.810
     tok/s on 8x RTX PRO 6000). Same model, same harness, same mito80 passage, same two-run
@@ -1054,14 +1055,19 @@ def glm_b200(
     vendor's own tested config, which is what a hosted API serving this checkpoint would run.
 
     GPU count differs by design (4 vs 8): 433 GiB does not fit on 8x95 GiB minus overhead but fits
-    on 4x191.5 GiB, and 4xB200 is hourly-cost-matched to 8xRTX PRO 6000. Note this when citing."""
+    on 4x191.5 GiB, and 4xB200 is hourly-cost-matched to 8xRTX PRO 6000. Note this when citing.
+
+    spec>0 enables MTP speculative decoding, which is the C9 rematch. C9 killed MTP on SM120 (-17.8%
+    vs no-spec) because each draft step pays the PCIe all-reduce that dominates the step there, so
+    drafting cost more than it saved at batch 1-2. Published B200 GLM-5.2 stacks use MTP as a win,
+    which is consistent with that KILL being a property of the interconnect rather than of MTP."""
     import torch
 
     p = torch.cuda.get_device_properties(0)
     print(f"# B200 head-to-head: {torch.cuda.device_count()}x {p.name} sm_{p.major}{p.minor}, "
           f"tp={tp} vs the SM120 reference 33.810 tok/s (8x RTX PRO 6000, PCIe)", flush=True)
     _graph_gate_body(tp, eager, False, "both", 2, "", cap, max_seqs, max_len, gpu_mem,
-                     glm=True, baseline="dense_nvfp4", native=True)
+                     glm=True, baseline="dense_nvfp4", native=True, spec=spec)
 
 
 @app.function(
