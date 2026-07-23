@@ -1,5 +1,6 @@
 moe_recon.py
 pyproject.toml
+qb_dp_worker.py
 qb_sm120_plugin.py
 qb_sm120_plugin.egg-info/PKG-INFO
 qb_sm120_plugin.egg-info/SOURCES.txt

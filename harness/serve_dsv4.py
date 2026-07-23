@@ -428,6 +428,7 @@ def _graph_gate_body(
     spec_method: str = "mtp",
     fault_dump: int = 0,
     prefill_p: int = 0,
+    native: bool = False,
 ) -> None:
     """P4 M4 graph-capture gate on DeepSeek-V4-Flash sparse-FP4 (2 GPU, EP). Three configs:
       A eager=True  force_graph_path=False -> QB_GRAPH=0, enforce_eager=True   (frozen Campaign-B path)
@@ -442,7 +443,13 @@ def _graph_gate_body(
     import torch
     from vllm import LLM, SamplingParams
 
-    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    # native=True is the SM100/B200 path: every quadbit patch is an SM120 workaround, wrong on
+    # datacenter Blackwell. DeepGEMM block-FP8 has no SM120 kernel (hence the =0 kill) but runs
+    # natively on SM100, so let vLLM decide instead of forcing it off.
+    if native:
+        os.environ.pop("VLLM_USE_DEEP_GEMM", None)
+    else:
+        os.environ["VLLM_USE_DEEP_GEMM"] = "0"
     # C9 diag: fault_dump>0 -> plugin arms faulthandler.dump_traceback_later(fault_dump s) in every worker
     # so a hang prints all thread stacks to the log. Set before LLM() so worker subprocs inherit it.
     os.environ.pop("QB_FAULT_DUMP", None)
@@ -451,7 +458,9 @@ def _graph_gate_body(
         os.environ["QB_FAULT_DUMP"] = "1"
         os.environ["QB_FAULT_DUMP_S"] = str(fault_dump)
     gp = force_graph_path or (not eager)
-    os.environ["QB_DENSE"] = "nvfp4"
+    # QB_DENSE=off is the plugin's global kill switch (an early return ahead of every patch it
+    # installs). It defaults to ON when unset, so a native run must set it to get vanilla vLLM.
+    os.environ["QB_DENSE"] = "off" if native else "nvfp4"
     # C2 SOTA board: baseline="dense_nvfp4" -> QB_MOE=off, which makes patched_moe_pw return early so
     # vLLM's native FlashInfer-CUTLASS NVFP4 fused MoE runs unchanged (the production dense NVFP4 path),
     # with attention/DSA still SM120-unblocked. Same passage/decode-formula/graph mode as the sparse
@@ -1016,6 +1025,43 @@ def glm_graph_gate(
     _graph_gate_body(tp, eager, force_graph_path, proj, route_slot, dense_layers,
                      cap, max_seqs, max_len, gpu_mem, glm=True,
                      dense_anchor_backend=dense_anchor_backend, baseline=baseline)
+
+
+@app.function(
+    gpu="B200:4",
+    timeout=180 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def glm_b200(
+    tp: int = 4,
+    eager: bool = False,
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.92,
+) -> None:
+    """The SM100 counterfactual for the GLM-5.2 dense-NVFP4 decode row (C2 `glm_sota.md`: 33.810
+    tok/s on 8x RTX PRO 6000). Same model, same harness, same mito80 passage, same two-run
+    TTFT-subtracted decode formula, same graph mode -- only the silicon changes. C4 attributed 90.8%
+    of the SM120 decode step to one per-layer ring all-reduce over PCIe (~374 us for a ~14 KB
+    payload, i.e. sync latency, not transfer); B200 is NVLink-connected, so if that attribution is
+    right this row should move by roughly the collective's share, not by the MoE's 5.5%.
+
+    native=True disables every quadbit patch. They exist to route around SM120 gaps (no block-FP8
+    kernel, no cooperative topk, no DeepGEMM mqa-logits) that SM100 does not have, so keeping them
+    would measure our workarounds rather than the hardware. That makes this row vanilla vLLM on the
+    vendor's own tested config, which is what a hosted API serving this checkpoint would run.
+
+    GPU count differs by design (4 vs 8): 433 GiB does not fit on 8x95 GiB minus overhead but fits
+    on 4x191.5 GiB, and 4xB200 is hourly-cost-matched to 8xRTX PRO 6000. Note this when citing."""
+    import torch
+
+    p = torch.cuda.get_device_properties(0)
+    print(f"# B200 head-to-head: {torch.cuda.device_count()}x {p.name} sm_{p.major}{p.minor}, "
+          f"tp={tp} vs the SM120 reference 33.810 tok/s (8x RTX PRO 6000, PCIe)", flush=True)
+    _graph_gate_body(tp, eager, False, "both", 2, "", cap, max_seqs, max_len, gpu_mem,
+                     glm=True, baseline="dense_nvfp4", native=True)
 
 
 @app.function(
