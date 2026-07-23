@@ -1,4 +1,4 @@
-# B200 verdict: **PARTIAL** — the interconnect was worth 3.27x, and it is still the floor
+# B200 verdict: interconnect worth **3.27x**, and MTP (a C9 KILL on SM120) adds **+61.7%** on top — **5.28x** total
 
 Branch `b200-glm-headtohead`, PR #38. Pre-registration: [design.md](design.md) (written before results).
 Logs `docs/audit/logs/b200_glm_*.log`.
@@ -63,10 +63,37 @@ So the residual gap to 281 is accounted for by serving-stack work we have not do
 not by our kernels. That is the honest framing: our number is an unoptimized research harness, and the
 distance to the leaders is a list of implementable techniques with published multipliers.
 
-## Consequence for C9
+## C9 rematch: the MTP KILL **REVERSES** on NVLink
 
 C9 killed MTP speculative decoding on SM120 at **-17.8%** (captured spec=2 47.792 vs no-spec 58.126)
-because each draft step pays the per-layer all-reduce that dominates the step there. That cost just fell
-4.7x, and the fastest published GLM-5.2 stacks use MTP as a win. The C9 KILL was therefore plausibly a
-property of the interconnect rather than of MTP. The rematch (`glm_b200 --spec 1/2`) is running; spec=1
-doubles as a test of whether C9's 66-minute deadlock was hardware-related.
+because each draft step pays the per-layer all-reduce that dominates the step there, and spec=1
+**deadlocked** (66 min at 0 tok/s). That per-collective cost just fell 4.7x. Rerun on B200:
+
+| row | GPUs | spec | decode tok/s | vs no-spec | PPL | log |
+|---|---|---|---:|---:|---:|---|
+| B200 no-spec | 4x B200 | 0 | 112.079 | — | 3.7352 | `b200_glm_headtohead.log` |
+| **B200 MTP** | 4x B200 | **1** | **181.278** | **+61.7%** | 3.7352 | `b200_glm_mtp_spec1.log` |
+
+- **+61.7%, and lossless: PPL is identical to four decimals (3.7352 = 3.7352)**, which is the expected
+  signature of speculative decoding under greedy verification. Captured, PASS, completes cleanly.
+- **Cumulative: 34.305 -> 181.278 = 5.28x**, from an interconnect change plus one config flag, with no
+  kernel, quantization, or policy change anywhere.
+- **The C9 KILL was a property of the interconnect, not of MTP.** Drafting only loses when each draft
+  step pays a 374 us collective; at ~80 us it pays for itself handsomely at batch 1-2.
+
+**Caveat on the deadlock.** C9's spec=1 hang was DeepSeek-V4-Flash on SM120; this row is GLM-5.2 on
+B200, so **two** variables changed (model and hardware) and the clean completion cannot be attributed to
+hardware alone. The spec=2 row (C9's exact spec count) is still running and is the closer comparison.
+
+## Standing after the rematch
+
+| stage | tok/s | gap to Aster's 281 |
+|---|---:|---:|
+| 8x RTX PRO 6000, PCIe (where the campaign lived) | 34.305 | 8.19x |
+| 4x B200, NVLink, vanilla vLLM | 112.079 | 2.51x |
+| 4x B200 + MTP spec=1 | **181.278** | **1.55x** |
+
+The remaining 1.55x is prefill/decode disaggregation plus KV-aware routing plus a custom engine. Note
+that Baseten's 2x for PD disaggregation should **not** be multiplied onto this number: PD disaggregation
+removes prefill interference from decode, which mostly buys aggregate throughput and TTFT under
+concurrent load, whereas this measurement is single-stream at batch 1-2 with no competing prefills.
