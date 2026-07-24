@@ -1071,6 +1071,31 @@ def glm_b200(
 
 
 @app.function(
+    gpu="RTX-PRO-6000:8",
+    timeout=180 * MIN,
+    volumes={"/cache": vol},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def glm_rtx_control(
+    tp: int = 8,
+    eager: bool = False,
+    cap: int = 128,
+    max_seqs: int = 2,
+    max_len: int = 2048,
+    gpu_mem: float = 0.92,
+) -> None:
+    """The SM120 control for `glm_b200`, with the SAME defaults so the pair cannot drift.
+
+    `glm_graph_gate` can produce this row too, but its defaults (cap=512, max_seqs=8, baseline="")
+    describe the sparse-policy experiment, not this comparison, so reproducing the control that way
+    depends on remembering three CLI overrides. This entrypoint encodes the registered workload
+    instead. Only `native` differs from `glm_b200`: the quadbit patches stay ON here because SM120
+    genuinely needs them (no block-FP8 kernel, no cooperative topk, no DeepGEMM mqa-logits)."""
+    _graph_gate_body(tp, eager, False, "both", 2, "", cap, max_seqs, max_len, gpu_mem,
+                     glm=True, baseline="dense_nvfp4")
+
+
+@app.function(
     gpu="RTX-PRO-6000:4",
     timeout=90 * MIN,
     volumes={"/cache": vol},

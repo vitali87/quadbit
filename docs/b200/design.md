@@ -2,6 +2,13 @@
 
 Pre-registered before the run returned. Branch `b200-glm-headtohead`, PR #38.
 
+> **Post-hoc corrections (review, PR #38).** Two things were fixed here *after* results, and both are
+> corrections rather than changes of hypothesis: (a) the framing was tightened from "changing only the
+> silicon" to a platform comparison, because the B200 path also changes plugin usage, the DeepGEMM
+> setting, rank count and MoE backend; (b) the memory-fit confound stated the checkpoint did not fit on
+> 8x95 GiB, which is arithmetically wrong (760 > 433) and contradicted by the 8-GPU control that ran
+> fine. **The predictions and success bands below are untouched.**
+
 ## Question
 
 Aster (YC) advertises GLM-5.2 at **281 tok/s**; Baseten advertises **280+ tok/s** on Blackwell, measured
@@ -15,7 +22,9 @@ not transfer. So the standing hypothesis is that the gap is the **interconnect**
 none of it is our kernels.
 
 That hypothesis has never been tested directly, because every quadbit serving measurement to date is on
-SM120. This run tests it by changing only the silicon.
+SM120. This run tests it as a **platform comparison**: the model, harness, passage, metric and graph mode
+are held fixed, while the hardware *and the runtime configuration each platform requires* both change.
+It is deliberately **not** a silicon-only A/B, and the confounds below enumerate what else moves.
 
 ## Method
 
@@ -57,9 +66,10 @@ expected and is not a loss; the decomposition is:
 
 ## Confounds to state when citing
 
-1. **GPU count differs (4 vs 8).** 433 GiB does not fit on 8x95 GiB minus overhead but fits on
-   4x191.5 GiB, and 4xB200 is hourly-cost-matched to 8xRTX PRO 6000. Fewer ranks makes an all-reduce
-   cheaper independently of the link, so rank count and link are not fully separated here. Note that
+1. **GPU count differs (4 vs 8).** The 433 GiB checkpoint does not fit on **4x** RTX PRO 6000
+   (4x95 = 380 GiB), which is why SM120 runs at tp=8; it does fit on 4x B200. 4xB200 is also
+   hourly-cost-matched to 8xRTX PRO 6000 on Modal. Fewer ranks makes an all-reduce cheaper
+   independently of the link, so rank count and link are **not** fully separated here. Note that
    fewer ranks is not automatically better: C5 tested TP=2 on SM120 and it **lost** (40.565 vs 48.248)
    because per-GPU weight bytes doubled.
 2. **MoE backend differs.** SM120 selects `FLASHINFER_CUTLASS`; B200 selects `FLASHINFER_TRTLLM`. That

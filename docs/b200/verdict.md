@@ -5,18 +5,30 @@ Logs `docs/audit/logs/b200_glm_*.log`.
 
 ## Result
 
-Same checkpoint (`nvidia/GLM-5.2-NVFP4`), same harness (`_graph_gate_body`), same passage (`ntok=96` on
-both rows), same two-run TTFT-subtracted decode formula, same captured graph mode, same
-`cap=128 max_seqs=2 max_len=2048`, same commit. Only the silicon differs.
+Same checkpoint (`nvidia/GLM-5.2-NVFP4`), same harness (`_graph_gate_body`), same PPL passage (both rows
+score `ntok=96` tokens, confirming identical tokenized input), same two-run TTFT-subtracted decode
+formula, same captured graph mode, same `cap=128 max_seqs=2 max_len=2048`, same commit.
+
+This is a **platform comparison, not a silicon-only A/B.** Alongside the hardware, the B200 row also
+changes rank count (4 vs 8), plugin usage (`QB_DENSE=off` vs the SM120 patches), the DeepGEMM setting,
+and the NVFP4 MoE backend vLLM selects (`FLASHINFER_TRTLLM` vs `FLASHINFER_CUTLASS`). Each of those is
+the configuration that platform requires rather than a free variable, but they are **not** separated
+from the interconnect by this experiment. What *is* held exactly fixed is quadbit itself: no kernel,
+quantization, or policy changed, and on the B200 row quadbit is disabled outright.
 
 | row | GPUs | link | stack | decode tok/s | ms/step | PPL | graph | log |
 |---|---|---|---|---:|---:|---:|---|---|
 | control | 8x RTX PRO 6000 (sm_120) | PCIe, no NVLink | vLLM + qb plugin | **34.305** | 29.15 | 3.9168 | captured PASS | `b200_glm_rtx_control.log` |
 | **B200** | 4x B200 (sm_100) | NVLink, full P2P | **vanilla vLLM** (`QB_DENSE=off`) | **112.079** | 8.92 | 3.7352 | captured PASS | `b200_glm_headtohead.log` |
 
-**3.27x, with zero code change.** The control reproduces the frozen 33.810 ([c2/glm_sota.md](../c2/glm_sota.md))
-to within 1.5%, so the comparison is not toolchain drift. Quality is intact (PPL 3.74 vs 3.92 on a
-96-token passage, i.e. a wash, with B200 marginally better).
+**3.27x, with zero change to quadbit.** The control reproduces the frozen 33.810
+([c2/glm_sota.md](../c2/glm_sota.md)) to within 1.5%, so the comparison is not toolchain drift.
+
+**On quality:** the two PPLs are close (3.7352 vs 3.9168) but they are **not** "matched", and 96 scored
+tokens is far too short to resolve a 0.18 difference. The defensible claim is only that **neither row
+collapsed** and both generate coherently; the small delta is unattributed and is as likely to come from
+the different MoE backend and reduction order as from anything else. Do not cite this as a quality
+result in either direction.
 
 ## Verdict against the pre-registered bands
 
@@ -55,13 +67,22 @@ production stack. Baseten disclose the recipe, and every item is a named techniq
 or kernel advantage:
 
 - **NVFP4 weights** — we already use this, same checkpoint format.
-- **Prefill/decode disaggregation** — **2x on their own measurement**. 112.079 x 2 = **224**.
-- **MTP speculative decoding** — on top of that.
+- **MTP speculative decoding** — the only one of these we have now measured ourselves (below).
+- **Prefill/decode disaggregation** — 2x *on their stack, on their benchmark*.
 - **KV-aware routing** — prefill-side cache hit rate, largely orthogonal to single-stream decode.
 
-So the residual gap to 281 is accounted for by serving-stack work we have not done, not by silicon and
-not by our kernels. That is the honest framing: our number is an unoptimized research harness, and the
-distance to the leaders is a list of implementable techniques with published multipliers.
+**These multipliers are theirs, not ours, and must not be composed onto our number.** In particular the
+PD-disaggregation 2x is measured on a concurrent serving benchmark, where it works by keeping prefill
+from interrupting decode; our measurement is single-stream at batch 1-2 with no competing prefill, so
+its expected contribution here is closer to nothing than to 2x. Any arithmetic of the form
+"112.079 x 2 = 224, therefore we would beat them" is invalid and is exactly the soft-target reasoning
+this repo bans. The only defensible statement is directional: **the residual gap is serving-stack work
+we have not done, and those techniques are named and public**, with their magnitudes unverified here.
+
+A further caveat on the target itself: 281 tok/s is a vendor marketing figure whose measurement
+conditions (batch size, concurrency, input/output lengths, whether output speed is per-request or
+aggregate) we do not control and have not reproduced. It is a **directional** reference point, not a
+calibrated baseline. Everything in this repo's own tables is same-harness; this one number is not.
 
 ## C9 rematch: the MTP KILL **REVERSES** on NVLink
 
@@ -79,7 +100,7 @@ because each draft step pays the per-layer all-reduce that dominates the step th
   clean comparison, holding k fixed; only the machine differs.
 - **Lossless: PPL is identical to four decimals across all three B200 rows (3.7352)**, the expected
   signature of speculative decoding under greedy verification. All captured, all PASS.
-- **Cumulative: 34.305 -> 216.828 = 6.32x**, from an interconnect change plus one config flag, with no
+- **Cumulative: 34.305 -> 216.828 = 6.32x**, from a platform change plus one config flag, with no
   kernel, quantization, or policy change anywhere in quadbit.
 - **The C9 KILL was a property of the interconnect, not of MTP.** Drafting only loses when each draft
   step pays a 374 us collective; at ~80 us it pays for itself, twice over.
@@ -87,13 +108,25 @@ because each draft step pays the per-layer all-reduce that dominates the step th
   that k>1 lowers acceptance on the recursive MTP layer. The acceptance penalty is real but on NVLink it
   is outweighed by the amortization; on PCIe it was not.
 
-**Caveat on the deadlock.** C9's spec=1 hang was DeepSeek-V4-Flash on SM120; these rows are GLM-5.2 on
-B200, so **two** variables changed (model and hardware) and the clean completion cannot be attributed to
-hardware alone. The throughput reversal at spec=2 is the load-bearing claim; the deadlock is not.
+**Caveat: this does not isolate the interconnect as the cause.** C9 was **DeepSeek-V4-Flash on SM120**;
+these rows are **GLM-5.2 on B200**. Model, hardware and platform configuration all differ, so the sign
+flip is *consistent with* the interconnect explanation and *predicted by* it, but it does not prove that
+the interconnect rather than the model (different draft head, different acceptance rate, different
+expert count) caused the reversal. The two models' MTP heads are not equivalent: C9 specifically noted
+DeepSeek's draft head is a full MoE+MLA+DSA block.
+
+The clean isolation test is not run here and would be **GLM-5.2 with MTP on SM120** (same model, same
+spec count, PCIe). That row is cheap and would settle it. Until then, treat "the C9 KILL was an
+interconnect property" as the leading hypothesis with strong supporting evidence, not as established.
+The measured claim that stands unconditionally is narrower and still useful: **on B200, MTP is a large
+lossless win for GLM-5.2 at batch 1-2, where the published stacks also use it.**
 
 ## Standing after the rematch
 
-| stage | tok/s | vs the PCIe row | gap to Aster's 281 |
+Ratios in the last column are against a **vendor marketing figure measured under conditions we do not
+control** (see the caveat above); treat them as directional, not as a same-harness comparison.
+
+| stage | tok/s | vs the PCIe row | ratio to the advertised 281 |
 |---|---:|---:|---:|
 | 8x RTX PRO 6000, PCIe (where the campaign lived) | 34.305 | 1.00x | 8.19x |
 | 4x B200, NVLink, vanilla vLLM | 112.079 | 3.27x | 2.51x |

@@ -15,8 +15,11 @@ image = modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_py
 )
 app = modal.App("quadbit-gpuprobe", image=image)
 
+MODES = {"rtx", "b200"}
+
 
 def _probe() -> None:
+    """Dump device count, per-GPU name/memory/arch, the P2P matrix, and nvidia-smi topology."""
     import torch
 
     n = torch.cuda.device_count()
@@ -31,19 +34,30 @@ def _probe() -> None:
         row = ["1" if i == j or torch.cuda.can_device_access_peer(i, j) else "0" for j in range(n)]
         print(f"  gpu{i}: {' '.join(row)}", flush=True)
     print("=== nvidia-smi topo ===", flush=True)
-    print(subprocess.run(["nvidia-smi", "topo", "-m"], capture_output=True, text=True).stdout, flush=True)
+    # Topology is diagnostic only, and nvidia-smi topo is not always permitted in a container, so a
+    # failure here must not lose the device/P2P dump above.
+    try:
+        r = subprocess.run(["nvidia-smi", "topo", "-m"], capture_output=True, text=True, timeout=60)
+        print(r.stdout or f"(nvidia-smi topo rc={r.returncode}: {r.stderr.strip()})", flush=True)
+    except (OSError, subprocess.SubprocessError) as ex:
+        print(f"(nvidia-smi topo unavailable: {type(ex).__name__}: {ex})", flush=True)
 
 
 @app.function(gpu="RTX-PRO-6000:4", timeout=600)
 def probe4() -> None:
+    """Probe 4x RTX PRO 6000 (SM120): expect no NVLink, i.e. PCIe P2P."""
     _probe()
 
 
 @app.function(gpu="B200:4", timeout=600)
 def probe_b200() -> None:
+    """Probe 4x B200 (SM100): the NVLink counterfactual to probe4."""
     _probe()
 
 
 @app.local_entrypoint()
 def main(mode: str = "rtx") -> None:
+    """Dispatch to a probe. Unknown modes raise rather than silently booking the wrong hardware."""
+    if mode not in MODES:
+        raise SystemExit(f"unknown --mode {mode!r}; expected one of {sorted(MODES)}")
     (probe_b200 if mode == "b200" else probe4).remote()
