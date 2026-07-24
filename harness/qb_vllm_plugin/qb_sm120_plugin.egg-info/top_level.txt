@@ -1,2 +1,3 @@
 moe_recon
+qb_dp_worker
 qb_sm120_plugin
